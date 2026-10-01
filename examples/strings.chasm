@@ -1,0 +1,29 @@
+# Strings are ( addr len ) byte slices of UTF-8.
+
+test str.len : "héllo" str.len -> 6
+test str.slice : "hello world" 6 5 str.slice -> "world"
+test str.concat : "con" "cat" str.concat -> "concat"
+test str.eq : "abc" "abc" str.eq -> 1
+test str.eq : "abc" "abd" str.eq -> 0
+test str.cp-at : "é" 0 str.cp-at -> 233 2
+test i32.to-str : -1234 i32.to-str -> "-1234"
+test i64.to-str : -9223372036854775808i64 i64.to-str -> "-9223372036854775808"
+
+# Count codepoints by walking byte offsets.
+: cp-count ( str -- i32 )
+  :> s
+  0 :> i!
+  0 :> n!
+  [ i s str.len i32.lt_u ]
+  [ s i str.cp-at :> len drop
+    i len i32.add i!
+    n 1 i32.add n! ]
+  while
+  n ;
+test cp-count : "naïve café" cp-count -> 10
+
+: main ( -- )
+  "naïve café" :> s
+  s print " has " print
+  s str.len i32.to-str print " bytes and " print
+  s cp-count i32.to-str print " codepoints" println ;

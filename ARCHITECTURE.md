@@ -1,6 +1,6 @@
 # Chasm: Architecture and Milestones
 
-Status: draft v0.8. **Chasm** (Chuck-Wasm, after Chuck Moore) is a typed, concatenative language that compiles to WebAssembly, with an interactive REPL, written in Rust. Source files use the `.chasm` extension; the CLI binary is `chasm`.
+Status: draft v0.9 (M0 and M1 implemented; decisions in section 13). **Chasm** (Chuck-Wasm, after Chuck Moore) is a typed, concatenative language that compiles to WebAssembly, with an interactive REPL, written in Rust. Source files use the `.chasm` extension; the CLI binary is `chasm`.
 
 ## 1. Goals
 
@@ -233,10 +233,10 @@ M1 to M3 can overlap; the graph and stub data structures are part of M1 so that 
 
 ## 11. Open questions
 
-Settled questions live in `LANGUAGE.md` (primitive set, numeric types, strings, effect syntax, tests). Still open:
+Settled questions live in `LANGUAGE.md` (primitive set, numeric types, strings, effect syntax, tests; M1 decisions in its section 12). Still open:
 
 1. Error-recovery policy for broken dependants when the cascade (force-redefine) mode is added in M5.
-2. Load/store alignment and offset immediates (`LANGUAGE.md` open item 1): v1 default is natural alignment, offset 0.
+2. Load/store alignment and offset immediates (`LANGUAGE.md` open item 1): v1 is natural alignment, offset 0.
 3. Module or namespace structure for libraries (`LANGUAGE.md` open item 2); a flat dictionary until it hurts.
 4. `/net/http` semantics (methods, headers) when it is built in M5.
 
@@ -245,3 +245,15 @@ Row variables in effects are an M6 matter, not a v1 question; the type represent
 ## 12. Hardware notes
 
 Heavy native batch work (large test corpora, benchmarks, Binaryen runs over big programs) can use the work machine (3090, dual Xeon, 64 GB). Day-to-day development runs comfortably on the home machine (4070, 16 GB, Debian). Nothing in the design needs a GPU.
+
+## 13. Decisions taken in M0 and M1
+
+1. **Crates.** `crates/core` (package `chasm-core`), `crates/runtime` (`chasm-runtime`, wasmtime behind the default `native` feature), `crates/cli` (`chasm-cli`, binary `chasm`). `web/` is a placeholder until M2. `core` builds for `wasm32-unknown-unknown`, and CI checks that.
+2. **One doorbell import.** The compiled module imports exactly one host function, `chasm.ring_enter ( -- )`. The four `host.*` words are compiled code: each writes a submission entry into the ring, calls the doorbell, and takes one completion. The native host services the ring synchronously inside the doorbell; the browser host will post to the main thread and `Atomics.wait`. Ring layout (in `core::layout`): heads and tails at 64 KiB; 256 submission entries of 32 bytes (`op, user, a0, a1, a2`); 256 completion entries of 16 bytes (`user, result`). Opcodes: 1 open, 2 read, 3 write, 4 close.
+3. **Runtime cells** in the reserved region: trap message address and length at `0x100`/`0x104`, trapping word at `0x108`/`0x10C`, heap pointer at `0x110`, data stack pointer (M2) at `0x114`. Address 0 stays invalid.
+4. **Trap messages.** `trap`, bounds checks, unresolved stubs and out-of-memory call a runtime helper that writes the message and word into those cells, then executes `unreachable`. The host reads them back. Plain wasm traps (division by zero) are named from the module's name section via the backtrace.
+5. **M1 module shape.** One module per program: runtime helpers (`rt.alloc`, `rt.trap`, `rt.ring`), then one function per word in definition order. Calls are direct. Every word also owns a slot in a funcref table (slot = word index) for `'word` and `call` (`call_indirect`). The module defines and exports its memory; the M2 REPL will import it instead. Literals start at 1 MiB, and the heap follows them.
+6. **Functions as values** (`'word`, quotation values, `call`, address-taken edges) were cheap on top of the table, so they landed in M1 rather than M3.
+7. **Two-pass checking.** Each body is walked twice by the same checker: a checking pass that settles type variables, then an emitting pass with the final substitution. Blocks take the whole checker stack as parameters (multi-value), so a quotation under a combinator can reach any value below it.
+8. **Text from JSON.** Every CLI command builds the JSON report; the text output is rendered from that JSON value.
+9. **Host namespace.** `/file/<path>` is the host path `/<path>` (off with `--no-file`). `--mount name=DIR` mounts a local directory at `/mnt/name`, and `..` is refused under mounts. `/net/...` and 9p sources return "not supported" until M5.

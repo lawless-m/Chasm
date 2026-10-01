@@ -1,0 +1,8 @@
+# I/O is four words over a namespace. Run with:
+#   chasm run examples/files.chasm --mount ex=examples
+: main ( -- )
+  "/mnt/ex" ls drop
+  "/mnt/ex/hello.chasm" read-file
+  0 i32.eq [ "--- hello.chasm ---" println print ] [ drop "could not read" println ] if
+  "elapsed check: " print
+  now now i64.le_s [ "time moves forward" ] [ "time went backwards" ] if println ;

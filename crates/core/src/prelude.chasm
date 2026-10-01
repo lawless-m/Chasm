@@ -1,0 +1,192 @@
+# Chasm prelude: library words written in Chasm, compiled with every program.
+#
+# Built on the primitives only. Strings are ( addr len ) pairs; see
+# LANGUAGE.md section 4. I/O is four host words over a namespace; see
+# LANGUAGE.md section 10.
+
+# ---------------------------------------------------------------- strings
+
+: str.byte-at ( str i32 -- i32 )
+  :> i :> s
+  i s str.len i32.ge_u [ "str.byte-at: offset out of range" trap ] when
+  s str.addr i i32.add i32.load8_u ;
+
+# Is byte offset i a codepoint boundary of s? (i == length counts.)
+: str.boundary? ( str i32 -- i32 )
+  :> i :> s
+  i s str.len i32.eq
+  [ 1 ]
+  [ i s str.len i32.lt_u
+    [ s str.addr i i32.add i32.load8_u 0xC0 i32.and 0x80 i32.ne ]
+    [ 0 ] if ]
+  if ;
+
+: str.slice ( str i32 i32 -- str )
+  :> n :> start :> s
+  start s str.len i32.gt_u
+  n s str.len start i32.sub i32.gt_u i32.or
+  [ "str.slice: range out of bounds" trap ] when
+  s start str.boundary? i32.eqz
+  s start n i32.add str.boundary? i32.eqz i32.or
+  [ "str.slice: not on a codepoint boundary" trap ] when
+  s str.addr start i32.add n str.from-raw ;
+
+: str.eq ( str str -- i32 )
+  :> b :> a
+  a str.len b str.len i32.ne
+  [ 0 ]
+  [ 1 :> r!
+    a str.len [
+      :> i
+      a str.addr i i32.add i32.load8_u
+      b str.addr i i32.add i32.load8_u
+      i32.ne [ 0 r! leave ] when
+    ] times
+    r ]
+  if ;
+
+: str.concat ( str str -- str )
+  :> b :> a
+  a str.len b str.len i32.add :> n
+  n mem.alloc :> p
+  p a str.addr a str.len memory.copy
+  p a str.len i32.add b str.addr b str.len memory.copy
+  p n str.from-raw ;
+
+# Decode the codepoint at byte offset i: ( codepoint byte-length ).
+: str.cp-at ( str i32 -- i32 i32 )
+  :> i :> s
+  i s str.len i32.ge_u [ "str.cp-at: offset out of range" trap ] when
+  s str.addr i i32.add :> p
+  p i32.load8_u :> b0
+  b0 0x80 i32.lt_u
+  [ b0 1 ]
+  [ b0 0xC0 i32.and 0x80 i32.eq [ "str.cp-at: not on a codepoint boundary" trap ] when
+    b0 0xF8 i32.ge_u [ "str.cp-at: invalid UTF-8" trap ] when
+    b0 0xE0 i32.lt_u
+    [ b0 0x1F i32.and 2 ]
+    [ b0 0xF0 i32.lt_u [ b0 0x0F i32.and 3 ] [ b0 0x07 i32.and 4 ] if ]
+    if
+    :> n :> acc!
+    i n i32.add s str.len i32.gt_u [ "str.cp-at: truncated UTF-8 sequence" trap ] when
+    n 1 i32.sub [
+      1 i32.add p i32.add i32.load8_u :> c
+      c 0xC0 i32.and 0x80 i32.ne [ "str.cp-at: invalid UTF-8" trap ] when
+      acc 6 i32.shl c 0x3F i32.and i32.or acc!
+    ] times
+    acc n ]
+  if ;
+
+# ---------------------------------------------------------------- numbers
+
+: i64.to-str ( i64 -- str )
+  :> v
+  24 mem.alloc :> buf
+  24 :> pos!
+  v 0i64 i64.lt_s :> neg
+  # Work with a non-positive magnitude so that the minimum i64 is exact.
+  v :> u!
+  neg i32.eqz [ 0i64 u i64.sub u! ] when
+  [ pos 1 i32.sub pos!
+    buf pos i32.add
+    0i64 u 10i64 i64.rem_s i64.sub i32.wrap_i64 48 i32.add
+    i32.store8
+    u 10i64 i64.div_s u! ]
+  [ u i64.eqz ] until
+  neg [ pos 1 i32.sub pos!  buf pos i32.add 45 i32.store8 ] when
+  buf pos i32.add 24 pos i32.sub str.from-raw ;
+
+: i32.to-str ( i32 -- str )  i64.extend_i32_s i64.to-str ;
+
+# ---------------------------------------------------------------- I/O
+
+: print ( str -- )
+  :> s
+  "/dev/cons" 1 host.open :> h
+  h s str.addr s str.len host.write drop
+  h host.close drop ;
+
+: println ( str -- )  print "\n" print ;
+
+# Read one line from the console, without its newline.
+# The flag is 1 if a line was read, 0 at end of input.
+: read-line ( -- str i32 )
+  "/dev/cons" 0 host.open :> h
+  256 :> cap!
+  cap mem.alloc :> buf!
+  0 :> n!
+  0 :> eof!
+  [ h buf n i32.add 1 host.read 1 i32.lt_s
+    [ 1 eof! 0 ]
+    [ buf n i32.add i32.load8_u 10 i32.ne ]
+    if ]
+  [ n 1 i32.add n!
+    n cap i32.eq [
+      cap 2 i32.mul mem.alloc :> nb
+      nb buf n memory.copy
+      nb buf!
+      cap 2 i32.mul cap!
+    ] when ]
+  while
+  h host.close drop
+  buf n str.from-raw
+  eof n i32.eqz i32.and i32.eqz ;
+
+# Read a whole file by namespace path, e.g. "/file/etc/hostname".
+# Status is 0 on success or a negative error code.
+: read-file ( str -- str i32 )
+  :> path
+  path 0 host.open :> h
+  h 0 i32.lt_s
+  [ "" h ]
+  [ 4096 :> cap!
+    cap mem.alloc :> buf!
+    0 :> n!
+    0 :> r!
+    [ h buf n i32.add cap n i32.sub host.read r!  r 0 i32.gt_s ]
+    [ n r i32.add n!
+      n cap i32.eq [
+        cap 2 i32.mul mem.alloc :> nb
+        nb buf n memory.copy
+        nb buf!
+        cap 2 i32.mul cap!
+      ] when ]
+    while
+    h host.close drop
+    buf n str.from-raw
+    r 0 i32.lt_s [ r ] [ 0 ] if ]
+  if ;
+
+# Print the entries of a directory, one per line (directories get a
+# trailing "/"). Status is 0 on success or a negative error code.
+: ls ( str -- i32 )
+  :> path
+  path 0 host.open :> h
+  h 0 i32.lt_s
+  [ h ]
+  [ 4096 mem.alloc :> buf
+    0 :> r!
+    [ h buf 4096 host.read r!  r 0 i32.gt_s ]
+    [ 0 :> off!
+      [ off r i32.lt_s ]
+      [ buf off i32.add :> rec
+        rec i32.load :> nlen
+        rec 4 i32.add nlen str.from-raw :> name
+        rec 4 i32.add nlen i32.add 8 i32.add i32.load8_u :> isdir
+        name print
+        isdir [ "/" print ] when
+        "\n" print
+        off 13 nlen i32.add i32.add off! ]
+      while ]
+    while
+    h host.close drop
+    r 0 i32.lt_s [ r ] [ 0 ] if ]
+  if ;
+
+# Current time in nanoseconds since the Unix epoch.
+: now ( -- i64 )
+  "/dev/time" 0 host.open :> h
+  8 mem.alloc :> buf
+  h buf 8 host.read drop
+  h host.close drop
+  buf i64.load ;

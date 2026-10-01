@@ -1,0 +1,12 @@
+[package]
+name = "chasm-core"
+description = "Chasm compiler core: lexer, parser, effect checker, dependency graph, wasm emitter. No I/O."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wasm-encoder.workspace = true
+wasmparser.workspace = true
+serde.workspace = true
+serde_json.workspace = true

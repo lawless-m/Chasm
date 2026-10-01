@@ -1,6 +1,6 @@
 # Chasm: Language Specification
 
-Status: draft v0.6. Chasm source files use the `.chasm` extension. Companion to `ARCHITECTURE.md`. Sections marked **TBD** are not yet decided.
+Status: draft v0.7 (M1 decisions recorded; see section 12). Chasm source files use the `.chasm` extension. Companion to `ARCHITECTURE.md`. Sections marked **TBD** are not yet decided.
 
 ## 1. Types
 
@@ -28,7 +28,7 @@ A word's effect lists checker types. Its wasm function type is the effect with e
 | float with `f32` suffix | `f32` | `1.5f32` |
 | double-quoted | `str` | `"hello"` |
 
-String literals are UTF-8, immutable, and live in read-only data. Escapes: `\"`, `\\`, `\n`, `\t`, `\u{XXXX}`. Integer literals that do not fit their type are a compile error.
+String literals are UTF-8, immutable, and live in read-only data. Escapes: `\"`, `\\`, `\n`, `\t`, `\u{XXXX}`. Integer literals that do not fit their type are a compile error; an unsuffixed integer may be anything from -2^31 to 2^32-1 (values above 2^31-1 are taken as their bit pattern), and likewise for `i64`.
 
 ## 3. Numeric primitives
 
@@ -36,7 +36,7 @@ The numeric primitive set is **exactly the wasm numeric instruction set**, under
 
 Semantics are wasm's, including traps (integer divide by zero, overflowing float-to-int conversion). The language adds no checks and no abstractions here; the language reference points at the wasm specification for each instruction.
 
-Comparisons return `i32` 0 or 1. Loads and stores take `i32` addresses; alignment and offset immediates are **TBD** (likely natural alignment, offset 0, with explicit variants later).
+Comparisons return `i32` 0 or 1. Loads and stores take `i32` addresses with natural alignment and offset 0; stores take `( addr value -- )`. Explicit alignment/offset variants may come later.
 
 ## 4. Strings
 
@@ -208,5 +208,22 @@ Library words built on this, shipped with the language: `print`, `read-line`, `r
 
 ## 11. Open items
 
-1. Alignment and offset immediates on loads and stores.
-2. Module or namespace structure, if any, for libraries.
+1. Alignment and offset immediates on loads and stores: v1 is natural alignment, offset 0 (section 3).
+2. Module or namespace structure, if any, for libraries: a flat dictionary until it hurts.
+
+## 12. Decisions taken in M1
+
+Recorded here so the spec matches the compiler. `docs/reference.md` is the user-facing summary.
+
+1. **Low-level primitives** added so that library code can be written in Chasm: `str.addr ( str -- i32 )`, `str.from-raw ( i32 i32 -- str )` (unchecked), `mem.alloc ( i32 -- i32 )` (bump, zeroed, 8-byte aligned), and `trap ( str -- )`, which stops the program with a message.
+2. **Prelude.** `str.byte-at`, `str.slice`, `str.eq`, `str.concat`, `str.cp-at` are library words written in Chasm on top of those primitives, compiled with every program. So are `str.boundary? ( str i32 -- i32 )`, `i32.to-str`, `i64.to-str`, `print`, `println`, `read-line`, `read-file`, `ls` and `now`. `chasm words` lists them.
+3. **Library word effects.** `read-line ( -- str i32 )` (flag 0 at end of input), `read-file ( str -- str i32 )` (namespace path; status 0 or an error code), `ls ( str -- i32 )` (prints entries; status), `now ( -- i64 )` (nanoseconds since the Unix epoch).
+4. **`/dev/time`** reads 8 bytes: a little-endian `u64` of nanoseconds since the Unix epoch, then end of file.
+5. **Divergence.** `leave` and `trap` end the quotation they appear in; code after them is `E_UNREACHABLE`. A branch that diverges need not match the other branch, and a `when` body that diverges is accepted.
+6. **`until`** runs its body, then its condition, and repeats until the condition is non-zero.
+7. **Tests.** The expected part of `test word : body -> expected` is the maximal run of literal tokens after `->`. Tests are processed in file order, so a test must come after its word is defined or declared. Tests may name primitives. Each test runs in a fresh module instance with a captured console.
+8. **Type variables** arise only from `array.new` and the element types of the array words. They are resolved by plain unification against later uses (assertions, locals, calls, the word's effect); if one is never fixed the error is `E_AMBIGUOUS_TYPE`. User effects never contain them.
+9. **Quotation values** take no inputs, as specified in 7a: their effect is `( -- outputs )`. Functions with inputs are passed as `'word`.
+10. **Redefinition in files.** Top-level forms are processed in order. A redefinition with the same effect replaces the body for every caller; the last one wins. A word may call itself.
+11. **Names.** Primitive names cannot be defined, declared, or used as locals. Locals shadow user words.
+

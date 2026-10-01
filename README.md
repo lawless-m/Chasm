@@ -1,0 +1,29 @@
+# Chasm
+
+Chasm (Chuck-Wasm, after Chuck Moore) is a typed, concatenative language in
+the Forth and Factor family that compiles to WebAssembly. Every word declares
+its stack effect, and the checker verifies each body against it.
+
+```
+: square ( i32 -- i32 )  dup i32.mul ;
+test square : 3 square -> 9
+
+: main ( -- )  "7 squared is " print  7 square i32.to-str println ;
+```
+
+```
+$ cargo run -p chasm-cli -- run examples/basics.chasm
+$ cargo run -p chasm-cli -- test examples/arrays.chasm
+$ cargo run -p chasm-cli -- check --json examples/strings.chasm
+```
+
+- `docs/reference.md`: how to write Chasm (start here)
+- `ARCHITECTURE.md`: goals, runtime, milestones, decisions
+- `LANGUAGE.md`: the v1 language specification
+- `FUTURE.md`: what is deliberately not v1
+- `examples/`: worked examples, each with tests
+
+Status: milestones M0 (skeleton) and M1 (declared effects to wasm, CLI,
+native host) are implemented. The REPL is M2.
+
+Licence: MIT.
