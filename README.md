@@ -15,15 +15,21 @@ test square : 3 square -> 9
 $ cargo run -p chasm-cli -- run examples/basics.chasm
 $ cargo run -p chasm-cli -- test examples/arrays.chasm
 $ cargo run -p chasm-cli -- check --json examples/strings.chasm
+$ cargo run -p chasm-cli -- repl
 ```
+
+`chasm repl` is interactive: type definitions and lines, see the stack after
+each, redefine words live.
 
 - `docs/reference.md`: how to write Chasm (start here)
 - `ARCHITECTURE.md`: goals, runtime, milestones, decisions
 - `LANGUAGE.md`: the v1 language specification
 - `FUTURE.md`: what is deliberately not v1
-- `examples/`: worked examples, each with tests
+- `examples/`: worked examples, each with tests (`docs/examples.md`: the corpus and benchmark plan)
+- `web/README.md`: the REPL in the browser
 
-Status: milestones M0 (skeleton) and M1 (declared effects to wasm, CLI,
-native host) are implemented. The REPL is M2.
+Status: milestones M0 (skeleton), M1 (declared effects to wasm, CLI, native
+host) and M2 (interactive REPL, native and in the browser) are implemented.
+M3 (dependency-graph tooling) is next.
 
 Licence: MIT.

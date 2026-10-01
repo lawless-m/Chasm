@@ -11,6 +11,8 @@ use chasm_core::layout as L;
 pub mod namespace;
 #[cfg(feature = "native")]
 pub mod native;
+#[cfg(feature = "native")]
+pub mod repl;
 
 /// The four I/O operations, over a namespace of paths.
 pub trait Host {

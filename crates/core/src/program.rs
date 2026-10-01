@@ -140,8 +140,6 @@ impl Compilation {
 pub fn compile(sources: &[Source], opts: &Options) -> Compilation {
     let mut ctx = Ctx::default();
     let mut diags = Vec::new();
-    let mut tests: Vec<TestInfo> = Vec::new();
-    let mut test_words: Vec<WordId> = Vec::new();
 
     let mut all: Vec<(Source, Origin)> = Vec::new();
     if opts.prelude {
@@ -155,190 +153,27 @@ pub fn compile(sources: &[Source], opts: &Options) -> Compilation {
         let items = lex(&src.name, &src.text).and_then(|t| parse(&src.name, &t));
         match items {
             Ok(items) => {
-                for it in &items {
-                    match it {
-                        Item::Def { name, .. } | Item::Declare { name, .. } => {
-                            ctx.all_names.insert(name.clone());
-                        }
-                        Item::Test { .. } => {}
-                    }
-                }
+                register_names(&mut ctx, &items);
                 parsed.push((items, *origin));
             }
             Err(d) => diags.push(d),
         }
     }
 
+    let mut prog = Program {
+        diagnostics: diags,
+        ..Program::default()
+    };
     for (items, origin) in parsed {
         for item in items {
-            match item {
-                Item::Declare { name, effect, loc } => {
-                    if let Some(d) = check_new_name(&name, &loc) {
-                        diags.push(d);
-                        continue;
-                    }
-                    match ctx.by_name.get(&name) {
-                        Some(&id) => {
-                            if ctx.words[id].effect != effect {
-                                diags.push(
-                                    Diagnostic::error(
-                                        codes::E_DECLARE_MISMATCH,
-                                        format!(
-                                            "`{name}` is already declared {} and cannot be declared {effect}",
-                                            ctx.words[id].effect
-                                        ),
-                                        loc,
-                                    )
-                                    .with_word(&name),
-                                );
-                            }
-                        }
-                        None => {
-                            ctx.add_word(new_word(name, effect, origin, WordKind::Named, loc));
-                        }
-                    }
-                }
-                Item::Def {
-                    name,
-                    effect,
-                    body,
-                    export,
-                    loc,
-                } => {
-                    if let Some(d) = check_new_name(&name, &loc) {
-                        diags.push(d);
-                        continue;
-                    }
-                    let Some(effect) = effect else {
-                        diags.push(
-                            Diagnostic::error(
-                                codes::E_SYNTAX,
-                                format!("`: {name}` must be followed by its effect, e.g. `: {name} ( i32 -- i32 )`"),
-                                loc,
-                            )
-                            .with_word(&name),
-                        );
-                        continue;
-                    };
-                    let id = match ctx.by_name.get(&name) {
-                        Some(&id) => {
-                            let w = &ctx.words[id];
-                            if w.effect != effect {
-                                let dependants = graph_of(&ctx).callers(&name);
-                                let (code, what) = if w.body.is_none() && !w.failed {
-                                    (codes::E_DECLARE_MISMATCH, "declared")
-                                } else {
-                                    (codes::E_REDEFINE_EFFECT, "defined")
-                                };
-                                let mut d = Diagnostic::error(
-                                    code,
-                                    format!(
-                                        "`{name}` is {what} {} but this definition has effect {effect}; an effect can only change deliberately",
-                                        w.effect
-                                    ),
-                                    loc,
-                                )
-                                .with_word(&name);
-                                d.declared_effect = Some(w.effect.to_string());
-                                d.dependants = Some(dependants);
-                                diags.push(d);
-                                continue;
-                            }
-                            id
-                        }
-                        None => ctx.add_word(new_word(
-                            name.clone(),
-                            effect.clone(),
-                            origin,
-                            WordKind::Named,
-                            loc.clone(),
-                        )),
-                    };
-                    if export {
-                        ctx.words[id].export = true;
-                    }
-                    match compile_body(&mut ctx, &name, Mode::Declared(&effect), &body, &loc, &[]) {
-                        Ok(out) => {
-                            let w = &mut ctx.words[id];
-                            w.body = Some(out.compiled);
-                            w.callees = out.callees;
-                            w.failed = false;
-                            w.loc = loc;
-                        }
-                        Err(d) => {
-                            ctx.words[id].failed = true;
-                            diags.push(d);
-                        }
-                    }
-                }
-                Item::Test {
-                    word,
-                    body,
-                    expected,
-                    loc,
-                } => {
-                    if !ctx.by_name.contains_key(&word) && !prims::is_builtin(&word) {
-                        let msg = if ctx.all_names.contains(&word) {
-                            format!("test of `{word}` comes before `{word}` is defined; move the test below it or `declare` the word first")
-                        } else {
-                            format!("test names unknown word `{word}`")
-                        };
-                        diags.push(Diagnostic::error(codes::E_UNDEFINED, msg, loc));
-                        continue;
-                    }
-                    let index = tests.len();
-                    let tname = format!("[test {word} #{index}]");
-                    let out = match compile_body(&mut ctx, &tname, Mode::Derived, &body, &loc, &[])
-                    {
-                        Ok(o) => o,
-                        Err(d) => {
-                            diags.push(d);
-                            continue;
-                        }
-                    };
-                    let want: Vec<Ty> = expected.iter().map(|(l, _)| l.ty()).collect();
-                    if want != out.effect.outputs {
-                        diags.push(
-                            Diagnostic::error(
-                                codes::E_TEST_TYPE,
-                                format!(
-                                    "test of `{word}` expects ( {} ) but its body leaves ( {} )",
-                                    names(&want).join(" "),
-                                    names(&out.effect.outputs).join(" ")
-                                ),
-                                loc,
-                            )
-                            .with_word(&word)
-                            .with_stacks(names(&want), names(&out.effect.outputs)),
-                        );
-                        continue;
-                    }
-                    let tid = ctx.add_word(Word {
-                        name: tname,
-                        effect: out.effect.clone(),
-                        body: Some(out.compiled),
-                        failed: false,
-                        export: false,
-                        origin,
-                        kind: WordKind::Test,
-                        loc: loc.clone(),
-                        callees: out.callees,
-                    });
-                    test_words.push(tid);
-                    tests.push(TestInfo {
-                        index,
-                        word,
-                        export_name: format!("__test_{index}"),
-                        expected: expected.iter().map(|(l, _)| Value::from(l)).collect(),
-                        types: names(&want),
-                        pending: false,
-                        location: loc,
-                        result_types: want,
-                    });
-                }
-            }
+            process_item(&mut ctx, item, origin, &mut prog);
         }
     }
+    let Program {
+        diagnostics: mut diags,
+        mut tests,
+        test_words,
+    } = prog;
 
     // main must be ( -- ).
     let has_main = match ctx.by_name.get("main") {
@@ -425,6 +260,213 @@ pub fn compile(sources: &[Source], opts: &Options) -> Compilation {
     }
 }
 
+/// Program state the per-item rules accumulate into.
+#[derive(Default)]
+pub(crate) struct Program {
+    pub diagnostics: Vec<Diagnostic>,
+    pub tests: Vec<TestInfo>,
+    pub test_words: Vec<WordId>,
+}
+
+/// Record every name the items define or declare, for "used before it is
+/// defined" messages.
+pub(crate) fn register_names(ctx: &mut Ctx, items: &[Item]) {
+    for it in items {
+        match it {
+            Item::Def { name, .. } | Item::Declare { name, .. } => {
+                ctx.all_names.insert(name.clone());
+            }
+            Item::Test { .. } => {}
+        }
+    }
+}
+
+/// Apply one top-level form: declare, define or redefine a word, or record a
+/// test. Returns the word id when a word got a body or was newly declared.
+pub(crate) fn process_item(
+    ctx: &mut Ctx,
+    item: Item,
+    origin: Origin,
+    p: &mut Program,
+) -> Option<WordId> {
+    match item {
+        Item::Declare { name, effect, loc } => {
+            if let Some(d) = check_new_name(&name, &loc) {
+                p.diagnostics.push(d);
+                return None;
+            }
+            match ctx.by_name.get(&name) {
+                Some(&id) => {
+                    if ctx.words[id].effect != effect {
+                        p.diagnostics.push(
+                            Diagnostic::error(
+                                codes::E_DECLARE_MISMATCH,
+                                format!(
+                                    "`{name}` is already declared {} and cannot be declared {effect}",
+                                    ctx.words[id].effect
+                                ),
+                                loc,
+                            )
+                            .with_word(&name),
+                        );
+                    }
+                }
+                None => {
+                    return Some(ctx.add_word(new_word(
+                        name,
+                        effect,
+                        origin,
+                        WordKind::Named,
+                        loc,
+                    )));
+                }
+            }
+            None
+        }
+        Item::Def {
+            name,
+            effect,
+            body,
+            export,
+            loc,
+        } => {
+            if let Some(d) = check_new_name(&name, &loc) {
+                p.diagnostics.push(d);
+                return None;
+            }
+            let Some(effect) = effect else {
+                p.diagnostics.push(
+                    Diagnostic::error(
+                        codes::E_SYNTAX,
+                        format!("`: {name}` must be followed by its effect, e.g. `: {name} ( i32 -- i32 )`"),
+                        loc,
+                    )
+                    .with_word(&name),
+                );
+                return None;
+            };
+            let id = match ctx.by_name.get(&name) {
+                Some(&id) => {
+                    let w = &ctx.words[id];
+                    if w.effect != effect {
+                        let dependants = graph_of(ctx).callers(&name);
+                        let (code, what) = if w.body.is_none() && !w.failed {
+                            (codes::E_DECLARE_MISMATCH, "declared")
+                        } else {
+                            (codes::E_REDEFINE_EFFECT, "defined")
+                        };
+                        let mut d = Diagnostic::error(
+                            code,
+                            format!(
+                                "`{name}` is {what} {} but this definition has effect {effect}; an effect can only change deliberately",
+                                w.effect
+                            ),
+                            loc,
+                        )
+                        .with_word(&name);
+                        d.declared_effect = Some(w.effect.to_string());
+                        d.dependants = Some(dependants);
+                        p.diagnostics.push(d);
+                        return None;
+                    }
+                    id
+                }
+                None => ctx.add_word(new_word(
+                    name.clone(),
+                    effect.clone(),
+                    origin,
+                    WordKind::Named,
+                    loc.clone(),
+                )),
+            };
+            if export {
+                ctx.words[id].export = true;
+            }
+            match compile_body(ctx, &name, Mode::Declared(&effect), &body, &loc, &[]) {
+                Ok(out) => {
+                    let w = &mut ctx.words[id];
+                    w.body = Some(out.compiled);
+                    w.callees = out.callees;
+                    w.failed = false;
+                    w.loc = loc;
+                    Some(id)
+                }
+                Err(d) => {
+                    ctx.words[id].failed = true;
+                    p.diagnostics.push(d);
+                    None
+                }
+            }
+        }
+        Item::Test {
+            word,
+            body,
+            expected,
+            loc,
+        } => {
+            if !ctx.by_name.contains_key(&word) && !prims::is_builtin(&word) {
+                let msg = if ctx.all_names.contains(&word) {
+                    format!("test of `{word}` comes before `{word}` is defined; move the test below it or `declare` the word first")
+                } else {
+                    format!("test names unknown word `{word}`")
+                };
+                p.diagnostics
+                    .push(Diagnostic::error(codes::E_UNDEFINED, msg, loc));
+                return None;
+            }
+            let index = p.tests.len();
+            let tname = format!("[test {word} #{index}]");
+            let out = match compile_body(ctx, &tname, Mode::Derived, &body, &loc, &[]) {
+                Ok(o) => o,
+                Err(d) => {
+                    p.diagnostics.push(d);
+                    return None;
+                }
+            };
+            let want: Vec<Ty> = expected.iter().map(|(l, _)| l.ty()).collect();
+            if want != out.effect.outputs {
+                p.diagnostics.push(
+                    Diagnostic::error(
+                        codes::E_TEST_TYPE,
+                        format!(
+                            "test of `{word}` expects ( {} ) but its body leaves ( {} )",
+                            names(&want).join(" "),
+                            names(&out.effect.outputs).join(" ")
+                        ),
+                        loc,
+                    )
+                    .with_word(&word)
+                    .with_stacks(names(&want), names(&out.effect.outputs)),
+                );
+                return None;
+            }
+            let tid = ctx.add_word(Word {
+                name: tname,
+                effect: out.effect.clone(),
+                body: Some(out.compiled),
+                failed: false,
+                export: false,
+                origin,
+                kind: WordKind::Test,
+                loc: loc.clone(),
+                callees: out.callees,
+            });
+            p.test_words.push(tid);
+            p.tests.push(TestInfo {
+                index,
+                word,
+                export_name: format!("__test_{index}"),
+                expected: expected.iter().map(|(l, _)| Value::from(l)).collect(),
+                types: names(&want),
+                pending: false,
+                location: loc,
+                result_types: want,
+            });
+            None
+        }
+    }
+}
+
 pub fn validate(bytes: &[u8]) -> Result<(), String> {
     wasmparser::Validator::new()
         .validate_all(bytes)
@@ -432,7 +474,13 @@ pub fn validate(bytes: &[u8]) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-fn new_word(name: String, effect: Effect, origin: Origin, kind: WordKind, loc: Location) -> Word {
+pub(crate) fn new_word(
+    name: String,
+    effect: Effect,
+    origin: Origin,
+    kind: WordKind,
+    loc: Location,
+) -> Word {
     Word {
         name,
         effect,
@@ -446,7 +494,7 @@ fn new_word(name: String, effect: Effect, origin: Origin, kind: WordKind, loc: L
     }
 }
 
-fn check_new_name(name: &str, loc: &Location) -> Option<Diagnostic> {
+pub(crate) fn check_new_name(name: &str, loc: &Location) -> Option<Diagnostic> {
     if prims::is_builtin(name)
         || matches!(name, ":>" | "[" | "]" | "(" | ")" | ";" | ":" | "--" | "->")
     {
@@ -466,7 +514,7 @@ fn check_new_name(name: &str, loc: &Location) -> Option<Diagnostic> {
     None
 }
 
-fn graph_of(ctx: &Ctx) -> Graph {
+pub(crate) fn graph_of(ctx: &Ctx) -> Graph {
     let mut g = Graph::default();
     for w in &ctx.words {
         if w.kind == WordKind::Test {

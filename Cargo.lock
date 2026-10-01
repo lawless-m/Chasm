@@ -156,7 +156,17 @@ name = "chasm-runtime"
 version = "0.1.0"
 dependencies = [
  "chasm-core",
+ "serde",
  "wasmtime",
+]
+
+[[package]]
+name = "chasm-web"
+version = "0.1.0"
+dependencies = [
+ "chasm-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

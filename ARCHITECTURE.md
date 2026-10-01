@@ -1,6 +1,6 @@
 # Chasm: Architecture and Milestones
 
-Status: draft v0.9 (M0 and M1 implemented; decisions in section 13). **Chasm** (Chuck-Wasm, after Chuck Moore) is a typed, concatenative language that compiles to WebAssembly, with an interactive REPL, written in Rust. Source files use the `.chasm` extension; the CLI binary is `chasm`.
+Status: draft v0.10 (M0 to M2 implemented; decisions in sections 13 and 14). **Chasm** (Chuck-Wasm, after Chuck Moore) is a typed, concatenative language that compiles to WebAssembly, with an interactive REPL, written in Rust. Source files use the `.chasm` extension; the CLI binary is `chasm`.
 
 ## 1. Goals
 
@@ -28,8 +28,8 @@ Licence: MIT.
 |---|---|---|
 | `core` | Lexer, AST, effect checker, dependency graph, wasm emitter, word database | **No I/O.** Builds to native and wasm32 unchanged. |
 | `runtime` | Host-side support: data stack, function table, imports (print, memory, time) | Thin; separate native and browser implementations behind one trait. |
-| `cli` | `check`, `build`, `run`, `deps`, `used-by`, `unresolved`, `test` | Text and JSON output on every command. |
-| `web` | Browser REPL; loads `core` as wasm | Static files only, no server. |
+| `cli` | `check`, `build`, `run`, `deps`, `used-by`, `unresolved`, `test`, `repl` | Text and JSON output on every command. |
+| `web` | `web/`: the browser REPL, over `crates/web` (`chasm-web`: the core's REPL session behind a C ABI, compiled to wasm32) | Static files only, no server. |
 | `docs` | Language reference, worked examples | Treated as part of the product (see section 9). |
 
 Rule: anything the CLI, REPL and exporter all need lives in `core`.
@@ -51,7 +51,7 @@ Type representation: an effect is a list of input types and a list of output typ
 - **Shared function table** (`funcref`). Each word owns a slot. Callers use `call_indirect`.
 - **Shared linear memory**, imported by every module.
 - **Host imports**: four I/O words over a namespace. See section 5d.
-- **Per-word modules in the REPL.** Each new or redefined word compiles to a small module that imports the shared table and memory. Compile cost is expected to be small enough for instant feedback; measure early (see milestone M2).
+- **Per-step modules in the REPL.** Each REPL step compiles the words it defines (named words, quotation values, test thunks, and the step's anonymous line word) into one small module that imports the shared memory and table. Shape and measured cost in section 14.
 - **Memory layout.** One linear memory, fixed regions at fixed offsets, agreed by the REPL, host and exporter:
 
   | Offset | Region | Notes |
@@ -132,7 +132,7 @@ These are the only host imports. **Everything else is a path.** Adding a capabil
 **Transport: a submission/completion ring from day one.** Each `host.*` word writes a request into a ring in linear memory, waits for the completion, and returns the result. The words look synchronous to the language; asynchrony lives entirely in the host.
 
 - **Native host**: services the ring with files, an HTTP client, a 9p client, and optionally real io_uring as the backend.
-- **Browser host**: the wasm instance runs in a Web Worker. The main thread services the ring with `fetch`, WebSocket (for 9p) and the DOM; the worker blocks on `Atomics.wait`. This is what makes blocking reads possible in the browser at all.
+- **Browser host**: the wasm instance runs in a Web Worker. The main thread services the ring with `fetch`, WebSocket (for 9p) and the DOM; the worker blocks on `Atomics.wait` on the doorbell cell until the main thread stores 1 and notifies. This is what makes blocking reads possible in the browser at all.
 
 **What this buys:**
 - `check` can list the paths a word opens, so a host lacking `/file` can say so before running.
@@ -140,7 +140,7 @@ These are the only host imports. **Everything else is a path.** Adding a capabil
 - WASI export is a mapping of four words and a path table, not an API translation.
 - One I/O idiom for Claude Code to learn, and it is the Unix one.
 
-**Cost:** the runtime layer is built properly in M1 rather than later, and browser `run` mode depends on the worker in M2. Error codes and the directory record encoding are specified in `LANGUAGE.md`.
+**Cost:** the runtime layer is built properly in M1 rather than later, and the browser REPL depends on the worker (section 14). Error codes and the directory record encoding are specified in `LANGUAGE.md`.
 
 ## 5e. Entry points and exports
 
@@ -248,12 +248,32 @@ Heavy native batch work (large test corpora, benchmarks, Binaryen runs over big 
 
 ## 13. Decisions taken in M0 and M1
 
-1. **Crates.** `crates/core` (package `chasm-core`), `crates/runtime` (`chasm-runtime`, wasmtime behind the default `native` feature), `crates/cli` (`chasm-cli`, binary `chasm`). `web/` is a placeholder until M2. `core` builds for `wasm32-unknown-unknown`, and CI checks that.
-2. **One doorbell import.** The compiled module imports exactly one host function, `chasm.ring_enter ( -- )`. The four `host.*` words are compiled code: each writes a submission entry into the ring, calls the doorbell, and takes one completion. The native host services the ring synchronously inside the doorbell; the browser host will post to the main thread and `Atomics.wait`. Ring layout (in `core::layout`): heads and tails at 64 KiB; 256 submission entries of 32 bytes (`op, user, a0, a1, a2`); 256 completion entries of 16 bytes (`user, result`). Opcodes: 1 open, 2 read, 3 write, 4 close.
-3. **Runtime cells** in the reserved region: trap message address and length at `0x100`/`0x104`, trapping word at `0x108`/`0x10C`, heap pointer at `0x110`, data stack pointer (M2) at `0x114`. Address 0 stays invalid.
+1. **Crates.** `crates/core` (package `chasm-core`), `crates/runtime` (`chasm-runtime`, wasmtime behind the default `native` feature), `crates/cli` (`chasm-cli`, binary `chasm`). `crates/web` (`chasm-web`) is the browser's compiler and `web/` the browser REPL (section 14). `core` and `chasm-web` build for `wasm32-unknown-unknown`, and CI checks that.
+2. **One doorbell import.** The compiled module imports exactly one host function, `chasm.ring_enter ( -- )`. The four `host.*` words are compiled code: each writes a submission entry into the ring, calls the doorbell, and takes one completion. The native host services the ring synchronously inside the doorbell; the browser host posts to the main thread and `Atomics.wait`s on the doorbell cell. Ring layout (in `core::layout`): heads and tails at 64 KiB; 256 submission entries of 32 bytes (`op, user, a0, a1, a2`); 256 completion entries of 16 bytes (`user, result`). Opcodes: 1 open, 2 read, 3 write, 4 close.
+3. **Runtime cells** in the reserved region: trap message address and length at `0x100`/`0x104`, trapping word at `0x108`/`0x10C`, heap pointer at `0x110`, data stack pointer at `0x114`, browser doorbell at `0x118`. Address 0 stays invalid.
 4. **Trap messages.** `trap`, bounds checks, unresolved stubs and out-of-memory call a runtime helper that writes the message and word into those cells, then executes `unreachable`. The host reads them back. Plain wasm traps (division by zero) are named from the module's name section via the backtrace.
-5. **M1 module shape.** One module per program: runtime helpers (`rt.alloc`, `rt.trap`, `rt.ring`), then one function per word in definition order. Calls are direct. Every word also owns a slot in a funcref table (slot = word index) for `'word` and `call` (`call_indirect`). The module defines and exports its memory; the M2 REPL will import it instead. Literals start at 1 MiB, and the heap follows them.
+5. **M1 module shape.** One module per program: runtime helpers (`rt.alloc`, `rt.trap`, `rt.ring`), then one function per word in definition order. Calls are direct. Every word also owns a slot in a funcref table (slot = word index) for `'word` and `call` (`call_indirect`). The module defines and exports its memory; the REPL's step modules import it instead (section 14). `check`, `build`, `run` and `test` use this whole-program path; the REPL path sits beside it. Literals start at 1 MiB, and the heap follows them.
 6. **Functions as values** (`'word`, quotation values, `call`, address-taken edges) were cheap on top of the table, so they landed in M1 rather than M3.
 7. **Two-pass checking.** Each body is walked twice by the same checker: a checking pass that settles type variables, then an emitting pass with the final substitution. Blocks take the whole checker stack as parameters (multi-value), so a quotation under a combinator can reach any value below it.
 8. **Text from JSON.** Every CLI command builds the JSON report; the text output is rendered from that JSON value.
 9. **Host namespace.** `/file/<path>` is the host path `/<path>` (off with `--no-file`). `--mount name=DIR` mounts a local directory at `/mnt/name`, and `..` is refused under mounts. `/net/...` and 9p sources return "not supported" until M5.
+
+## 14. Decisions taken in M2
+
+1. **Compile-edit cycle (measured).** Native REPL, release build, wasmtime 49 with Cranelift, on the home machine (AMD Ryzen 5 5500, Debian), 2026-10-01. Input: `examples/basics.chasm` followed by 20 alternating redefinitions of `square`, 20 lines `3 square drop` and 10 lines `"abc" "def" str.concat drop`, fed as `RUSTUP_TOOLCHAIN=1.99.0 cargo run -q --release -p chasm-cli -- repl --json < tmp/measure.chasm > tmp/measure.jsonl` (67 chunks; timings from `results.timing`). Medians (maximum in brackets):
+
+   | Step | Compile (checker + step module) | Instantiate (place literals, Cranelift, instantiate, table installs) | Run |
+   |---|---|---|---|
+   | Definition (27 chunks) | 55 µs (77 µs) | 3.0 ms (4.1 ms) | 3 µs |
+   | Redefinition of `square` (21) | 53 µs (74 µs) | 3.0 ms (3.3 ms) | 3 µs |
+   | Bare line (30) | 56 µs (168 µs) | 3.2 ms (3.9 ms) | 2 µs |
+
+   Start-up, including engine creation and installing the prelude as one step module: 11 ms wall time for `chasm repl < /dev/null`. A step costs about 3 ms end to end, almost all of it in wasmtime compiling and instantiating the step module; the checker and assembler take about 50 µs. That meets the "small enough for instant feedback" expectation of section 5: a step is well under the roughly 100 ms at which a delay becomes noticeable.
+2. **Step modules.** `module::assemble_step` builds one module per REPL step. It imports `chasm.ring_enter`, `chasm.memory` and `chasm.table` (a funcref table), carries its own copy of the runtime helpers `rt.alloc`, `rt.trap` and `rt.ring` at function indices 1 to 3, and exports each of its words as `w<id>`. The host sets table slot `id` to that export, so the slot of a word is its id. Calls between words are `call_indirect` through the table (`Ctx::indirect_calls`), which is how a redefinition reaches existing callers. A step module has no memory, table, element or data section. The browser variant declares the memory import shared, with 4 MiB initial and 64 MiB maximum (`SHARED_MAX_PAGES`).
+3. **Session and host contract.** `core::repl::Session` holds the word database and the types on the memory data stack. `step(text, heap_ptr)` returns a `Step`: diagnostics, module bytes, installs, table size, literal bytes and address, defined words, the line, and the tests to run. The host writes the literal bytes at the heap pointer and moves the heap pointer past them (8-aligned), grows the table, instantiates the module, sets the slots, runs the tests, then runs the line. On success it commits the line's output types as the session's stack. A step with errors still places its literals and installs the words it added, so a word declared or failing to check is installed as its unresolved stub, as in a file; it runs no line and no tests.
+4. **Memory data stack.** One 8-byte slot per wasm value from `DATA_STACK_BASE` (`STACK_SLOT`): `i32` and `f32` in the low 4 bytes, `i64` and `f64` the whole slot; `str` and `array T` take two slots, address then length. `DATA_STACK_PTR` holds the next free slot. A line compiles to a function of wasm type `( ) -> ( )` named `[line N]` (`Mode::Line`, `WordKind::Line`): its prologue pops its inputs off the memory stack, its epilogue pushes its outputs and traps with "data stack overflow" past `DATA_STACK_END`. Every line takes a table slot that is never freed.
+5. **Literals at the REPL.** `Ctx::begin_literals(heap_ptr)` starts each step's literal window at the heap pointer; literals are deduplicated within a step only.
+6. **Traps.** Before a line runs, the host saves the bytes of the memory stack and `DATA_STACK_PTR`; after a trap it restores both and the session keeps its old stack. It then clears `TRAP_MSG_LEN` so the next trap is reported cleanly.
+7. **Tests at the REPL.** A test runs as soon as its word has a body, by calling its thunk through the table in the shared instance. A test of a declared word waits and runs when the word gets a body, and a word's tests run again whenever it is redefined. The console output of tests is not captured.
+8. **`chasm repl`.** Reads stdin line by line, continuing a chunk while a definition or quotation is open (`repl::needs_more`), and builds one report per chunk; `--json` prints each as one line, with the program's console captured into `results.output`. In text mode the program's console is the terminal and shares stdin with the REPL.
+9. **Browser.** `crates/web` exposes the session through a hand-written C ABI (`chasm_new`, `chasm_step`, `chasm_line_done`, `chasm_needs_more`, result buffers), not wasm-bindgen: the API is small, and the installed wasm-bindgen CLI did not match the crate version. The main thread owns the compiler session, the shared memory and the ring (`web/ring.js`, the same semantics as `service_ring`). The worker owns the funcref table and every step's instance, because tables cannot be shared between threads. `ring_enter` stores 0 in the doorbell, posts `ring` and waits; the main thread services the ring, stores 1 and notifies. JavaScript reads the layout from the compiler (`layout::constants`). The browser namespace has `/dev/cons` output and `/dev/time` only; console reads return end of input. The page needs cross-origin isolation (`Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Embedder-Policy: require-corp`), which `web/serve.py` provides.

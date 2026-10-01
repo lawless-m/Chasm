@@ -1,0 +1,14 @@
+[package]
+name = "chasm-web"
+description = "Chasm compiler core for the browser: the REPL session behind a C ABI, built to wasm32-unknown-unknown."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+chasm-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true

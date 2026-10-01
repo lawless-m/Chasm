@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chasm REPL</title>
+<style>
+  :root { color-scheme: light dark; --fg: #1d1d1f; --bg: #fbfbf8; --dim: #6b6b6b; --err: #b3261e; --ok: #1b6e3a; }
+  @media (prefers-color-scheme: dark) { :root { --fg: #e6e6e3; --bg: #161616; --dim: #9a9a9a; --err: #ff8a80; --ok: #8fd19e; } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 ui-monospace, "DejaVu Sans Mono", monospace; }
+  main { max-width: 900px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  p { margin: 0 0 12px; color: var(--dim); }
+  #out { flex: 1; overflow: auto; margin: 0; white-space: pre-wrap; }
+  .err { color: var(--err); } .stack { color: var(--ok); } .echo, .hint { color: var(--dim); }
+  .line { display: flex; gap: 8px; border-top: 1px solid var(--dim); padding-top: 8px; }
+  textarea { flex: 1; resize: vertical; min-height: 2.6em; font: inherit; color: inherit; background: transparent; border: 0; outline: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Chasm REPL</h1>
+  <p>Enter runs a chunk; an open <code>:</code> definition or <code>[</code> quotation continues on the next line. Shift+Enter adds a newline.</p>
+  <pre id="out"></pre>
+  <div class="line"><span id="prompt">&gt;</span><textarea id="in" rows="2" disabled spellcheck="false" autocomplete="off"></textarea></div>
+</main>
+<script type="module" src="main.js"></script>
+</body>
+</html>

@@ -11,4 +11,5 @@ native = ["dep:wasmtime"]
 
 [dependencies]
 chasm-core.workspace = true
+serde.workspace = true
 wasmtime = { workspace = true, optional = true }

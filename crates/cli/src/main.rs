@@ -10,7 +10,8 @@ use std::process::ExitCode;
 
 use chasm_core::{compile, Compilation, Diagnostic, Location, Options, Source};
 use chasm_runtime::namespace::{Config, Console};
-use chasm_runtime::native::{run_tests, Runner};
+use chasm_runtime::native::{run_tests, Runner, TestStatus};
+use chasm_runtime::repl::{NativeRepl, Outcome};
 use clap::{Args, Parser, Subcommand};
 use serde_json::{json, Value as J};
 
@@ -94,6 +95,17 @@ enum Cmd {
         word: String,
         #[command(flatten)]
         common: Common,
+    },
+    /// Interactive REPL: reads chunks from stdin, compiles and runs each.
+    Repl {
+        #[command(flatten)]
+        host: HostArgs,
+        /// Print one JSON report per input chunk.
+        #[arg(long)]
+        json: bool,
+        /// Start without the standard prelude.
+        #[arg(long)]
+        no_prelude: bool,
     },
 }
 
@@ -414,6 +426,7 @@ fn exec(cli: Cli) -> (Report, bool) {
             });
             (r, json)
         }
+        Cmd::Repl { .. } => unreachable!("the REPL streams; handled in main"),
         Cmd::UsedBy { word, common } => {
             let json = common.json;
             let r = graph_query("used-by", &word, &common, |comp| {
@@ -421,6 +434,97 @@ fn exec(cli: Cli) -> (Report, bool) {
             });
             (r, json)
         }
+    }
+}
+
+fn repl_report(o: Outcome, output: Vec<u8>) -> Report {
+    let failed_test = o.tests.iter().any(|t| t.status == TestStatus::Fail);
+    let trap =
+        |e: &chasm_runtime::native::RunError| json!({ "message": e.message, "word": e.word });
+    let results = json!({
+        "defined": o.defined.iter().map(|d| json!({
+            "name": d.name, "effect": d.effect, "declared": d.declared,
+        })).collect::<Vec<_>>(),
+        "tests": o.tests.iter().map(|t| json!({
+            "word": t.word,
+            "status": t.status.as_str(),
+            "expected": t.expected.iter().map(|v| v.to_string()).collect::<Vec<_>>(),
+            "actual": t.actual.as_ref().map(|a| a.iter().map(|v| v.to_string()).collect::<Vec<_>>()),
+            "trap": t.error.as_ref().map(trap),
+            "location": t.location,
+        })).collect::<Vec<_>>(),
+        "trap": o.trap.as_ref().map(trap),
+        "stack": o.stack.iter().map(|e| json!({ "type": e.ty, "value": e.value })).collect::<Vec<_>>(),
+        "output": String::from_utf8_lossy(&output),
+        "timing": o.timing,
+    });
+    Report {
+        command: "repl",
+        ok: !o.diagnostics.iter().any(Diagnostic::is_error) && o.trap.is_none() && !failed_test,
+        diagnostics: o.diagnostics,
+        results,
+    }
+}
+
+/// The REPL: read chunks from stdin (continuing while a definition or
+/// quotation is open), step each, and report. In text mode the program's
+/// console is the terminal; with `--json` it is captured into the report.
+fn run_repl(host: HostArgs, json: bool, no_prelude: bool) -> ExitCode {
+    use std::io::{BufRead, IsTerminal, Write};
+    let fail = |m: String, code: &str| {
+        let r = failed(
+            "repl",
+            vec![Diagnostic::error(code, m, Location::default())],
+        );
+        print_report(&r, json);
+        ExitCode::FAILURE
+    };
+    let mut cfg = match host_config(&host) {
+        Ok(c) => c,
+        Err(m) => return fail(m, "E_USAGE"),
+    };
+    if json {
+        cfg.console = Console::Capture {
+            input: Vec::new(),
+            pos: 0,
+            output: Vec::new(),
+        };
+    }
+    let mut repl = match NativeRepl::new(cfg, !no_prelude) {
+        Ok(r) => r,
+        Err(m) => return fail(m, "E_INTERNAL"),
+    };
+    let tty = std::io::stdin().is_terminal();
+    let mut all_ok = true;
+    let mut chunk = String::new();
+    loop {
+        if tty {
+            print!("{}", if chunk.is_empty() { "> " } else { ". " });
+            let _ = std::io::stdout().flush();
+        }
+        // Lock stdin per line only: the program's `read-line` shares it.
+        let mut line = String::new();
+        let eof = !matches!(std::io::stdin().lock().read_line(&mut line), Ok(n) if n > 0);
+        chunk.push_str(&line);
+        if !eof && chasm_core::repl::needs_more(&chunk) {
+            continue;
+        }
+        if !chunk.trim().is_empty() {
+            let o = repl.step(&chunk);
+            let output = repl.host_mut().take_output();
+            let r = repl_report(o, output);
+            all_ok &= r.ok;
+            print_report(&r, json);
+        }
+        chunk.clear();
+        if eof {
+            break;
+        }
+    }
+    if all_ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
     }
 }
 
@@ -583,6 +687,62 @@ fn render(report: &J) -> (String, String) {
                 out.push_str(&format!("{} {}{}\n", s(&w["name"]), s(&w["effect"]), flags));
             }
         }
+        "repl" => {
+            for d in r["defined"].as_array().into_iter().flatten() {
+                let declared = if d["declared"].as_bool() == Some(true) {
+                    " (declared)"
+                } else {
+                    ""
+                };
+                out.push_str(&format!(
+                    "ok: {} {}{declared}\n",
+                    s(&d["name"]),
+                    s(&d["effect"])
+                ));
+            }
+            for t in r["tests"].as_array().into_iter().flatten() {
+                if s(&t["status"]) == "pass" {
+                    out.push_str(&format!("PASS     {}\n", s(&t["word"])));
+                    continue;
+                }
+                let loc = &t["location"];
+                out.push_str(&format!(
+                    "FAIL     {}  ({}:{})\n",
+                    s(&t["word"]),
+                    s(&loc["file"]),
+                    loc["line"]
+                ));
+                out.push_str(&format!(
+                    "    expected: {}\n",
+                    strs(&t["expected"]).join(" ")
+                ));
+                if !t["actual"].is_null() {
+                    out.push_str(&format!("    actual:   {}\n", strs(&t["actual"]).join(" ")));
+                }
+                if !t["trap"].is_null() {
+                    out.push_str(&format!(
+                        "    trap in `{}`: {}\n",
+                        s(&t["trap"]["word"]),
+                        s(&t["trap"]["message"])
+                    ));
+                }
+            }
+            if let Some(t) = r.get("trap").filter(|t| !t.is_null()) {
+                match t["word"].as_str() {
+                    Some(w) => err.push_str(&format!("trap in `{w}`: {}\n", s(&t["message"]))),
+                    None => err.push_str(&format!("trap: {}\n", s(&t["message"]))),
+                }
+            }
+            out.push_str(&s(&r["output"]));
+            let stack = r["stack"].as_array().cloned().unwrap_or_default();
+            let types: Vec<String> = stack.iter().map(|e| s(&e["type"])).collect();
+            let values: Vec<String> = stack.iter().map(|e| s(&e["value"])).collect();
+            if stack.is_empty() {
+                out.push_str("( )\n");
+            } else {
+                out.push_str(&format!("( {} ) {}\n", types.join(" "), values.join(" ")));
+            }
+        }
         "deps" | "used-by" => {
             for w in r["words"].as_array().into_iter().flatten() {
                 match w {
@@ -603,23 +763,46 @@ fn render(report: &J) -> (String, String) {
     (out, err)
 }
 
-fn main() -> ExitCode {
-    let cli = Cli::parse();
-    let (report, json) = exec(cli);
+fn print_report(report: &Report, json: bool) {
     let j = report.to_json();
     // Ignore write errors (e.g. a closed pipe): the exit code still reports.
     use std::io::Write;
     if json {
-        let _ = writeln!(
-            std::io::stdout(),
-            "{}",
-            serde_json::to_string_pretty(&j).unwrap()
-        );
+        // The REPL streams one compact report per line.
+        let text = if report.command == "repl" {
+            serde_json::to_string(&j)
+        } else {
+            serde_json::to_string_pretty(&j)
+        };
+        let _ = writeln!(std::io::stdout(), "{}", text.unwrap());
+        let _ = std::io::stdout().flush();
     } else {
         let (out, err) = render(&j);
-        let _ = write!(std::io::stdout(), "{out}");
-        let _ = write!(std::io::stderr(), "{err}");
+        if report.command == "repl" {
+            // Errors first, so each chunk ends with its stack line.
+            let _ = write!(std::io::stderr(), "{err}");
+            let _ = write!(std::io::stdout(), "{out}");
+            let _ = std::io::stdout().flush();
+        } else {
+            let _ = write!(std::io::stdout(), "{out}");
+            let _ = std::io::stdout().flush();
+            let _ = write!(std::io::stderr(), "{err}");
+        }
     }
+}
+
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+    if let Cmd::Repl {
+        host,
+        json,
+        no_prelude,
+    } = cli.cmd
+    {
+        return run_repl(host, json, no_prelude);
+    }
+    let (report, json) = exec(cli);
+    print_report(&report, json);
     if report.ok {
         ExitCode::SUCCESS
     } else {

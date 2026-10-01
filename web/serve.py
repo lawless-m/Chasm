@@ -1,0 +1,41 @@
+"""Serve web/ for the browser REPL with cross-origin isolation.
+
+SharedArrayBuffer and Atomics.wait need the page to be cross-origin
+isolated, which these two response headers provide.
+
+Usage: python3 web/serve.py [PORT]    (default 8000)
+"""
+
+import functools
+import http.server
+import pathlib
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parent
+
+
+class Handler(http.server.SimpleHTTPRequestHandler):
+    extensions_map = {
+        **http.server.SimpleHTTPRequestHandler.extensions_map,
+        ".wasm": "application/wasm",
+        ".js": "text/javascript",
+        ".mjs": "text/javascript",
+    }
+
+    def end_headers(self):
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
+
+def main():
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
+    handler = functools.partial(Handler, directory=str(ROOT))
+    with http.server.ThreadingHTTPServer(("localhost", port), handler) as httpd:
+        print(f"Chasm REPL at http://localhost:{port}/", flush=True)
+        httpd.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

@@ -8,7 +8,7 @@ use wasm_encoder::{
     TableSection, TableType, TypeSection, ValType,
 };
 
-use crate::check::{Ctx, Word, FN_ALLOC, FN_RING, FN_TRAP};
+use crate::check::{Ctx, Word, WordId, WordKind, FN_ALLOC, FN_RING, FN_TRAP};
 use crate::layout as L;
 
 fn m(offset: u32) -> MemArg {
@@ -166,23 +166,73 @@ pub struct ModuleOptions {
     pub test_exports: Vec<(String, usize)>,
 }
 
-pub fn assemble(ctx: &mut Ctx, opts: &ModuleOptions) -> Vec<u8> {
-    let void = ctx.intern_type(vec![], vec![]);
+/// The runtime helpers in function-index order: (index, type, body, name).
+fn runtime_helpers(ctx: &mut Ctx) -> Vec<(u32, u32, Function, &'static str)> {
     let t_alloc = ctx.intern_type(vec![ValType::I32], vec![ValType::I32]);
     let t_trap = ctx.intern_type(vec![ValType::I32; 4], vec![]);
     let t_ring = ctx.intern_type(vec![ValType::I32; 4], vec![ValType::I32]);
+    vec![
+        (FN_ALLOC, t_alloc, rt_alloc(ctx), "rt.alloc"),
+        (FN_TRAP, t_trap, rt_trap(), "rt.trap"),
+        (FN_RING, t_ring, rt_ring(), "rt.ring"),
+    ]
+}
+
+/// A word's function: its compiled body, or a stub that traps as unresolved.
+fn word_function(ctx: &mut Ctx, w: &Word) -> Function {
+    match &w.body {
+        Some(c) => {
+            let mut f = Function::new_with_locals_types(c.locals.iter().copied());
+            for i in &c.code {
+                f.instruction(i);
+            }
+            f.instruction(&I::End);
+            f
+        }
+        None => {
+            // Unresolved stub: trap with a message.
+            let mut f = Function::new([]);
+            let (ma, ml) = ctx.intern_str(&format!("unresolved word {}", w.name));
+            let (wa, wl) = ctx.intern_str(&w.name);
+            for i in [
+                I::I32Const(ma),
+                I::I32Const(ml),
+                I::I32Const(wa),
+                I::I32Const(wl),
+                I::Call(FN_TRAP),
+                I::Unreachable,
+                I::End,
+            ] {
+                f.instruction(&i);
+            }
+            f
+        }
+    }
+}
+
+fn name_section(names: NameMap) -> NameSection {
+    let mut name_sec = NameSection::new();
+    name_sec.module("chasm");
+    name_sec.functions(&names);
+    name_sec
+}
+
+fn version_section() -> CustomSection<'static> {
+    CustomSection {
+        name: "chasm-version".into(),
+        data: env!("CARGO_PKG_VERSION").as_bytes().into(),
+    }
+}
+
+pub fn assemble(ctx: &mut Ctx, opts: &ModuleOptions) -> Vec<u8> {
+    let void = ctx.intern_type(vec![], vec![]);
 
     let mut funcs = FunctionSection::new();
     let mut code = CodeSection::new();
     let mut names = NameMap::new();
     names.append(0, "chasm.ring_enter");
 
-    let helpers = [
-        (FN_ALLOC, t_alloc, rt_alloc(ctx), "rt.alloc"),
-        (FN_TRAP, t_trap, rt_trap(), "rt.trap"),
-        (FN_RING, t_ring, rt_ring(), "rt.ring"),
-    ];
-    for (idx, ty, f, name) in helpers {
+    for (idx, ty, f, name) in runtime_helpers(ctx) {
         funcs.function(ty);
         code.function(&f);
         names.append(idx, name);
@@ -192,34 +242,7 @@ pub fn assemble(ctx: &mut Ctx, opts: &ModuleOptions) -> Vec<u8> {
         let w = ctx.words[id].clone();
         let ty = ctx.intern_type(w.effect.wasm_params(), w.effect.wasm_results());
         funcs.function(ty);
-        let f = match &w.body {
-            Some(c) => {
-                let mut f = Function::new_with_locals_types(c.locals.iter().copied());
-                for i in &c.code {
-                    f.instruction(i);
-                }
-                f.instruction(&I::End);
-                f
-            }
-            None => {
-                // Unresolved stub: trap with a message.
-                let mut f = Function::new([]);
-                let (ma, ml) = ctx.intern_str(&format!("unresolved word {}", w.name));
-                let (wa, wl) = ctx.intern_str(&w.name);
-                for i in [
-                    I::I32Const(ma),
-                    I::I32Const(ml),
-                    I::I32Const(wa),
-                    I::I32Const(wl),
-                    I::Call(FN_TRAP),
-                    I::Unreachable,
-                    I::End,
-                ] {
-                    f.instruction(&i);
-                }
-                f
-            }
-        };
+        let f = word_function(ctx, &w);
         code.function(&f);
         names.append(Word::func_index(id), &w.name);
     }
@@ -294,9 +317,7 @@ pub fn assemble(ctx: &mut Ctx, opts: &ModuleOptions) -> Vec<u8> {
         heap_start.to_le_bytes(),
     );
 
-    let mut name_sec = NameSection::new();
-    name_sec.module("chasm");
-    name_sec.functions(&names);
+    let name_sec = name_section(names);
 
     let mut module = Module::new();
     module.section(&types);
@@ -309,10 +330,102 @@ pub fn assemble(ctx: &mut Ctx, opts: &ModuleOptions) -> Vec<u8> {
     module.section(&code);
     module.section(&data);
     module.section(&name_sec);
-    let producers = CustomSection {
-        name: "chasm-version".into(),
-        data: env!("CARGO_PKG_VERSION").as_bytes().into(),
+    module.section(&version_section());
+    module.finish()
+}
+
+/// Export name of a word's function in a REPL step module.
+pub fn export_name(id: WordId) -> String {
+    format!("w{id}")
+}
+
+/// Assemble a REPL step module holding the functions of `ids`. It imports
+/// the doorbell, the shared memory and the shared table, carries its own
+/// copy of the runtime helpers, and exports each word as `w<id>`; the host
+/// installs them in the table at slot = word id. No data, memory, table or
+/// element sections: the host places the step's literals.
+pub fn assemble_step(ctx: &mut Ctx, ids: &[WordId], shared_memory: bool) -> Vec<u8> {
+    let void = ctx.intern_type(vec![], vec![]);
+
+    let mut funcs = FunctionSection::new();
+    let mut code = CodeSection::new();
+    let mut names = NameMap::new();
+    names.append(0, "chasm.ring_enter");
+
+    for (idx, ty, f, name) in runtime_helpers(ctx) {
+        funcs.function(ty);
+        code.function(&f);
+        names.append(idx, name);
+    }
+
+    let mut exports = ExportSection::new();
+    for (k, &id) in ids.iter().enumerate() {
+        let w = ctx.words[id].clone();
+        let ty = if w.kind == WordKind::Line {
+            void
+        } else {
+            ctx.intern_type(w.effect.wasm_params(), w.effect.wasm_results())
+        };
+        funcs.function(ty);
+        let f = word_function(ctx, &w);
+        code.function(&f);
+        let index = crate::check::FIRST_WORD_FN + k as u32;
+        names.append(index, &w.name);
+        exports.export(&export_name(id), ExportKind::Func, index);
+    }
+
+    let mut types = TypeSection::new();
+    for (p, r) in &ctx.types {
+        types.ty().function(p.iter().copied(), r.iter().copied());
+    }
+
+    let memory = if shared_memory {
+        MemoryType {
+            minimum: L::INITIAL_PAGES,
+            maximum: Some(L::SHARED_MAX_PAGES),
+            memory64: false,
+            shared: true,
+            page_size_log2: None,
+        }
+    } else {
+        MemoryType {
+            minimum: 1,
+            maximum: None,
+            memory64: false,
+            shared: false,
+            page_size_log2: None,
+        }
     };
-    module.section(&producers);
+    let mut imports = ImportSection::new();
+    imports.import(
+        L::IMPORT_MODULE,
+        L::IMPORT_RING_ENTER,
+        EntityType::Function(void),
+    );
+    imports.import(
+        L::IMPORT_MODULE,
+        L::IMPORT_MEMORY,
+        EntityType::Memory(memory),
+    );
+    imports.import(
+        L::IMPORT_MODULE,
+        L::IMPORT_TABLE,
+        EntityType::Table(TableType {
+            element_type: RefType::FUNCREF,
+            table64: false,
+            minimum: 0,
+            maximum: None,
+            shared: false,
+        }),
+    );
+
+    let mut module = Module::new();
+    module.section(&types);
+    module.section(&imports);
+    module.section(&funcs);
+    module.section(&exports);
+    module.section(&code);
+    module.section(&name_section(names));
+    module.section(&version_section());
     module.finish()
 }

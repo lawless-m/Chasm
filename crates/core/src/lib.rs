@@ -16,7 +16,9 @@ pub mod module;
 pub mod parser;
 pub mod prims;
 pub mod program;
+pub mod repl;
 pub mod types;
 
 pub use diag::{Diagnostic, Location, Severity};
 pub use program::{compile, validate, Compilation, Options, Source, TestInfo, Value, WordInfo};
+pub use repl::{Session, Step};

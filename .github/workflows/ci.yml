@@ -25,6 +25,10 @@ jobs:
         run: cargo test
       - name: Core builds for wasm32
         run: cargo build -p chasm-core --target wasm32-unknown-unknown
+      - name: Web build
+        run: sh web/build.sh
+      - name: Web checks
+        run: node web/test/compiler.mjs && node web/test/ring.mjs && node web/test/node-repl.mjs
       - name: Examples
         run: |
           for f in examples/*.chasm; do

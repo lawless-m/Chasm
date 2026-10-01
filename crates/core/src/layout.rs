@@ -17,6 +17,8 @@ pub const TRAP_WORD_LEN: u32 = 0x10C;
 pub const HEAP_PTR: u32 = 0x110;
 /// Data stack pointer (REPL, M2).
 pub const DATA_STACK_PTR: u32 = 0x114;
+/// Browser doorbell: the worker stores 0 and waits here in `ring_enter`; the main thread services the ring, stores 1 and notifies.
+pub const DOORBELL: u32 = 0x118;
 
 /// I/O ring: 64 KiB to 128 KiB.
 pub const RING_BASE: u32 = 0x1_0000;
@@ -50,16 +52,24 @@ pub const OP_CLOSE: i32 = 4;
 /// Data stack: 128 KiB to 1 MiB.
 pub const DATA_STACK_BASE: u32 = 0x2_0000;
 pub const DATA_STACK_END: u32 = 0x10_0000;
+/// Bytes per data stack slot: one per wasm value (i32/f32 in the low 4 bytes; `str` and `array` take two, addr then len).
+pub const STACK_SLOT: u32 = 8;
 
 /// Read-only literals start here; the heap follows them.
 pub const LITERALS_BASE: u32 = 0x10_0000;
 
 /// Initial memory: 4 MiB.
 pub const INITIAL_PAGES: u64 = 64;
+/// Maximum of the browser's shared memory (64 MiB); shared memories must declare one.
+pub const SHARED_MAX_PAGES: u64 = 1024;
 
 /// Host import module and doorbell name.
 pub const IMPORT_MODULE: &str = "chasm";
 pub const IMPORT_RING_ENTER: &str = "ring_enter";
+/// Shared memory import name of REPL step modules.
+pub const IMPORT_MEMORY: &str = "memory";
+/// Shared funcref table import name of REPL step modules.
+pub const IMPORT_TABLE: &str = "table";
 pub const EXPORT_MEMORY: &str = "memory";
 
 /// I/O error codes (negative i32).
@@ -78,4 +88,67 @@ pub const MODE_READ_WRITE: i32 = 3;
 const _: () = {
     assert!(CQ_BASE + RING_ENTRIES * CQE_SIZE <= RING_END);
     assert!(TRAP_MSG_ADDR < RESERVED_END);
+    assert!(DOORBELL < RESERVED_END);
 };
+
+/// Name/value pairs a JavaScript host needs; negative codes are cast to `u32`.
+pub fn constants() -> Vec<(&'static str, u32)> {
+    vec![
+        ("TRAP_MSG_ADDR", TRAP_MSG_ADDR),
+        ("TRAP_MSG_LEN", TRAP_MSG_LEN),
+        ("TRAP_WORD_ADDR", TRAP_WORD_ADDR),
+        ("TRAP_WORD_LEN", TRAP_WORD_LEN),
+        ("HEAP_PTR", HEAP_PTR),
+        ("DATA_STACK_PTR", DATA_STACK_PTR),
+        ("DOORBELL", DOORBELL),
+        ("RING_BASE", RING_BASE),
+        ("SQ_HEAD", SQ_HEAD),
+        ("SQ_TAIL", SQ_TAIL),
+        ("CQ_HEAD", CQ_HEAD),
+        ("CQ_TAIL", CQ_TAIL),
+        ("RING_ENTRIES", RING_ENTRIES),
+        ("SQ_BASE", SQ_BASE),
+        ("SQE_SIZE", SQE_SIZE),
+        ("CQ_BASE", CQ_BASE),
+        ("CQE_SIZE", CQE_SIZE),
+        ("SQE_OP", SQE_OP),
+        ("SQE_USER", SQE_USER),
+        ("SQE_A0", SQE_A0),
+        ("SQE_A1", SQE_A1),
+        ("SQE_A2", SQE_A2),
+        ("CQE_USER", CQE_USER),
+        ("CQE_RESULT", CQE_RESULT),
+        ("OP_OPEN", OP_OPEN as u32),
+        ("OP_READ", OP_READ as u32),
+        ("OP_WRITE", OP_WRITE as u32),
+        ("OP_CLOSE", OP_CLOSE as u32),
+        ("DATA_STACK_BASE", DATA_STACK_BASE),
+        ("DATA_STACK_END", DATA_STACK_END),
+        ("LITERALS_BASE", LITERALS_BASE),
+        ("STACK_SLOT", STACK_SLOT),
+        ("INITIAL_PAGES", INITIAL_PAGES as u32),
+        ("SHARED_MAX_PAGES", SHARED_MAX_PAGES as u32),
+        ("E_NOT_FOUND", E_NOT_FOUND as u32),
+        ("E_PERMISSION", E_PERMISSION as u32),
+        ("E_NOT_SUPPORTED", E_NOT_SUPPORTED as u32),
+        ("E_IO", E_IO as u32),
+        ("E_BAD_HANDLE", E_BAD_HANDLE as u32),
+        ("MODE_READ", MODE_READ as u32),
+        ("MODE_WRITE", MODE_WRITE as u32),
+        ("MODE_APPEND", MODE_APPEND as u32),
+        ("MODE_READ_WRITE", MODE_READ_WRITE as u32),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constants_for_hosts() {
+        let c = constants();
+        assert!(c.contains(&("DATA_STACK_PTR", 0x114)));
+        assert!(c.contains(&("DOORBELL", 0x118)));
+        const { assert!(DOORBELL < RESERVED_END) };
+    }
+}

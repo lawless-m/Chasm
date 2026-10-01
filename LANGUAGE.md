@@ -1,6 +1,6 @@
 # Chasm: Language Specification
 
-Status: draft v0.7 (M1 decisions recorded; see section 12). Chasm source files use the `.chasm` extension. Companion to `ARCHITECTURE.md`. Sections marked **TBD** are not yet decided.
+Status: draft v0.8 (M1 and M2 decisions recorded; see sections 12 and 13). Chasm source files use the `.chasm` extension. Companion to `ARCHITECTURE.md`. Sections marked **TBD** are not yet decided.
 
 ## 1. Types
 
@@ -227,3 +227,10 @@ Recorded here so the spec matches the compiler. `docs/reference.md` is the user-
 10. **Redefinition in files.** Top-level forms are processed in order. A redefinition with the same effect replaces the body for every caller; the last one wins. A word may call itself.
 11. **Names.** Primitive names cannot be defined, declared, or used as locals. Locals shadow user words.
 
+## 13. Decisions taken in M2
+
+1. **REPL input.** A chunk whose first token is `:`, `export`, `declare` or `test` is top-level forms, processed exactly as in a file. Any other chunk is one line: a body checked forward from the current types of the memory data stack. A line cannot follow a definition in the same chunk (`E_SYNTAX`).
+2. **Continuation.** A chunk continues onto the next input line while a `:` definition or a `[` quotation is still open.
+3. **Stack echo.** After each chunk the REPL prints the stack as `( types ) values`, bottom to top, for example `( i32 str ) 9 "hi"`, or `( )` when empty. Arrays print as `<n elements>` and function values as `#slot`.
+4. **Tests at the REPL** run as soon as their word has a body, and again whenever the word is redefined; a test of a declared word waits for its body.
+5. **Literals in the REPL** (section 4) are placed by the host at the heap pointer, one window per step; identical literals are shared within a step only.

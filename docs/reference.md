@@ -20,6 +20,7 @@ chasm words  FILE...          # every word and its effect
 chasm deps WORD FILE...       # what WORD calls (--all for transitive)
 chasm used-by WORD FILE...    # what calls WORD
 chasm build  FILE... -o out.wasm
+chasm repl                    # interactive; reads chunks from stdin
 ```
 
 Add `--json` to any command for a machine-readable report:
@@ -35,8 +36,55 @@ Add `--json` to any command for a machine-readable report:
 
 Codes are stable; messages may change. See section 15 for the list.
 
-`run` and `test` take `--mount NAME=DIR` (exposes `DIR` as `/mnt/NAME`) and
-`--no-file` (hides the host filesystem).
+`run`, `test` and `repl` take `--mount NAME=DIR` (exposes `DIR` as
+`/mnt/NAME`) and `--no-file` (hides the host filesystem). `repl` also takes
+`--json` (one report per chunk, one per line) and `--no-prelude`.
+
+## 1a. The REPL
+
+`chasm repl` reads chunks from stdin and compiles and runs each at once.
+
+- A chunk that starts with `:`, `export`, `declare` or `test` is processed
+  exactly as in a file. Anything else is a **line**: it runs on the current
+  stack, whose types are always known, and its effect is worked out from
+  that stack. A line cannot follow a definition in the same chunk.
+- A chunk continues on the next line while a `:` definition or a `[`
+  quotation is open.
+- After each chunk the stack is printed as `( types ) values`, bottom to
+  top, or `( )` when empty. Arrays print as `<n elements>` and function
+  values as `#slot`.
+- A `test` runs at once (`PASS` or `FAIL`), or, for a declared word, as soon
+  as the word gets a body. A word's tests run again when it is redefined.
+- Redefining a word with the same effect takes effect for every existing
+  caller; a different effect is `E_REDEFINE_EFFECT` and lists the
+  dependants.
+- A line that traps prints `trap in `[line N]`: message` and leaves the
+  stack as it was.
+- `print` writes to the terminal and `read-line` reads from the same stdin
+  as the REPL. With `--json` the program's output is captured into
+  `results.output`; each report also has `results.defined`,
+  `results.tests`, `results.trap`, `results.stack` and `results.timing`.
+
+```
+> : sq ( i32 -- i32 ) dup i32.mul ;
+ok: sq ( i32 -- i32 )
+( )
+> test sq : 3 sq -> 9
+PASS     sq
+( )
+> 3 sq
+( i32 ) 9
+> 1 0 i32.div_s
+trap in `[line 4]`: wasm trap: integer divide by zero
+( i32 ) 9
+> : twice ( i32 -- i32 ) sq sq ;
+ok: twice ( i32 -- i32 )
+( i32 ) 9
+> twice
+( i32 ) 6561
+```
+
+The same REPL runs in the browser; see `web/README.md`.
 
 ## 2. Program structure
 
@@ -297,4 +345,5 @@ Library words:
 
 See `examples/`: `hello`, `basics` (words, loops, tests), `strings`,
 `arrays` (combinators, functions as values), `contract` (declare first),
-`files` (the namespace).
+`files` (the namespace). Any of them can also be typed or piped into
+`chasm repl`, e.g. `chasm repl < examples/basics.chasm`.

@@ -117,7 +117,7 @@ impl Runner {
     }
 }
 
-fn describe(e: &wasmtime::Error, mem: &[u8]) -> RunError {
+pub(crate) fn describe(e: &wasmtime::Error, mem: &[u8]) -> RunError {
     if let Some((message, word)) = trap_info(mem) {
         return RunError {
             message,
@@ -164,7 +164,7 @@ pub struct TestResult {
     pub output: Vec<u8>,
 }
 
-fn values(tys: &[Ty], vals: &[Val], mem: &[u8]) -> Vec<Value> {
+pub(crate) fn values(tys: &[Ty], vals: &[Val], mem: &[u8]) -> Vec<Value> {
     let mut out = Vec::new();
     let mut i = 0;
     for t in tys {
@@ -188,7 +188,7 @@ fn values(tys: &[Ty], vals: &[Val], mem: &[u8]) -> Vec<Value> {
     out
 }
 
-fn same(a: &Value, b: &Value) -> bool {
+pub(crate) fn same(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::F32(x), Value::F32(y)) => x == y || (x.is_nan() && y.is_nan()),
         (Value::F64(x), Value::F64(y)) => x == y || (x.is_nan() && y.is_nan()),

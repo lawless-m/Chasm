@@ -79,6 +79,14 @@ impl NativeHost {
         }
     }
 
+    /// Take the console output captured so far (empty unless `Console::Capture`).
+    pub fn take_output(&mut self) -> Vec<u8> {
+        match &mut self.config.console {
+            Console::Capture { output, .. } => std::mem::take(output),
+            Console::Std => Vec::new(),
+        }
+    }
+
     fn add(&mut self, h: Handle) -> i32 {
         let id = self.next;
         self.next += 1;

@@ -1,16 +1,17 @@
 # Chasm: Contents
 
-Chasm (Chuck-Wasm) is a typed, concatenative, Forth-and-Factor-flavoured language that compiles to WebAssembly, with an interactive REPL. Implementation language: Rust. Licence: MIT.
+Chasm (Chuck-Wasm) is a typed, concatenative, Forth-and-Factor-flavoured language that compiles to WebAssembly, with an interactive REPL (in the terminal and in the browser). Implementation language: Rust. Licence: MIT.
 
 ## Where to start
 
 1. **README.md**: what it is and how to run it.
 2. **docs/reference.md**: the working language reference, i.e. what the compiler accepts today.
-3. **ARCHITECTURE.md**: goals, crate layout, pipeline, runtime, milestones M0 to M6, and (section 13) the decisions taken while building M0 and M1.
-4. **LANGUAGE.md**: the v1 language spec; section 12 records the M1 decisions.
+3. **ARCHITECTURE.md**: goals, crate layout, pipeline, runtime, milestones M0 to M6, and (sections 13 and 14) the decisions taken while building M0 to M2.
+4. **LANGUAGE.md**: the v1 language spec; sections 12 and 13 record the M1 and M2 decisions.
 5. **FUTURE.md**: explicitly *not* v1. Read it so v1 decisions do not close these off, but build none of it.
 6. **CLAUDE.md**: how to work in the repository.
-7. **examples/**: worked programs with tests.
+7. **examples/**: worked programs with tests; `docs/examples.md` is the plan for growing them into a corpus and benchmark.
+8. **web/README.md**: the browser REPL: building, serving, design.
 
 ## Working conventions
 

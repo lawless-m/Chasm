@@ -14,6 +14,29 @@ pub fn parse(file: &str, toks: &[Token]) -> Result<Vec<Item>, Diagnostic> {
     Ok(items)
 }
 
+/// A REPL chunk: top-level forms as in a file, or one bare body (a line).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReplInput {
+    Items(Vec<Item>),
+    Body(Body),
+}
+
+/// Parse a REPL chunk. A chunk whose first token is `:`, `export`,
+/// `declare` or `test` is parsed exactly like a file; anything else is one
+/// body running to the end of the input.
+pub fn parse_repl(file: &str, toks: &[Token]) -> Result<ReplInput, Diagnostic> {
+    match toks.first() {
+        None => Ok(ReplInput::Body(Vec::new())),
+        Some(t) if [":", "export", "declare", "test"].iter().any(|k| t.is(k)) => {
+            Ok(ReplInput::Items(parse(file, toks)?))
+        }
+        Some(_) => {
+            let mut p = Parser { file, toks, pos: 0 };
+            Ok(ReplInput::Body(p.body_inner(&[], true)?))
+        }
+    }
+}
+
 /// Combinators and how many quotations they take.
 pub fn combinator_arity(name: &str) -> Option<usize> {
     Some(match name {
@@ -339,8 +362,16 @@ impl<'a> Parser<'a> {
 
     /// Parse body nodes until (and consuming) one of `ends`.
     fn body(&mut self, ends: &[&str]) -> Result<Body, Diagnostic> {
+        self.body_inner(ends, false)
+    }
+
+    /// As `body`; with `to_end`, end of input also ends the body.
+    fn body_inner(&mut self, ends: &[&str], to_end: bool) -> Result<Body, Diagnostic> {
         let mut out: Body = Vec::new();
         loop {
+            if to_end && self.pos >= self.toks.len() {
+                return Ok(out);
+            }
             let t = self.next(&format!("`{}`", ends.join("` or `")))?;
             let loc = self.loc(t);
             if t.kind == TokKind::Word && ends.contains(&t.text.as_str()) {
@@ -488,6 +519,23 @@ mod tests {
             Item::Test { expected, .. } => assert_eq!(expected[0].0, Lit::I32(9)),
             _ => panic!(),
         }
+    }
+
+    fn repl(src: &str) -> Result<ReplInput, Diagnostic> {
+        parse_repl("t", &lex("t", src).unwrap())
+    }
+
+    #[test]
+    fn repl_chunks() {
+        assert!(matches!(repl("3 sq").unwrap(), ReplInput::Body(b) if b.len() == 2));
+        assert!(matches!(repl(": f ( -- ) ;").unwrap(), ReplInput::Items(i) if i.len() == 1));
+        match repl("1 [ 1 ] [ 2 ] if").unwrap() {
+            ReplInput::Body(b) => assert!(matches!(b.last().unwrap().kind, NodeKind::If(..))),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(repl("[ 1").unwrap_err().code, "E_SYNTAX");
+        assert_eq!(repl("").unwrap(), ReplInput::Body(vec![]));
+        assert_eq!(repl(": f ( -- ) ; 3").unwrap_err().code, "E_SYNTAX");
     }
 
     #[test]

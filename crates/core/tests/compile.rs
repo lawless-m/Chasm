@@ -116,3 +116,78 @@ fn declare_then_define() {
     let c = ok("declare g ( i32 -- i32 )\n: f ( i32 -- i32 ) g ;\n: g ( i32 -- i32 ) 2 i32.mul ;");
     assert!(c.unresolved().is_empty());
 }
+
+#[test]
+fn step_module_imports_memory_and_table() {
+    use chasm_core::ast::{Node, NodeKind};
+    use chasm_core::check::{compile_body, Ctx, Mode, Origin, Word, WordKind};
+    use chasm_core::module::{assemble_step, export_name};
+    use chasm_core::types::{Effect, Ty};
+    use chasm_core::Location;
+
+    let mut ctx = Ctx::default();
+    ctx.indirect_calls = true;
+    ctx.begin_literals(0x30_0000);
+    let e = Effect::new(vec![Ty::I32], vec![Ty::I32]);
+    let name = |n: &str| Node {
+        kind: NodeKind::Name(n.into()),
+        loc: Location::default(),
+    };
+    for (w, body) in [
+        ("f", vec![name("dup"), name("i32.mul")]),
+        ("g", vec![name("f")]),
+    ] {
+        let id = ctx.add_word(Word {
+            name: w.into(),
+            effect: e.clone(),
+            body: None,
+            failed: false,
+            export: false,
+            origin: Origin::User,
+            kind: WordKind::Named,
+            loc: Location::default(),
+            callees: vec![],
+        });
+        let out = compile_body(
+            &mut ctx,
+            w,
+            Mode::Declared(&e),
+            &body,
+            &Location::default(),
+            &[],
+        )
+        .unwrap_or_else(|d| panic!("{}", d.render()));
+        ctx.words[id].body = Some(out.compiled);
+    }
+
+    let bytes = assemble_step(&mut ctx, &[0, 1], false);
+    chasm_core::validate(&bytes).unwrap();
+    let mut imports = Vec::new();
+    let mut exports = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
+        match payload.unwrap() {
+            wasmparser::Payload::ImportSection(r) => {
+                for i in r.into_imports() {
+                    let i = i.unwrap();
+                    imports.push((i.module.to_string(), i.name.to_string()));
+                }
+            }
+            wasmparser::Payload::ExportSection(r) => {
+                for e in r {
+                    exports.push(e.unwrap().name.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    let chasm = |n: &str| ("chasm".to_string(), n.to_string());
+    assert_eq!(
+        imports,
+        vec![chasm("ring_enter"), chasm("memory"), chasm("table")]
+    );
+    assert_eq!(exports, vec![export_name(0), export_name(1)]);
+    assert_eq!(exports, vec!["w0", "w1"]);
+
+    let shared = assemble_step(&mut ctx, &[0, 1], true);
+    chasm_core::validate(&shared).unwrap();
+}

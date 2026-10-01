@@ -38,6 +38,9 @@ pub enum WordKind {
     Quote,
     /// A test thunk.
     Test,
+    /// A REPL line: wasm type `( ) -> ( )`, its effect is carried on the
+    /// memory data stack.
+    Line,
 }
 
 #[derive(Debug, Clone)]
@@ -67,7 +70,6 @@ impl Word {
 }
 
 /// Shared compilation state: the word database, type interner, literals.
-#[derive(Default)]
 pub struct Ctx {
     pub words: Vec<Word>,
     pub by_name: HashMap<String, WordId>,
@@ -78,6 +80,27 @@ pub struct Ctx {
     /// Every name defined or declared anywhere in the program, for
     /// "used before it is defined" messages.
     pub all_names: std::collections::HashSet<String>,
+    /// Address of the first byte of `literals` in linear memory.
+    pub literal_base: u32,
+    /// Call words through table 0 (slot = word id) instead of directly,
+    /// so a redefinition reaches existing callers (the REPL).
+    pub indirect_calls: bool,
+}
+
+impl Default for Ctx {
+    fn default() -> Self {
+        Ctx {
+            words: Vec::new(),
+            by_name: HashMap::new(),
+            types: Vec::new(),
+            type_map: HashMap::new(),
+            literals: Vec::new(),
+            lit_map: HashMap::new(),
+            all_names: Default::default(),
+            literal_base: layout::LITERALS_BASE,
+            indirect_calls: false,
+        }
+    }
 }
 
 impl Ctx {
@@ -96,12 +119,21 @@ impl Ctx {
     pub fn intern_str(&mut self, s: &str) -> (i32, i32) {
         let len = s.len() as i32;
         if let Some(&off) = self.lit_map.get(s) {
-            return ((layout::LITERALS_BASE + off) as i32, len);
+            return ((self.literal_base + off) as i32, len);
         }
         let off = self.literals.len() as u32;
         self.literals.extend_from_slice(s.as_bytes());
         self.lit_map.insert(s.to_string(), off);
-        ((layout::LITERALS_BASE + off) as i32, len)
+        ((self.literal_base + off) as i32, len)
+    }
+
+    /// Start a fresh literal window at `base` (a REPL step's heap pointer).
+    /// Dedup is per window; earlier addresses stay valid because the host
+    /// has already written their bytes.
+    pub fn begin_literals(&mut self, base: u32) {
+        self.literals.clear();
+        self.lit_map.clear();
+        self.literal_base = base;
     }
 
     pub fn add_word(&mut self, w: Word) -> WordId {
@@ -119,6 +151,9 @@ impl Ctx {
 pub enum Mode<'a> {
     Declared(&'a Effect),
     Derived,
+    /// A REPL line: inputs are the types on the memory data stack; it loads
+    /// them, runs, and stores its outputs back.
+    Line(&'a [Ty]),
 }
 
 pub struct Output {
@@ -287,6 +322,11 @@ impl<'c> Walker<'c> {
                 self.op(I::LocalGet(i));
             }
         }
+        let mut line_base = None;
+        if let Mode::Line(inputs) = mode {
+            self.stack = inputs.to_vec();
+            line_base = Some(self.line_prologue(inputs));
+        }
         let flow = self.seq(body)?;
         match mode {
             Mode::Declared(e) => {
@@ -322,7 +362,70 @@ impl<'c> Walker<'c> {
                 }
                 Ok(Effect::new(Vec::new(), outputs))
             }
+            Mode::Line(inputs) => {
+                let outputs = if flow == Flow::Normal {
+                    self.resolved_stack()
+                } else {
+                    Vec::new()
+                };
+                if let Some(t) = outputs.iter().find(|t| t.has_var()) {
+                    return Err(Diagnostic::error(
+                        codes::E_AMBIGUOUS_TYPE,
+                        format!("the type `{t}` left by this code is not fully known; add a stack assertion"),
+                        loc.clone(),
+                    ));
+                }
+                if flow == Flow::Normal {
+                    self.line_epilogue(line_base.unwrap(), &outputs);
+                }
+                Ok(Effect::new(inputs.to_vec(), outputs))
+            }
         }
+    }
+
+    /// Pop a line's inputs off the memory data stack onto the wasm stack.
+    /// Returns the local holding the base address of those slots.
+    fn line_prologue(&mut self, inputs: &[Ty]) -> u32 {
+        let vts = self.lower_all(inputs);
+        let base = self.new_local(ValType::I32);
+        self.op(I::I32Const(0));
+        self.op(I::I32Load(memarg(layout::DATA_STACK_PTR, ValType::I32)));
+        self.op(I::I32Const((layout::STACK_SLOT * vts.len() as u32) as i32));
+        self.op(I::I32Sub);
+        self.op(I::LocalSet(base));
+        self.op(I::I32Const(0));
+        self.op(I::LocalGet(base));
+        self.op(I::I32Store(memarg(layout::DATA_STACK_PTR, ValType::I32)));
+        for (i, vt) in vts.into_iter().enumerate() {
+            self.op(I::LocalGet(base));
+            self.op(load_vt(vt, layout::STACK_SLOT * i as u32));
+        }
+        base
+    }
+
+    /// Push a line's outputs from the wasm stack onto the memory data stack.
+    fn line_epilogue(&mut self, base: u32, outputs: &[Ty]) {
+        let vts = self.lower_all(outputs);
+        let size = (layout::STACK_SLOT * vts.len() as u32) as i32;
+        let vals: Vec<u32> = self.stash(outputs, None).into_iter().flatten().collect();
+        self.op(I::LocalGet(base));
+        self.op(I::I32Const(size));
+        self.op(I::I32Add);
+        self.op(I::I32Const(layout::DATA_STACK_END as i32));
+        self.op(I::I32GtU);
+        self.op(I::If(BlockType::Empty));
+        self.trap("data stack overflow");
+        self.op(I::End);
+        for (j, (vt, v)) in vts.into_iter().zip(vals).enumerate() {
+            self.op(I::LocalGet(base));
+            self.op(I::LocalGet(v));
+            self.op(store_vt(vt, layout::STACK_SLOT * j as u32));
+        }
+        self.op(I::I32Const(0));
+        self.op(I::LocalGet(base));
+        self.op(I::I32Const(size));
+        self.op(I::I32Add);
+        self.op(I::I32Store(memarg(layout::DATA_STACK_PTR, ValType::I32)));
     }
 
     // ---- small helpers ----
@@ -1390,11 +1493,120 @@ impl<'c> Walker<'c> {
         if let Some(&id) = self.ctx.by_name.get(n) {
             let e = self.ctx.words[id].effect.clone();
             self.pop_expect(n, &e.inputs, loc)?;
-            self.op(I::Call(Word::func_index(id)));
+            if !self.ctx.indirect_calls {
+                self.op(I::Call(Word::func_index(id)));
+            } else if self.emit {
+                let ti = self.ctx.intern_type(e.wasm_params(), e.wasm_results());
+                self.op(I::I32Const(id as i32));
+                self.op(I::CallIndirect {
+                    type_index: ti,
+                    table_index: 0,
+                });
+            }
             self.callees.push((id, EdgeKind::Call));
             self.stack.extend(e.outputs);
             return Ok(Flow::Normal);
         }
         Err(self.undefined(n, loc))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn literal_base_moves() {
+        let mut ctx = Ctx::default();
+        assert_eq!(ctx.intern_str("a"), (layout::LITERALS_BASE as i32, 1));
+        ctx.begin_literals(0x30_0000);
+        assert_eq!(ctx.intern_str("a"), (0x30_0000, 1));
+        assert_eq!(ctx.literals, b"a");
+        assert_eq!(ctx.intern_str("a"), (0x30_0000, 1));
+    }
+
+    fn call_code(indirect: bool) -> Vec<I<'static>> {
+        let mut ctx = Ctx {
+            indirect_calls: indirect,
+            ..Ctx::default()
+        };
+        let e = Effect::new(vec![Ty::I32], vec![Ty::I32]);
+        ctx.add_word(Word {
+            name: "f".into(),
+            effect: e.clone(),
+            body: Some(Compiled {
+                locals: vec![],
+                code: vec![],
+            }),
+            failed: false,
+            export: false,
+            origin: Origin::User,
+            kind: WordKind::Named,
+            loc: Location::default(),
+            callees: vec![],
+        });
+        let body = vec![Node {
+            kind: NodeKind::Name("f".into()),
+            loc: Location::default(),
+        }];
+        let out = compile_body(
+            &mut ctx,
+            "g",
+            Mode::Declared(&e),
+            &body,
+            &Location::default(),
+            &[],
+        )
+        .unwrap();
+        out.compiled.code
+    }
+
+    fn line(src: &str, inputs: &[Ty]) -> Result<Output, Diagnostic> {
+        let toks = crate::lexer::lex("t", &format!(": t ( -- ) {src} ;")).unwrap();
+        let items = crate::parser::parse("t", &toks).unwrap();
+        let crate::ast::Item::Def { body, .. } = &items[0] else {
+            panic!()
+        };
+        let mut ctx = Ctx::default();
+        compile_body(
+            &mut ctx,
+            "[line 1]",
+            Mode::Line(inputs),
+            body,
+            &Location::default(),
+            &[],
+        )
+    }
+
+    #[test]
+    fn line_mode() {
+        let out = line("1 i32.add", &[Ty::I32]).unwrap();
+        assert_eq!(out.effect, Effect::new(vec![Ty::I32], vec![Ty::I32]));
+        let code = &out.compiled.code;
+        assert!(code
+            .iter()
+            .any(|i| matches!(i, I::I32Load(m) if m.offset == layout::DATA_STACK_PTR as u64)));
+        assert!(code
+            .iter()
+            .any(|i| matches!(i, I::I32Store(m) if m.offset == 0)));
+        assert_eq!(line("\"hi\"", &[]).unwrap().effect.outputs, vec![Ty::Str]);
+        assert_eq!(
+            line("5 array.new", &[]).err().unwrap().code,
+            codes::E_AMBIGUOUS_TYPE
+        );
+        assert_eq!(
+            line("i32.add", &[Ty::I32]).err().unwrap().code,
+            codes::E_STACK_UNDERFLOW
+        );
+    }
+
+    #[test]
+    fn indirect_calls_use_the_table() {
+        let code = call_code(true);
+        assert!(code.iter().any(|i| matches!(i, I::CallIndirect { .. })));
+        assert!(!code.iter().any(|i| matches!(i, I::Call(_))));
+        let code = call_code(false);
+        assert!(!code.iter().any(|i| matches!(i, I::CallIndirect { .. })));
+        assert!(code.iter().any(|i| matches!(i, I::Call(_))));
     }
 }
