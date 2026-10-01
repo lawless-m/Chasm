@@ -1,0 +1,13 @@
+# Contract first: declare effects and tests, then fill in bodies.
+# `chasm unresolved examples/contract.chasm` lists the to-do list;
+# `chasm test` reports the tests of undefined words as pending.
+
+declare parse-digit ( i32 -- i32 )
+test parse-digit : 55 parse-digit -> 7     # '7'
+
+declare parse-int ( str -- i32 )
+test parse-int : "1234" parse-int -> 1234
+
+: double-parsed ( str -- i32 )  parse-int 2 i32.mul ;
+
+: parse-digit ( i32 -- i32 )  48 i32.sub ;

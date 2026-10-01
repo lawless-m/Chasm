@@ -1,0 +1,40 @@
+# Words, locals, control flow and tests.
+
+: square ( i32 -- i32 )  dup i32.mul ;
+test square : 3 square -> 9
+test square : -4 square -> 16
+
+: sum-to ( i32 -- i32 )
+  :> n
+  0 :> acc!
+  n [ acc i32.add acc! ] times
+  acc ;
+test sum-to : 4 sum-to -> 6      # 0 + 1 + 2 + 3
+
+: abs ( i32 -- i32 )  dup 0 i32.lt_s [ 0 swap i32.sub ] when ;
+test abs : -5 abs -> 5
+test abs : 7 abs -> 7
+
+# Euclid, with a while loop and a stack assertion.
+: gcd ( i32 i32 -- i32 )
+  [ dup 0 i32.ne ]
+  [ ( i32 i32 ) swap over i32.rem_u ]
+  while
+  drop ;
+test gcd : 48 18 gcd -> 6
+
+: fact ( i64 -- i64 )
+  dup 1i64 i64.le_s [ drop 1i64 ] [ dup 1i64 i64.sub fact i64.mul ] if ;
+test fact : 20i64 fact -> 2432902008176640000i64
+
+: hypot ( f64 f64 -- f64 )
+  dup f64.mul          ( f64 f64 )   # x y*y
+  swap dup f64.mul     ( f64 f64 )
+  f64.add f64.sqrt ;
+test hypot : 3.0 4.0 hypot -> 5.0
+
+: main ( -- )
+  "10 squared is " print  10 square i32.to-str println
+  "sum-to 100 is " print  100 sum-to i32.to-str println
+  "gcd 1071 462 is " print  1071 462 gcd i32.to-str println
+  "20! is " print  20i64 fact i64.to-str println ;

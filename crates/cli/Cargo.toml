@@ -1,0 +1,17 @@
+[package]
+name = "chasm-cli"
+description = "The chasm command-line tool."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "chasm"
+path = "src/main.rs"
+
+[dependencies]
+chasm-core.workspace = true
+chasm-runtime.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
