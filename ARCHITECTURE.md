@@ -1,6 +1,6 @@
 # Chasm: Architecture and Milestones
 
-Status: draft v0.7. **Chasm** (Chuck-Wasm, after Chuck Moore) is a typed, concatenative language that compiles to WebAssembly, with an interactive REPL, written in Rust. Source files use the `.chasm` extension; the CLI binary is `chasm`.
+Status: draft v0.8. **Chasm** (Chuck-Wasm, after Chuck Moore) is a typed, concatenative language that compiles to WebAssembly, with an interactive REPL, written in Rust. Source files use the `.chasm` extension; the CLI binary is `chasm`.
 
 ## 1. Goals
 
@@ -233,14 +233,14 @@ M1 to M3 can overlap; the graph and stub data structures are part of M1 so that 
 
 ## 11. Open questions
 
+Settled questions live in `LANGUAGE.md` (primitive set, numeric types, strings, effect syntax, tests). Still open:
 
-1. Exact primitive set and naming (next document), including which shuffle primitives are built in.
-2. Effect syntax details, including how multiple types and future row variables are written.
-3. Whether `i64`, `f32`, `f64` and `v128` are in v1 or arrive in stages.
-4. How strings and other non-numeric data are represented in linear memory.
-5. Error-recovery policy for broken dependants when the cascade mode is added.
-6. How pending contract tests are reported.
+1. Error-recovery policy for broken dependants when the cascade (force-redefine) mode is added in M5.
+2. Load/store alignment and offset immediates (`LANGUAGE.md` open item 1): v1 default is natural alignment, offset 0.
+3. Module or namespace structure for libraries (`LANGUAGE.md` open item 2); a flat dictionary until it hurts.
+4. `/net/http` semantics (methods, headers) when it is built in M5.
 
+Row variables in effects are an M6 matter, not a v1 question; the type representation leaves room for them (section 4).
 
 ## 12. Hardware notes
 
