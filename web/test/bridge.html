@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Chasm bridge</title>
+<style>
+  body { font: 14px monospace; margin: 16px; background: #fff; color: #111; }
+  .err { color: #b00; }
+</style>
+</head>
+<body>
+<p>A Chasm REPL driven through BRIDGE: <code>bridge.action("step", text)</code>, <code>bridge.action("output")</code>.</p>
+<pre id="log" data-bridge-node="log">starting</pre>
+<script type="module">
+import { loadCompiler } from "../compiler.js";
+import { Repl } from "../driver.js";
+
+const log = document.getElementById("log");
+const show = (t, cls) => {
+  const span = document.createElement("span");
+  if (cls) span.className = cls;
+  span.textContent = t;
+  log.append(span);
+};
+try {
+  // A BRIDGE server may inject the client; otherwise ?client= names it.
+  if (!window.bridge) {
+    const client = new URLSearchParams(location.search).get("client");
+    if (!client) throw new Error("no BRIDGE client: serve from a BRIDGE server or add ?client=<url>");
+    await new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = client;
+      s.onload = resolve;
+      s.onerror = () => reject(new Error("cannot load the BRIDGE client"));
+      document.head.append(s);
+    });
+  }
+  const compiler = await loadCompiler(await (await fetch("../chasm_web.wasm")).arrayBuffer());
+  const L = compiler.layout;
+  const memory = new WebAssembly.Memory({ initial: L.INITIAL_PAGES, maximum: L.SHARED_MAX_PAGES, shared: true });
+  const worker = new Worker("../worker.js", { type: "module" });
+  let output = "";
+  const repl = new Repl({
+    compiler,
+    memory,
+    worker: { post: (m) => worker.postMessage(m), onMessage: (h) => worker.addEventListener("message", (e) => h(e.data)) },
+    onOutput: (t) => (output += t),
+  });
+  await repl.ready;
+  bridge.register("step", async (text) => {
+    show(`> ${text}\n`);
+    const r = await repl.step(text);
+    const s = r.stack;
+    show(s.length ? `( ${s.map((e) => e.type).join(" ")} ) ${s.map((e) => e.value).join(" ")}\n` : "( )\n", r.ok && !r.trap ? "" : "err");
+    return r;
+  });
+  bridge.register("output", () => {
+    const t = output;
+    output = "";
+    return t;
+  });
+  log.textContent = "ready\n";
+  console.log("BRIDGE ready");
+} catch (e) {
+  log.textContent = `failed: ${e.message}`;
+  console.log(`BRIDGE FAIL ${e.message}`);
+}
+</script>
+</body>
+</html>

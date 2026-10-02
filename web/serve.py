@@ -24,7 +24,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def end_headers(self):
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
-        self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
+        # The BRIDGE client script is cross-origin and sends no CORP header.
+        coep = "credentialless" if self.path.endswith("bridge.html") else "require-corp"
+        self.send_header("Cross-Origin-Embedder-Policy", coep)
         self.send_header("Cache-Control", "no-store")
         super().end_headers()
 

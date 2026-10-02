@@ -91,3 +91,25 @@ the browser given as a third argument) with a throwaway profile under
 `tmp/headless/`, opens the page through the debugging port (a fresh profile
 opens a welcome page in place of a command-line URL) and waits for the
 page's console to report.
+
+## Driving a browser REPL through BRIDGE
+
+`test/bridge.html` is a REPL page with no input box, for a BRIDGE broker
+(remote JavaScript execution in connected browsers). It registers two
+actions: `step` (one REPL step; returns the step result as the driver
+reports it) and `output` (the program's console output since the last
+call). A server that injects the BRIDGE client into its pages needs nothing
+more; elsewhere, name the client script in the query string:
+`http://localhost:8000/test/bridge.html?client=<client script URL>`. Find the
+page's `connectionId` in the broker's `GET /workers` by its `path`, then:
+
+```
+curl -s -X POST -H "Authorization: Bearer $BRIDGE_TOKEN" -H "Content-Type: application/json" \
+  -d '{"target": "<connectionId>", "script": "return await bridge.action(\"step\", \"3 2.5 point.new\")"}' \
+  "$BRIDGE_URL/jobs/sync"
+```
+
+A client script from another origin that sends no
+`Cross-Origin-Resource-Policy` header is blocked under `require-corp`, so
+`serve.py` sends `Cross-Origin-Embedder-Policy: credentialless` for this
+page. That keeps it cross-origin isolated in Chromium-based browsers.

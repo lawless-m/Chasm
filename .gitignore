@@ -2,3 +2,4 @@ target/
 *.wasm
 tmp/
 .devlog/
+*.local.md
