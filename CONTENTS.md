@@ -11,7 +11,8 @@ Chasm (Chuck-Wasm) is a typed, concatenative, Forth-and-Factor-flavoured languag
 5. **FUTURE.md**: explicitly *not* v1. Read it so v1 decisions do not close these off, but build none of it.
 6. **CLAUDE.md**: how to work in the repository.
 7. **examples/**: worked programs with tests; `docs/examples.md` is the plan for growing them into a corpus and benchmark.
-8. **web/README.md**: the browser REPL: building, serving, design.
+8. **docs/performance.md**: run speed against Rust and JavaScript, from `bench/`.
+9. **web/README.md**: the browser REPL: building, serving, design.
 
 ## Working conventions
 

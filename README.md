@@ -27,6 +27,7 @@ each, redefine words live.
 - `FUTURE.md`: what is deliberately not v1
 - `examples/`: worked examples, each with tests (`docs/examples.md`: the corpus and benchmark plan)
 - `web/README.md`: the REPL in the browser
+- `docs/performance.md`: run speed against Rust and JavaScript (`python3 bench/run.py`)
 
 Status: milestones M0 (skeleton), M1 (declared effects to wasm, CLI, native
 host), M2 (interactive REPL, native and in the browser), M3 (dependency-graph

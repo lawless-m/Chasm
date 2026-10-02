@@ -12,6 +12,7 @@ Rust workspace. Read `docs/reference.md` before writing `.chasm` code;
 - `web/`: the static browser REPL (`web/build.sh`, `web/serve.py`, node checks under `web/test/`).
 - `crates/cli`: the `chasm` binary. Every command builds a JSON report; text is rendered from it.
 - `examples/*.chasm`: every example must check and its tests must pass (enforced by `crates/cli/tests/examples.rs`).
+- `bench/`: run-speed benchmarks. `bench/<task>.chasm` replaces the `main` of `examples/<task>.chasm`; `bench/rust/` and `bench/js/` are ports. `python3 bench/run.py --record` appends results to `docs/performance.md`.
 
 ## Before pushing
 

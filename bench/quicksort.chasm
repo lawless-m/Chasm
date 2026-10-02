@@ -1,0 +1,25 @@
+# Benchmark: sort a million pseudo-random 31-bit integers with `quicksort`
+# from examples/quicksort.chasm. Run as
+# `chasm run examples/quicksort.chasm bench/quicksort.chasm`.
+# The example's `scrambled` draws from 0 to 999, and so many duplicates
+# make its Lomuto partition quadratic; `wide` keeps the whole 31 bits.
+# Prints the checksum (the middle element, or -1 if unsorted), then the
+# nanoseconds the sort took.
+
+: wide ( i32 -- array i32 )
+  :> n
+  n array.new ( array i32 ) :> a
+  12345 :> x!
+  n [ :> i
+    x 1103515245 i32.mul 12345 i32.add 0x7FFFFFFF i32.and x!
+    a i x array.at!
+  ] times
+  a ;
+
+: main ( -- )
+  1000000 wide :> a
+  now :> t0
+  a quicksort
+  now t0 i64.sub :> ns
+  a sorted? [ a 500000 array.at ] [ -1 ] if :> check
+  check i32.to-str print " " print ns i64.to-str println ;

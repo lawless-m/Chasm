@@ -1,0 +1,10 @@
+# Benchmark: count the solutions of 12 queens with `queens` from
+# examples/n-queens.chasm. Run as
+# `chasm run examples/n-queens.chasm bench/n-queens.chasm`.
+# Prints the checksum, then the nanoseconds the work took.
+
+: main ( -- )
+  now :> t0
+  12 queens :> count
+  now t0 i64.sub :> ns
+  count i32.to-str print " " print ns i64.to-str println ;

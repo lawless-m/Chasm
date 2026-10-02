@@ -71,6 +71,18 @@ fn unresolved_lists_contract_stubs() {
 }
 
 #[test]
+fn benchmarks_check_against_their_examples() {
+    for t in ["sieve", "mandelbrot", "n-queens", "quicksort"] {
+        let (ok, out, err) = chasm(&[
+            "check",
+            &format!("examples/{t}.chasm"),
+            &format!("bench/{t}.chasm"),
+        ]);
+        assert!(ok, "bench/{t}.chasm: {out}{err}");
+    }
+}
+
+#[test]
 fn dead_lists_words_main_never_reaches() {
     let (ok, out, _) = chasm(&["dead", "--json", "examples/basics.chasm"]);
     assert!(ok);
