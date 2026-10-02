@@ -1,0 +1,78 @@
+# Sort an array i32 in place by recursive quicksort, each sub-range an
+# array.slice of the same memory (no copying).
+# Rosetta Code: Sorting_algorithms/Quicksort. Exercises: recursion,
+# array.slice, in-place swaps, a pseudo-random test array.
+
+: swap-at ( array i32 i32 i32 -- )
+  :> j :> i :> a
+  a i array.at :> t
+  a i  a j array.at  array.at!
+  a j t array.at! ;
+
+# Lomuto partition around the last element; returns the pivot's final index.
+: partition ( array i32 -- i32 )
+  :> a
+  a array.len 1 i32.sub :> hi
+  a hi array.at :> pivot
+  0 :> store!
+  hi [ :> i
+    a i array.at pivot i32.lt_s [ a i store swap-at  store 1 i32.add store! ] when
+  ] times
+  a store hi swap-at
+  store ;
+
+: quicksort ( array i32 -- )
+  :> a
+  a array.len 1 i32.gt_s
+  [ a partition :> p
+    a 0 p array.slice quicksort
+    a p 1 i32.add  a array.len p i32.sub 1 i32.sub  array.slice quicksort ]
+  when ;
+
+# Test helpers: an array from a digit string, and back to text.
+: digits ( str -- array i32 )
+  :> s
+  s str.len array.new ( array i32 ) :> a
+  s str.len [ :> i  a i  s i str.byte-at 48 i32.sub  array.at! ] times
+  a ;
+
+: ints>str ( array i32 -- str )
+  :> a
+  "" :> out!
+  a array.len [ :> i
+    i 0 i32.ne [ out " " str.concat out! ] when
+    out a i array.at i32.to-str str.concat out!
+  ] times
+  out ;
+
+# n values from a linear congruential generator, 0 to 999.
+: scrambled ( i32 -- array i32 )
+  :> n
+  n array.new ( array i32 ) :> a
+  12345 :> x!
+  n [ :> i
+    x 1103515245 i32.mul 12345 i32.add 0x7FFFFFFF i32.and x!
+    a i  x 16 i32.shr_u 1000 i32.rem_u  array.at!
+  ] times
+  a ;
+
+: sorted? ( array i32 -- i32 )
+  :> a
+  1 :> ok!
+  a array.len 1 i32.sub [ :> i
+    a i array.at  a i 1 i32.add array.at  i32.gt_s [ 0 ok! leave ] when
+  ] times
+  ok ;
+
+test quicksort : "31415926" digits dup quicksort ints>str -> "1 1 2 3 4 5 6 9"
+test quicksort : "123456789" digits dup quicksort ints>str -> "1 2 3 4 5 6 7 8 9"
+test quicksort : "5" digits dup quicksort ints>str -> "5"
+test quicksort : "" digits dup quicksort ints>str -> ""
+test quicksort : 2000 scrambled dup quicksort sorted? -> 1
+test sorted? : 2000 scrambled sorted? -> 0
+
+: main ( -- )
+  20 scrambled :> a
+  a ints>str println
+  a quicksort
+  a ints>str println ;

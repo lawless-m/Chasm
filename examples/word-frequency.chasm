@@ -1,0 +1,71 @@
+# The most frequent words in a text: lower-cased, split on anything that is
+# not an ASCII letter, ties broken by first appearance.
+# Rosetta Code: Word_frequency. Exercises: tokenising, an array str beside an
+# array i32 as a stand-in for a map, selection of the top k.
+# Wall: there is no map type and no growable array, so lookup is a linear
+# search (quadratic overall) and capacity is fixed up front at the most words
+# the text could hold. Non-ASCII letters count as separators.
+
+: letter? ( i32 -- i32 )
+  :> c
+  c 65 i32.ge_u  c 90 i32.le_u  i32.and
+  c 97 i32.ge_u  c 122 i32.le_u  i32.and
+  i32.or ;
+
+# A lower-case copy of n bytes of s from start.
+: lower-slice ( str i32 i32 -- str )
+  :> n :> start :> s
+  n mem.alloc :> buf
+  n [ :> i
+    s start i i32.add str.byte-at :> c
+    buf i i32.add  c 65 i32.ge_u c 90 i32.le_u i32.and [ c 32 i32.add ] [ c ] if  i32.store8
+  ] times
+  buf n str.from-raw ;
+test lower-slice : "Hello World" 6 5 lower-slice -> "world"
+
+: index-of ( array str i32 str -- i32 )
+  :> w :> used :> words
+  -1 :> found!
+  used [ :> i  words i array.at w str.eq [ i found! leave ] when ] times
+  found ;
+
+: top-words ( str i32 -- str )
+  :> k :> s
+  s str.len 2 i32.div_u 1 i32.add :> cap        # words need a separator between them
+  cap array.new ( array str ) :> words
+  cap array.new ( array i32 ) :> counts
+  0 :> used!
+  0 :> i!
+  [ i s str.len i32.lt_u ]
+  [ s i str.byte-at letter?
+    [ i :> start
+      [ i s str.len i32.lt_u [ s i str.byte-at letter? ] [ 0 ] if ] [ i 1 i32.add i! ] while
+      s start i start i32.sub lower-slice :> w
+      words used w index-of :> at
+      at 0 i32.lt_s
+      [ words used w array.at!  counts used 1 array.at!  used 1 i32.add used! ]
+      [ counts at  counts at array.at 1 i32.add  array.at! ]
+      if ]
+    [ i 1 i32.add i! ]
+    if ]
+  while
+  "" :> out!
+  k used i32.gt_u [ used ] [ k ] if [ :> r
+    0 :> best!
+    used [ :> j  counts j array.at  counts best array.at  i32.gt_s [ j best! ] when ] times
+    r 0 i32.ne [ out " " str.concat out! ] when
+    out  words best array.at str.concat  ":" str.concat  counts best array.at i32.to-str str.concat  out!
+    counts best -1 array.at!                    # taken
+  ] times
+  out ;
+test top-words : "The cat and the hat; the BAT and a cat!" 3 top-words -> "the:3 cat:2 and:2"
+test top-words : "x y" 10 top-words -> "x:1 y:1"
+test top-words : "  ...  " 10 top-words -> ""
+test top-words : "don't stop" 10 top-words -> "don:1 t:1 stop:1"
+
+# The ten most frequent words of standard input.
+: main ( -- )
+  "" :> text!
+  1 :> more!
+  [ more ] [ read-line more! :> line  text " " str.concat line str.concat text! ] while
+  text 10 top-words println ;

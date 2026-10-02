@@ -156,9 +156,12 @@ Append as they happen. Each entry: task, what was missing, workaround used, and 
 
 | Task | Missing | Workaround | Note |
 |---|---|---|---|
-| Temperature conversion | `f64.to-str` (no float formatting in the library) | `hundredths`: scale by 100, `f64.nearest`, format the `i64` | Small; a candidate for the prelude rather than `FUTURE.md` |
+| Temperature conversion, RPN calculator | `f64.to-str` (no float formatting in the library) | `hundredths` (temperature) and `fixed ( f64 i32 -- str )` (RPN): scale by 10^d, `f64.nearest`, format the `i64` | Written twice now; a candidate for the prelude rather than `FUTURE.md` |
 | Sieve, insertion sort, binary search, 100 doors | Array literals (tests take literals only) | `digits ( str -- array i32 )` builds a test array from `"31415926"`; `ints>str` turns a result into a comparable `str` | Each file repeats these helpers: a shared test-helper library would need module structure (`ARCHITECTURE.md` open question 3) |
 | Luhn test | Index alongside `fold` | `times` with the index counted from the right | Minor; an indexed fold could be a library word |
+| Word frequency | A map type; a growable array | `array str` and `array i32` side by side with linear search (quadratic); capacity fixed at the most words the text could hold | Fast enough on 30 KB (0.3 s). A map is the first real candidate for the library once there is library structure |
+| Tokenizer | Structs | Tokens three `i32`s apart in one array (kind, start, length); every reader must know the layout | The clearest case for records in `FUTURE.md` |
+| Function composition | Closures, or making a function at run time | `compose-apply` applies f after g; composition at definition time is just `double inc` | Expected. In a concatenative language static composition is juxtaposition, so the gap is only for compositions decided at run time |
 
 ## Growth
 

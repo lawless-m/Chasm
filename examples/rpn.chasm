@@ -1,0 +1,108 @@
+# Evaluate a space-separated RPN expression over f64 with + - * / ^.
+# Rosetta Code: Parsing/RPN_calculator_algorithm. Exercises: tokenising a
+# str, parsing numbers, an array f64 as the operand stack, a hand-written
+# power word (there is no f64.pow).
+
+# x to a whole-number power n (negative n gives 1 / x^|n|).
+: pow ( f64 f64 -- f64 )
+  :> n :> x
+  1.0 :> r!
+  n f64.abs i32.trunc_f64_s [ drop r x f64.mul r! ] times
+  n 0.0 f64.lt [ 1.0 r f64.div ] [ r ] if ;
+test pow : 2.0 10.0 pow -> 1024.0
+test pow : 2.0 -3.0 pow -> 0.125
+test pow : 5.0 0.0 pow -> 1.0
+
+# An optional `-`, digits, and an optional fraction.
+: parse-num ( str -- f64 )
+  :> t
+  t str.len 1 i32.gt_u [ t 0 str.byte-at 45 i32.eq ] [ 0 ] if :> neg
+  neg :> i!
+  0.0 :> v!
+  0 :> frac!            # digits after the point
+  0 :> point!
+  [ i t str.len i32.lt_u ]
+  [ t i str.byte-at :> c
+    c 46 i32.eq
+    [ point [ "two points in " t str.concat trap ] when  1 point! ]
+    [ c 48 i32.lt_u  c 57 i32.gt_u  i32.or [ "not a number: " t str.concat trap ] when
+      v 10.0 f64.mul  c 48 i32.sub f64.convert_i32_s  f64.add v!
+      point [ frac 1 i32.add frac! ] when ]
+    if
+    i 1 i32.add i! ]
+  while
+  v  10.0 frac f64.convert_i32_s pow  f64.div :> mag
+  neg [ mag f64.neg ] [ mag ] if ;
+test parse-num : "42" parse-num -> 42.0
+test parse-num : "-4" parse-num -> -4.0
+test parse-num : "2.5" parse-num -> 2.5
+
+: op? ( str -- i32 )
+  :> t
+  t str.len 1 i32.eq
+  [ t 0 str.byte-at :> c
+    c 43 i32.eq  c 45 i32.eq i32.or  c 42 i32.eq i32.or  c 47 i32.eq i32.or  c 94 i32.eq i32.or ]
+  [ 0 ]
+  if ;
+
+: apply ( f64 f64 i32 -- f64 )
+  :> c :> b :> a
+  c 43 i32.eq [ a b f64.add ] [
+  c 45 i32.eq [ a b f64.sub ] [
+  c 42 i32.eq [ a b f64.mul ] [
+  c 47 i32.eq [ a b f64.div ] [
+                a b pow ] if ] if ] if ] if ;
+
+# Push a number, or pop two and push the result; returns the new depth.
+: token ( array f64 i32 str -- i32 )
+  :> t :> sp :> st
+  t op?
+  [ sp 2 i32.lt_s [ "not enough operands for " t str.concat trap ] when
+    st sp 2 i32.sub
+    st sp 2 i32.sub array.at  st sp 1 i32.sub array.at  t 0 str.byte-at  apply
+    array.at!
+    sp 1 i32.sub ]
+  [ st sp t parse-num array.at!  sp 1 i32.add ]
+  if ;
+
+: rpn ( str -- f64 )
+  :> s
+  s str.len array.new ( array f64 ) :> st
+  0 :> sp!
+  0 :> i!
+  [ i s str.len i32.lt_u ]
+  [ s i str.byte-at 32 i32.eq
+    [ i 1 i32.add i! ]
+    [ i :> start
+      [ i s str.len i32.lt_u [ s i str.byte-at 32 i32.ne ] [ 0 ] if ] [ i 1 i32.add i! ] while
+      st sp  s start i start i32.sub str.slice  token sp! ]
+    if ]
+  while
+  sp 1 i32.ne [ "expected one result, have " sp i32.to-str str.concat trap ] when
+  st 0 array.at ;
+test rpn : "3 4 2 * 1 5 - 2 3 ^ ^ / +" rpn -> 3.0001220703125
+test rpn : "1 2 +" rpn -> 3.0
+test rpn : "5 1 2 + 4 * + 3 -" rpn -> 14.0
+test rpn : "2 -3 ^" rpn -> 0.125
+test rpn : "  2.5   4 * " rpn -> 10.0
+
+# x rounded to d decimals, as text.
+: fixed ( f64 i32 -- str )
+  :> d :> x
+  10.0 d f64.convert_i32_s pow :> scale
+  x scale f64.mul f64.nearest i64.trunc_f64_s :> v
+  v 0 i64 i64.lt_s [ 0 i64 v i64.sub ] [ v ] if :> a
+  scale i64.trunc_f64_s :> unit
+  a unit i64.rem_s i64.to-str :> frac!
+  [ frac str.len d i32.lt_s ] [ "0" frac str.concat frac! ] while
+  v 0 i64 i64.lt_s [ "-" ] [ "" ] if
+  a unit i64.div_s i64.to-str str.concat
+  d [ "." str.concat frac str.concat ] when ;
+test fixed : 3.0001220703125 13 fixed -> "3.0001220703125"
+test fixed : -2.5 2 fixed -> "-2.50"
+test fixed : 0.125 2 fixed -> "0.12"     # f64.nearest: ties to even
+test fixed : 7.0 0 fixed -> "7"
+
+: main ( -- )
+  "3 4 2 * 1 5 - 2 3 ^ ^ / +" :> e
+  e print " = " print  e rpn 13 fixed println ;

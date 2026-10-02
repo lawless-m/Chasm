@@ -1,0 +1,80 @@
+# Conway's Game of Life on a fixed grid with dead edges.
+# Rosetta Code: Conway's_Game_of_Life. Exercises: a 2-D grid in a flat
+# array i32, index arithmetic, a board written as text.
+#
+# A board is an array i32 (1 alive, 0 dead) and its width w, row after row.
+# As text it is `.` and `#`, rows separated by a separator string.
+
+# The cell at x y, 0 off the edge.
+: cell ( array i32 i32 i32 i32 -- i32 )
+  :> y :> x :> w :> g
+  x 0 i32.lt_s  x w i32.ge_s  i32.or
+  y 0 i32.lt_s  i32.or
+  y  g array.len w i32.div_s  i32.ge_s  i32.or
+  [ 0 ]
+  [ g  y w i32.mul x i32.add  array.at ]
+  if ;
+
+: neighbours ( array i32 i32 i32 i32 -- i32 )
+  :> y :> x :> w :> g
+  0 :> n!
+  9 [ :> k                                  # k walks the 3 by 3 block
+    k 4 i32.ne
+    [ g w  x k 3 i32.rem_u i32.add 1 i32.sub  y k 3 i32.div_u i32.add 1 i32.sub  cell
+      n i32.add n! ]
+    when
+  ] times
+  n ;
+
+: step ( array i32 i32 -- array i32 )
+  :> w :> g
+  g array.len array.new ( array i32 ) :> next
+  g array.len [ :> i
+    g w  i w i32.rem_u  i w i32.div_u  neighbours :> n
+    g i array.at
+    [ n 2 i32.eq  n 3 i32.eq  i32.or ]      # a live cell survives with 2 or 3
+    [ n 3 i32.eq ]                          # a dead one is born with exactly 3
+    if :> alive
+    next i alive array.at!
+  ] times
+  next ;
+
+# Text to cells: `#` alive, `.` dead, anything else (row separators) skipped.
+: board ( str -- array i32 )
+  :> s
+  0 :> n!
+  s str.len [ s swap str.byte-at :> c  c 35 i32.eq c 46 i32.eq i32.or [ n 1 i32.add n! ] when ] times
+  n array.new ( array i32 ) :> g
+  0 :> k!
+  s str.len [ :> i
+    s i str.byte-at :> b
+    b 35 i32.eq  b 46 i32.eq  i32.or
+    [ g k  b 35 i32.eq  array.at!  k 1 i32.add k! ]
+    when
+  ] times
+  g ;
+
+: show ( array i32 i32 str -- str )
+  :> sep :> w :> g
+  "" :> out!
+  g array.len [ :> i
+    i 0 i32.ne  i w i32.rem_u i32.eqz  i32.and [ out sep str.concat out! ] when
+    out  g i array.at [ "#" ] [ "." ] if  str.concat out!
+  ] times
+  out ;
+
+test board : ".#./..#" board 3 "/" show -> ".#./..#"
+test step : ".../###/..." board 3 step 3 "/" show -> ".#./.#./.#."              # blinker turns
+test step : ".../###/..." board 3 step 3 step 3 "/" show -> ".../###/..."         # period 2
+test step : "..../.##./.##./...." board 4 step 4 "/" show -> "..../.##./.##./...."  # block is stable
+test step : ".#..../..#.../###.../....../....../......" board
+            6 step 6 step 6 step 6 step 6 "/" show
+            -> "....../..#.../...#../.###../....../......"                         # glider moves 1 down-right
+
+: main ( -- )
+  ".#......../..#......./###......./........../........../........../........../.........." board :> g!
+  5 [ :> gen
+    "generation " print gen i32.to-str println
+    g 10 "\n" show println
+    g 10 step g!
+  ] times ;

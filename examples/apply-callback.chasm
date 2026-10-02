@@ -1,0 +1,43 @@
+# Apply a word to every element of an array, the word passed as a value.
+# Rosetta Code: Apply_a_callback_to_an_array. Exercises: 'word, function
+# types in effects, call, a function value chosen at run time.
+
+: square ( i32 -- i32 )  dup i32.mul ;
+: negate ( i32 -- i32 )  0 swap i32.sub ;
+
+# A new array of f applied to each element. The local f is visible inside the
+# quotation because map inlines it.
+: apply-each ( array i32 [ i32 -- i32 ] -- array i32 )
+  :> f
+  [ f call ] map ;
+
+# The same, in place.
+: apply! ( array i32 [ i32 -- i32 ] -- )
+  :> f :> a
+  a array.len [ :> i  a i  a i array.at f call  array.at! ] times ;
+
+# A function value picked by a flag.
+: pick ( i32 -- [ i32 -- i32 ] )  [ 'square ] [ 'negate ] if ;
+
+: digits ( str -- array i32 )
+  :> s
+  s str.len array.new ( array i32 ) :> a
+  s str.len [ :> i  a i  s i str.byte-at 48 i32.sub  array.at! ] times
+  a ;
+
+: ints>str ( array i32 -- str )
+  :> a
+  "" :> out!
+  a array.len [ :> i
+    i 0 i32.ne [ out " " str.concat out! ] when
+    out a i array.at i32.to-str str.concat out!
+  ] times
+  out ;
+
+test apply-each : "1234" digits 'square apply-each ints>str -> "1 4 9 16"
+test apply-each : "1234" digits 'negate apply-each ints>str -> "-1 -2 -3 -4"
+test apply! : "123" digits dup 'square apply! ints>str -> "1 4 9"
+test pick : "12" digits 0 pick apply-each ints>str -> "-1 -2"
+
+: main ( -- )
+  "123456789" digits 'square apply-each ints>str println ;
