@@ -20,7 +20,7 @@ chasm words  FILE...          # every word and its effect
 chasm deps WORD FILE...       # what WORD calls (--all for transitive)
 chasm used-by WORD FILE...    # what calls WORD
 chasm dead   FILE...          # words `main` and `export` words never reach
-chasm build  FILE... -o out.wasm  # optimised with Binaryen (--no-opt to skip)
+chasm build  FILE... -o out.wasm  # optimised with Binaryen (--no-opt to skip; --wasi: WASI preview1 module)
 chasm repl                    # interactive; reads chunks from stdin
 chasm lsp                     # language server over stdio (docs/editors.md)
 ```
@@ -40,6 +40,14 @@ fails, the unoptimised module is written with a note. `run` skips that step
 unless given `--opt`, because under wasmtime it is as often slower as faster
 (`docs/performance.md`).
 
+`build --wasi` maps the four host words onto WASI preview1 in place of the
+ring: `/dev/cons` is stdin and stdout, `/dev/time` is `clock_time_get`,
+`/file/<path>` is `path_open` of `<path>` under the runtime's first
+preopened directory, and anything else is not found; directories cannot be
+read. A trap prints its message to stderr. The module exports `_start`,
+which calls `main`, and runs under any WASI preview1 runtime, for example
+`wasmtime --dir=. out.wasm`. `run` and `test` keep using the ring host.
+
 Add `--json` to any command for a machine-readable report:
 
 ```json
@@ -56,7 +64,7 @@ What `results` holds:
 | Command | `results` fields |
 |---|---|
 | `check` | `words`, `library_words`, `tests` (counts), `unresolved` (names), `has_main` |
-| `build` | `output`, `bytes`, `unoptimised_bytes`, `optimised`, `note` |
+| `build` | `output`, `bytes`, `unoptimised_bytes`, `optimised`, `note`, `wasi` |
 | `run` | `output` (captured console), `trap` (`message`, `word`, or null), `optimised`, `note` |
 | `test` | `tests` (each `test`, `word`, `status`, `expected`, `actual`, `trap`, `output`, `location`); `summary` (`pass`, `fail`, `pending`) |
 | `unresolved` | `unresolved` (each `word`, `declared_effect`, `dependants`, `pending_tests`, `location`) |
@@ -75,7 +83,9 @@ exactly when `ok` is true.
 Codes are stable; messages may change. See section 15 for the list.
 
 `run`, `test` and `repl` take `--mount NAME=DIR` (exposes `DIR` as
-`/mnt/NAME`) and `--no-file` (hides the host filesystem). `repl` also takes
+`/mnt/NAME`) or `--mount NAME=9p://HOST:PORT` (a 9P2000 file server over
+TCP; native only), `--no-file` (hides the host filesystem) and `--no-net` (hides
+`/net`). `repl` also takes
 `--json` (one report per chunk, one per line) and `--no-prelude`.
 
 ## 1a. The REPL
@@ -453,15 +463,33 @@ Four host words over a namespace of paths:
 | `host.close` | `( i32 -- i32 )` |
 
 Modes: 0 read, 1 write (truncate), 2 append, 3 read-write. Errors: -1 not
-found, -2 permission, -3 not supported, -4 I/O error, -5 bad handle; treat any
-negative as failure.
+found, -2 permission, -3 not supported, -4 I/O error, -5 bad handle, -6
+malformed request; treat any negative as failure.
 
 | Path | |
 |---|---|
 | `/dev/cons` | console (stdin and stdout) |
 | `/dev/time` | read gives 8 bytes: little-endian `u64` nanoseconds since the Unix epoch |
 | `/file/<path>` | host file `/<path>`; a directory read gives directory records |
-| `/mnt/<name>/...` | a directory mounted with `--mount name=DIR` |
+| `/mnt/<name>/...` | a directory mounted with `--mount name=DIR`, or a 9p server mounted with `--mount name=9p://host:port`; under a 9p mount, writing to a missing file creates it |
+| `/net/http/<host>[:port]/<path>` | an HTTP request; in the browser REPL it goes through `fetch`, so a server on another origin must allow CORS |
+| `/net/https/<host>[:port]/<path>` | the same over TLS |
+
+**HTTP requests.** What a program writes to a `/net/http` handle is the rest
+of the request after its first line: `Name: value` header lines, an empty
+line, then the body. The request is sent at the first read, which returns the
+response body; headers may be split across several writes.
+
+- Nothing written, then a read: a GET. `"/net/http/example.com/" read-file`
+  is a plain GET.
+- `"X-Token: abc\n\n"` written, then a read: a GET with that header.
+- `"Content-Type: text/plain\n\nhello"` written, then a read: a POST of
+  `hello`.
+
+Status 404 is -1, 401 and 403 are -2, any other status outside 200 to 299 is
+-4, and so is a failed connection. A header line without `: `, or a header
+block with no empty line after it, is -6; a write after the first read is -2.
+`--no-net` hides `/net` (-3).
 
 Directory records: `u32` name length, name bytes, `u64` size, `u8` is-dir,
 packed. Reads return whole records only.
@@ -510,5 +538,6 @@ Library words:
 
 See `examples/`: `hello`, `basics` (words, loops, tests), `strings`,
 `arrays` (combinators, functions as values), `contract` (declare first),
-`files` (the namespace), `structs` (structs, lists, arrays of structs). Any of them can also be typed or piped into
+`files` (the namespace), `http` (requests with headers), `ninep` (a 9p
+mount and directory records), `wasi` (a program for `build --wasi`), `structs` (structs, lists, arrays of structs). Any of them can also be typed or piped into
 `chasm repl`, e.g. `chasm repl < examples/basics.chasm`.

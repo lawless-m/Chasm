@@ -19,6 +19,12 @@ pub const HEAP_PTR: u32 = 0x110;
 pub const DATA_STACK_PTR: u32 = 0x114;
 /// Browser doorbell: the worker stores 0 and waits here in `ring_enter`; the main thread services the ring, stores 1 and notifies.
 pub const DOORBELL: u32 = 0x118;
+/// WASI builds only: two iovecs for `fd_read`/`fd_write` (16 bytes).
+pub const WASI_IOVEC: u32 = 0x120;
+/// WASI builds only: a call's out-parameter (bytes moved, an opened fd).
+pub const WASI_RESULT: u32 = 0x130;
+/// WASI builds only: whether `/dev/time` has been read since it was opened.
+pub const WASI_TIME_DONE: u32 = 0x134;
 
 /// I/O ring: 64 KiB to 128 KiB.
 pub const RING_BASE: u32 = 0x1_0000;
@@ -83,6 +89,8 @@ pub const E_PERMISSION: i32 = -2;
 pub const E_NOT_SUPPORTED: i32 = -3;
 pub const E_IO: i32 = -4;
 pub const E_BAD_HANDLE: i32 = -5;
+/// A malformed request written to a handle (a `/net/http` header block).
+pub const E_MALFORMED: i32 = -6;
 
 /// Open modes.
 pub const MODE_READ: i32 = 0;
@@ -94,6 +102,8 @@ const _: () = {
     assert!(CQ_BASE + RING_ENTRIES * CQE_SIZE <= RING_END);
     assert!(TRAP_MSG_ADDR < RESERVED_END);
     assert!(DOORBELL < RESERVED_END);
+    assert!(DOORBELL + 4 <= WASI_IOVEC);
+    assert!(WASI_TIME_DONE + 4 <= RESERVED_END);
 };
 
 /// Name/value pairs a JavaScript host needs; negative codes are cast to `u32`.
@@ -139,6 +149,7 @@ pub fn constants() -> Vec<(&'static str, u32)> {
         ("E_NOT_SUPPORTED", E_NOT_SUPPORTED as u32),
         ("E_IO", E_IO as u32),
         ("E_BAD_HANDLE", E_BAD_HANDLE as u32),
+        ("E_MALFORMED", E_MALFORMED as u32),
         ("MODE_READ", MODE_READ as u32),
         ("MODE_WRITE", MODE_WRITE as u32),
         ("MODE_APPEND", MODE_APPEND as u32),

@@ -14,6 +14,7 @@ fn repl() -> NativeRepl {
             },
             file: false,
             mounts: Default::default(),
+            net: false,
         },
         true,
     )

@@ -45,9 +45,9 @@ export class Repl {
     this.ready = this.install(compiler.newSession(true, this.L.LITERALS_BASE));
   }
 
-  message(m) {
+  async message(m) {
     if (m.type === "ring") {
-      serviceRing(this.memory, this.L, this.host);
+      await serviceRing(this.memory, this.L, this.host);
       const cells = new Int32Array(this.memory.buffer);
       Atomics.store(cells, this.L.DOORBELL >> 2, 1);
       Atomics.notify(cells, this.L.DOORBELL >> 2);

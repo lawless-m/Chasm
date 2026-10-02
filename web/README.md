@@ -65,8 +65,10 @@ Node API, so the node checks below exercise the same code the page runs.
 ## The browser namespace
 
 `/dev/cons` output goes to the page; console reads return end of input, so
-`read-line` reports no more lines. `/dev/time` works. There is no `/file`,
-no mounts and no `/net`: those paths return not found.
+`read-line` reports no more lines. `/dev/time` works. `/net/http` and
+`/net/https` go through `fetch`, so a server on another origin must allow
+CORS. There is no `/file` and there are no mounts: those paths return not
+found.
 
 ## Checks
 
@@ -76,6 +78,7 @@ Run from the repository root after `build.sh`:
 node web/test/compiler.mjs    # the compiler wrapper
 node web/test/ring.mjs        # ring servicing and the namespace
 node web/test/node-repl.mjs   # end to end: driver, worker thread, shared memory, doorbell
+node web/test/net.mjs         # /net/http through fetch, against a local server
 node web/test/node-structs.mjs  # structs end to end; needs node 22 or later (WasmGC)
 ```
 

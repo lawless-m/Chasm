@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use chasm_core::{compile, Compilation, Diagnostic, Location, Options, Source};
-use chasm_runtime::namespace::{Config, Console};
+use chasm_runtime::namespace::{Config, Console, Mount};
 use chasm_runtime::native::{run_tests, Runner, TestStatus};
 use chasm_runtime::repl::{NativeRepl, Outcome};
 use clap::{Args, Parser, Subcommand};
@@ -43,12 +43,15 @@ struct Common {
 
 #[derive(Args)]
 struct HostArgs {
-    /// Mount a local directory: `--mount name=DIR` or `--mount /mnt/name=DIR`.
+    /// Mount a local directory or a 9p server at /mnt/name: `--mount name=DIR` or `--mount name=9p://host:port`.
     #[arg(long = "mount", value_name = "NAME=DIR")]
     mounts: Vec<String>,
     /// Do not expose the host filesystem as `/file`.
     #[arg(long)]
     no_file: bool,
+    /// Do not expose the network as /net.
+    #[arg(long)]
+    no_net: bool,
 }
 
 #[derive(Subcommand)]
@@ -65,6 +68,9 @@ enum Cmd {
         /// Skip Binaryen's `wasm-opt`.
         #[arg(long)]
         no_opt: bool,
+        /// Import WASI preview1 instead of the Chasm ring host and export _start.
+        #[arg(long)]
+        wasi: bool,
     },
     /// Build and run `main ( -- )`.
     Run {
@@ -213,7 +219,12 @@ fn optimise(raw: &[u8], skip: bool) -> (Vec<u8>, Option<String>) {
 }
 
 #[allow(clippy::result_large_err)]
-fn load(c: &Common, test_exports: bool, export: bool) -> Result<Compilation, Diagnostic> {
+fn load(
+    c: &Common,
+    test_exports: bool,
+    export: bool,
+    wasi: bool,
+) -> Result<Compilation, Diagnostic> {
     let mut sources = Vec::new();
     for f in &c.files {
         let name = f.display().to_string();
@@ -237,6 +248,7 @@ fn load(c: &Common, test_exports: bool, export: bool) -> Result<Compilation, Dia
             prelude: !c.no_prelude,
             test_exports,
             export,
+            wasi,
         },
     ))
 }
@@ -253,17 +265,27 @@ fn host_config(h: &HostArgs) -> Result<Config, String> {
                 "bad --mount `{m}`: name must be a single path segment"
             ));
         }
-        if let Some(src) = dir.strip_prefix("9p://") {
-            return Err(format!(
-                "9p mounts are not supported yet (`{src}`); mount a local directory"
-            ));
-        }
-        mounts.insert(name.to_string(), PathBuf::from(dir));
+        let mount = match dir.strip_prefix("9p://") {
+            Some(addr) => {
+                let port_ok = addr
+                    .rsplit_once(':')
+                    .is_some_and(|(host, port)| !host.is_empty() && port.parse::<u16>().is_ok());
+                if !port_ok {
+                    return Err(format!(
+                        "bad --mount `{m}`: a 9p source is `9p://host:port`"
+                    ));
+                }
+                Mount::NineP(addr.to_string())
+            }
+            None => Mount::Dir(PathBuf::from(dir)),
+        };
+        mounts.insert(name.to_string(), mount);
     }
     Ok(Config {
         console: Console::Std,
         file: !h.no_file,
         mounts,
+        net: !h.no_net,
     })
 }
 
@@ -284,7 +306,7 @@ fn exec(cli: Cli) -> (Report, bool) {
     match cli.cmd {
         Cmd::Check(c) => {
             let json = c.json;
-            let r = match load(&c, false, false) {
+            let r = match load(&c, false, false, false) {
                 Err(d) => failed("check", vec![d]),
                 Ok(comp) => Report {
                     command: "check",
@@ -305,9 +327,10 @@ fn exec(cli: Cli) -> (Report, bool) {
             common,
             output,
             no_opt,
+            wasi,
         } => {
             let json = common.json;
-            let r = match load(&common, false, true) {
+            let r = match load(&common, false, true, wasi) {
                 Err(d) => failed("build", vec![d]),
                 Ok(comp) => match &comp.wasm {
                     None => failed("build", comp.diagnostics),
@@ -324,6 +347,7 @@ fn exec(cli: Cli) -> (Report, bool) {
                                     "unoptimised_bytes": raw.len(),
                                     "optimised": !no_opt && note.is_none(),
                                     "note": note,
+                                    "wasi": wasi,
                                 }),
                                 diagnostics: comp.diagnostics,
                             },
@@ -355,7 +379,7 @@ fn exec(cli: Cli) -> (Report, bool) {
                     )
                 }
             };
-            let comp = match load(&common, false, true) {
+            let comp = match load(&common, false, true, false) {
                 Ok(c) => c,
                 Err(d) => return (failed("run", vec![d]), json),
             };
@@ -425,7 +449,7 @@ fn exec(cli: Cli) -> (Report, bool) {
                     )
                 }
             };
-            let comp = match load(&common, true, false) {
+            let comp = match load(&common, true, false, false) {
                 Ok(c) => c,
                 Err(d) => return (failed("test", vec![d]), json),
             };
@@ -471,7 +495,7 @@ fn exec(cli: Cli) -> (Report, bool) {
         }
         Cmd::Unresolved(c) => {
             let json = c.json;
-            let r = match load(&c, false, false) {
+            let r = match load(&c, false, false, false) {
                 Err(d) => failed("unresolved", vec![d]),
                 Ok(comp) => {
                     let list: Vec<J> = comp
@@ -499,7 +523,7 @@ fn exec(cli: Cli) -> (Report, bool) {
         }
         Cmd::Dead(c) => {
             let json = c.json;
-            let r = match load(&c, false, false) {
+            let r = match load(&c, false, false, false) {
                 Err(d) => failed("dead", vec![d]),
                 Ok(comp) => {
                     let dead = comp.dead().map(|ws| {
@@ -525,7 +549,7 @@ fn exec(cli: Cli) -> (Report, bool) {
         }
         Cmd::Words(c) => {
             let json = c.json;
-            let r = match load(&c, false, false) {
+            let r = match load(&c, false, false, false) {
                 Err(d) => failed("words", vec![d]),
                 Ok(comp) => Report {
                     command: "words",
@@ -661,7 +685,7 @@ fn graph_query(
     c: &Common,
     f: impl Fn(&Compilation) -> J,
 ) -> Report {
-    match load(c, false, false) {
+    match load(c, false, false, false) {
         Err(d) => failed(command, vec![d]),
         Ok(comp) => {
             if comp.word(word).is_none() {

@@ -1,6 +1,6 @@
 # Chasm: Architecture and Milestones
 
-Status: draft v0.15 (M0 to M5 implemented, and M6 in part: JSON everywhere, `chasm lsp`, `)force`; decisions in sections 13 to 18). **Chasm** (Chuck-Wasm, after Chuck Moore) is a typed, concatenative language that compiles to WebAssembly, with an interactive REPL, written in Rust. Source files use the `.chasm` extension; the CLI binary is `chasm`.
+Status: draft v0.16 (M0 to M6 implemented; decisions in sections 13 to 18). **Chasm** (Chuck-Wasm, after Chuck Moore) is a typed, concatenative language that compiles to WebAssembly, with an interactive REPL, written in Rust. Source files use the `.chasm` extension; the CLI binary is `chasm`.
 
 ## 1. Goals
 
@@ -62,7 +62,7 @@ Type representation: an effect is a list of input types and a list of output typ
   | 1 MiB upward | Literals, then heap | Read-only literals first, bump heap after, growing by `memory.grow`. |
 
   Initial memory is 4 MiB (64 pages). These numbers are v1 defaults, not promises; they live in one place in `core`.
-- **Memory ownership.** v1 uses a bump allocator with no free. Strings and other non-numeric data (open question 4) build on it. A real allocator is a later concern and must not leak into the language design.
+- **Memory ownership.** v1 uses a bump allocator with no free. Strings and other non-numeric data (`LANGUAGE.md` sections 4 and 4a) build on it. A real allocator is a later concern and must not leak into the language design.
 
 ## 5a. Locals
 
@@ -121,13 +121,13 @@ These are the only host imports. **Everything else is a path.** Adding a capabil
 |---|---|
 | `/dev/cons` | Console. `print` is library code that writes here. |
 | `/dev/time` | Read returns a timestamp. |
-| `/net/http/<host>/<path>` | Opens an HTTP request. Write sends a body, read receives the response. |
+| `/net/http/<host>/<path>` | Opens an HTTP request. A write sends header lines, an empty line and a body; a read receives the response body (`LANGUAGE.md` 17). |
 | `/file/...` | Host filesystem, where one exists. |
 | `/mnt/<name>/...` | Mounted trees, including 9p servers. |
 
 **Directories.** Reading a directory handle returns entries in one fixed encoding: a length-prefixed record per entry (name, size, is-dir flag). It is the same everywhere, so a directory-walking word works on local files, the browser's in-memory tree, or a remote 9p mount alike.
 
-**Mounts.** Host configuration in v1: the CLI takes `--mount /mnt/name=<source>`, where a source may be a local directory or a 9p server (`9p://host:564`, or over WebSocket in the browser). A `host.mount` word may come later.
+**Mounts.** Host configuration: the CLI takes `--mount name=DIR` or `--mount name=9p://host:port` (also written `/mnt/name=...`), natively. 9p from the browser, over WebSocket, is deferred. A `host.mount` word may come later.
 
 **Transport: a submission/completion ring from day one.** Each `host.*` word writes a request into a ring in linear memory, waits for the completion, and returns the result. The words look synchronous to the language; asynchrony lives entirely in the host.
 
@@ -226,7 +226,7 @@ Principles; exact fields are settled in M1 and generated from the Rust types (`s
 
 **M5: Hybrid export.** Whole-program compilation, direct calls, dead-word removal, Binaryen. Refuse unresolved words. Inlining is left to Binaryen (section 17).
 
-**M6: Polish and tooling.** JSON output everywhere, editor integration, expanded examples, force-redefine with cascade. `/net/http`, 9p mounts, WASI export mapping, io_uring native backend if profiling justifies it.
+**M6: Polish and tooling.** JSON output everywhere, editor integration (`chasm lsp`), expanded examples, force-redefine with cascade (`)force`), `/net/http` with request headers natively and in the browser, 9p mounts, WASI export mapping (`build --wasi`). An io_uring native backend was measured and not built (section 18).
 
 **M7: Inference (optional).** Elaboration pass in front of the checker producing annotations, with row variables. Soundness unaffected because the checker re-verifies. Start with straight-line words made only of primitives, then add unification.
 
@@ -234,12 +234,11 @@ M1 to M3 can overlap; the graph and stub data structures are part of M1 so that 
 
 ## 11. Open questions
 
-Settled questions live in `LANGUAGE.md` (primitive set, numeric types, strings, effect syntax, tests; M1 decisions in its section 12); the policy for dependants broken by a forced effect change is settled in section 18. Still open:
+Settled questions live in `LANGUAGE.md` (primitive set, numeric types, strings, effect syntax, tests; M1 decisions in its section 12); the policy for dependants broken by a forced effect change and the `/net/http` semantics are settled in section 18 and `LANGUAGE.md` section 17. Still open:
 
 1. Load/store alignment and offset immediates (`LANGUAGE.md` open item 1): v1 is natural alignment, offset 0.
 2. Module or namespace structure for libraries (`LANGUAGE.md` open item 2); a flat dictionary until it hurts.
-3. `/net/http` semantics (methods, headers) when it is built in M6.
-4. Integer overflow. The primitives are wasm's (`LANGUAGE.md` section 2), so integer arithmetic wraps silently: `21 fact` is a well-typed wrong answer (`examples/factorial.chasm`). Chasm's safety is memory and type safety, not arithmetic safety, and the effect checker tracks types, not ranges. If checked arithmetic is wanted, the candidate is library words in the prelude (e.g. a trapping `i64.mul?`) beside the unchanged primitives, keeping one primitive to one instruction. Open: whether to add them, their names, and whether examples should prefer them.
+3. Integer overflow. The primitives are wasm's (`LANGUAGE.md` section 2), so integer arithmetic wraps silently: `21 fact` is a well-typed wrong answer (`examples/factorial.chasm`). Chasm's safety is memory and type safety, not arithmetic safety, and the effect checker tracks types, not ranges. If checked arithmetic is wanted, the candidate is library words in the prelude (e.g. a trapping `i64.mul?`) beside the unchanged primitives, keeping one primitive to one instruction. Open: whether to add them, their names, and whether examples should prefer them.
 
 Row variables in effects are an M7 matter, not a v1 question; the type representation leaves room for them (section 4).
 
@@ -257,7 +256,7 @@ Heavy native batch work (large test corpora, benchmarks, Binaryen runs over big 
 6. **Functions as values** (`'word`, quotation values, `call`, address-taken edges) were cheap on top of the table, so they landed in M1 rather than M3.
 7. **Two-pass checking.** Each body is walked twice by the same checker: a checking pass that settles type variables, then an emitting pass with the final substitution. Blocks take the whole checker stack as parameters (multi-value), so a quotation under a combinator can reach any value below it.
 8. **Text from JSON.** Every CLI command builds the JSON report; the text output is rendered from that JSON value.
-9. **Host namespace.** `/file/<path>` is the host path `/<path>` (off with `--no-file`). `--mount name=DIR` mounts a local directory at `/mnt/name`, and `..` is refused under mounts. `/net/...` and 9p sources return "not supported" until M6.
+9. **Host namespace.** `/file/<path>` is the host path `/<path>` (off with `--no-file`). `--mount name=DIR` mounts a local directory at `/mnt/name`, `--mount name=9p://host:port` a 9p server, and `..` is refused under mounts. `--no-net` hides `/net`, which then returns "not supported", as other `/net/...` services do.
 
 ## 14. Decisions taken in M2
 
@@ -332,3 +331,9 @@ Heavy native batch work (large test corpora, benchmarks, Binaryen runs over big 
 4. **A `)force` chunk continues until an empty line** (`needs_more`); the browser asks with the pending newline included, as the native REPL does, so one empty line ends it in both.
 5. **Editor integration is `chasm lsp`**, a Language Server Protocol server over stdio in the CLI crate (`lsp-server`, `lsp-types`): diagnostics with their Chasm codes on open, change and save, hover with effects, and go-to-definition, all for the single open document with the prelude. No editor-specific extension; `docs/editors.md` configures Neovim, Helix and VS Code's generic client. The core stays free of I/O.
 6. **JSON everywhere.** Every command prints the same `{schema, ok, command, diagnostics, results}` report, including clap usage errors under `--json` (`E_USAGE`), pinned by the test `json_report_shape_for_every_command`; `docs/reference.md` section 1 lists each command's `results`. `lsp` is the exception: it speaks JSON-RPC.
+7. **HTTP natively** is `ureq` with `rustls` behind the namespace (`crates/runtime/src/net.rs`). The request is sent at the first read, because the method depends on what was written; `--no-net` mirrors `--no-file`.
+8. **HTTP in the browser** goes through `fetch`. `serviceRing` is now asynchronous: it awaits each host call before the next entry, then the doorbell is rung, which the ring design allowed from the start, since the worker waits on the doorbell whatever the main thread does.
+9. **9p mounts** use a plain 9P2000 client over TCP (`crates/runtime/src/ninep.rs`): version, attach, walk, open, create, read, write, clunk and stat, msize 8192, one request in flight. A mount connects on its first open, so an unreachable server costs nothing until used. A directory read maps the server's stat records onto Chasm's directory records. The in-memory test server (`crates/runtime/tests/common/ninep_server.rs`) is shared with the CLI's test by `#[path]`. 9p from the browser, over WebSocket, is deferred.
+10. **WASI export is a mapping of four words and a path table** (`crates/core/src/wasi.rs`), not an API translation. `build --wasi` imports five preview1 functions (`fd_write`, `fd_read`, `fd_close`, `path_open`, `clock_time_get`) in place of `chasm.ring_enter`, and the ring helper keeps its signature but dispatches over them, so compiled words are identical in both modes; the function index space shifts by the import count. `/dev/cons` is fds 0 and 1, `/dev/time` is `clock_time_get`, `/file/<path>` is `path_open` under preopen fd 3, anything else is not found, and directories are not readable. A trap writes its message to fd 2. It is verified by running built modules under `wasmtime-wasi` as a dev-dependency of the runtime, so no wasmtime CLI is needed.
+11. **No io_uring backend.** Measured (`docs/performance.md`, Ring servicing): a trip through the ring costs about 120 to 200 ns, against 400 to 700 ns for the system call it carries. io_uring's gain is batching and overlapping submissions, but a Chasm host word submits one entry and waits for its completion before going on (the language is synchronous by design, section 5d), so with one entry in flight io_uring would only put a kernel round trip in place of a direct system call. Revisit if a host word ever submits several entries at once.
+

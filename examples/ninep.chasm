@@ -1,0 +1,50 @@
+# A 9p file server mounted into the namespace, and the directory records
+# every directory read returns: u32 name length, the name, u64 size, u8
+# is-dir, packed. Run against a 9P2000 server:
+#   chasm run examples/ninep.chasm --mount p=9p://host:564
+
+: record-len ( i32 -- i32 )  i32.load 13 i32.add ;
+: record-name ( i32 -- str )  :> r  r 4 i32.add r i32.load str.from-raw ;
+: record-size ( i32 -- i64 )  :> r  r 4 i32.add r i32.load i32.add i64.load ;
+: record-dir? ( i32 -- i32 )  :> r  r 12 i32.add r i32.load i32.add i32.load8_u ;
+
+# One record built by hand, for the tests: name, size, is-dir.
+: make-record ( str i64 i32 -- i32 )
+  :> dir :> size :> name
+  name str.len 13 i32.add mem.alloc :> r
+  r name str.len i32.store
+  r 4 i32.add name str.addr name str.len memory.copy
+  r 4 i32.add name str.len i32.add size i64.store
+  r 12 i32.add name str.len i32.add dir i32.store8
+  r ;
+test record-name : "abc" 42 i64 0 make-record record-name -> "abc"
+test record-size : "abc" 42 i64 0 make-record record-size -> 42 i64
+test record-dir? : "sub" 0 i64 1 make-record record-dir? -> 1
+test record-len : "hello.txt" 6 i64 0 make-record record-len -> 22
+
+# The number of entries in a directory, or the error from opening it.
+: entries ( str -- i32 )
+  :> path
+  path 0 host.open :> h
+  h 0 i32.lt_s
+  [ h ]
+  [ 4096 mem.alloc :> buf
+    0 :> count!
+    1 :> r!
+    [ r 0 i32.gt_s ]
+    [ h buf 4096 host.read r!
+      0 :> at!
+      [ at r i32.lt_s ]
+      [ buf at i32.add record-len at i32.add at!  count 1 i32.add count! ]
+      while ]
+    while
+    h host.close drop
+    count ]
+  if ;
+test entries : "/mnt/none" entries -> -1
+
+: main ( -- )
+  "/mnt/p has " print  "/mnt/p" entries i32.to-str print  " entries" println
+  "/mnt/p" ls drop
+  "/mnt/p/hello.txt" read-file
+  0 i32.eq [ print ] [ drop "could not read" println ] if ;

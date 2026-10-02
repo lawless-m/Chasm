@@ -7,6 +7,7 @@ fn ok(src: &str) -> chasm_core::Compilation {
             prelude: true,
             test_exports: true,
             export: false,
+            wasi: false,
         },
     );
     for d in &c.diagnostics {
@@ -310,6 +311,7 @@ fn export(src: &str) -> chasm_core::Compilation {
             prelude: true,
             test_exports: false,
             export: true,
+            wasi: false,
         },
     )
 }
@@ -355,4 +357,55 @@ fn export_leaves_out_dead_words() {
     }
     assert!(!names.iter().any(|n| n == "unused"), "{names:?}");
     assert!(trimmed.wasm.unwrap().len() < full.wasm.unwrap().len());
+}
+
+fn imports_and_exports(wasm: &[u8]) -> (Vec<String>, Vec<String>) {
+    let (mut imports, mut exports) = (Vec::new(), Vec::new());
+    for payload in wasmparser::Parser::new(0).parse_all(wasm) {
+        match payload.unwrap() {
+            wasmparser::Payload::ImportSection(r) => {
+                for i in r.into_imports() {
+                    let i = i.unwrap();
+                    imports.push(format!("{}.{}", i.module, i.name));
+                }
+            }
+            wasmparser::Payload::ExportSection(r) => {
+                exports.extend(r.into_iter().map(|e| e.unwrap().name.to_string()));
+            }
+            _ => {}
+        }
+    }
+    (imports, exports)
+}
+
+#[test]
+fn wasi_build_imports_preview1_and_exports_start() {
+    let src = ": main ( -- ) \"hi\" println ;";
+    let c = compile(
+        &[Source::new("t.chasm", src)],
+        &Options {
+            prelude: true,
+            test_exports: false,
+            export: true,
+            wasi: true,
+        },
+    );
+    assert!(c.ok(), "{:?}", c.diagnostics);
+    let (imports, exports) = imports_and_exports(c.wasm.as_ref().unwrap());
+    assert_eq!(
+        imports,
+        [
+            "wasi_snapshot_preview1.fd_write",
+            "wasi_snapshot_preview1.fd_read",
+            "wasi_snapshot_preview1.fd_close",
+            "wasi_snapshot_preview1.path_open",
+            "wasi_snapshot_preview1.clock_time_get",
+        ]
+    );
+    assert!(exports.iter().any(|e| e == "_start"), "{exports:?}");
+    assert!(exports.iter().any(|e| e == "memory"), "{exports:?}");
+    let plain = export(src);
+    let (imports, exports) = imports_and_exports(plain.wasm.as_ref().unwrap());
+    assert_eq!(imports, ["chasm.ring_enter"]);
+    assert!(!exports.iter().any(|e| e == "_start"));
 }

@@ -18,6 +18,7 @@ pub mod prims;
 pub mod program;
 pub mod repl;
 pub mod types;
+pub mod wasi;
 
 pub use check::StructDef;
 pub use diag::{Diagnostic, Location, Severity};

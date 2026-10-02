@@ -24,7 +24,14 @@ A quotation plus captured locals: an environment struct and a funcref, with the 
 
 ## 4. WasmGC
 
-Adopted for structs in M4 (`ARCHITECTURE.md` section 15). Strings and arrays stay in linear memory; whether arrays should become GC arrays too is open.
+Adopted for structs in M4 (`ARCHITECTURE.md` section 15). Strings and arrays of numbers stay in linear memory, allocated by a bump allocator that never frees: `[ "x" str.concat ] 1000000 times` keeps every string. A program that runs and exits does not notice; a long REPL session or a compiler would.
+
+Moving `str` and numeric arrays to GC arrays (`array i8`, `array i32`, ...) would put all memory under the collector, and the engine's own bounds checks on GC arrays would replace Chasm's. The costs:
+
+- **I/O copies.** The ring hands the host an address and length in linear memory, so every read and write would copy between a GC array and a linear buffer.
+- **Literals.** String literals live in a data segment; they would be built as GC arrays at start-up or with `array.new_data`.
+- **Speed is unmeasured.** GC array access under Cranelift may be slower or faster than linear memory; `bench/` would decide.
+- **The REPL stack.** Strings and arrays would join structs in the `chasm.refs` table, which already exists.
 
 ## 5. Inference
 
@@ -34,8 +41,24 @@ Covered in `ARCHITECTURE.md` M7: an elaboration pass in front of the checker, ro
 
 A flat dictionary is fine until the library grows. Likely shape: a file is a module, `use name` imports it, words are prefixed by module (`str.len` is already this shape). Open question 2 in `LANGUAGE.md`.
 
-## 6. Sum types
+## 7. Sum types
 
 A type that is one of several shapes: `list = nil | cons`, a token kind, a JSON value. Without them, M4 code writes an optional link as an `array` of length 0 or 1 (`next: array node`, tested with `array.len`), the way Prolog's `[]` ends a list but as an empty container rather than its own value. Sum types would retire that idiom.
 
 With WasmGC the lowering is natural: one non-final supertype per sum type, a final struct subtype per variant, and matching by `br_on_cast` / `ref.test`. The checker would need an exhaustive match combinator (one quotation per variant, all leaving the same stack), in the style of `if`. Depends on M4 structs.
+
+## 8. Self-hosting
+
+A Chasm compiler written in Chasm, reached in stages, each an ordinary example with tests:
+
+1. **Lexer.** Grow `examples/tokenizer.chasm` into a lexer whose tokens match `crates/core/src/lexer.rs` on the same input.
+2. **Parser.** Items and bodies as structs. This is where the lack of sum types (section 7) bites: an AST node is a word, a literal or a quotation, and without sum types each becomes a tagged struct with fields used only sometimes, matched by `if` chains the checker cannot prove exhaustive.
+3. **Decide.** Measure what the first two stages cost, then choose whether sum types and some generic mechanism (`ARCHITECTURE.md` M7's row variables, or something smaller) come first.
+
+What a compiler needs that the language lacks today:
+
+- **Generic collections.** With no type variables in effects, token lists, symbol tables and worklists are written once per element type.
+- **Growable arrays and maps.** The chunked growable list (section 2) and a hash map, again per type.
+- **Collected memory.** A compiler that runs and exits survives the bump allocator; one inside the REPL would want section 4's GC strings and arrays. An AST built from structs is collected already.
+
+The end state is the usual fixpoint: the Rust compiler builds the Chasm compiler, that compiler builds itself, and the two outputs are byte-identical. The browser REPL could then run a compiler written in Chasm.

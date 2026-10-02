@@ -1,10 +1,9 @@
 # The most frequent words in a text: lower-cased, split on anything that is
 # not an ASCII letter, ties broken by first appearance.
-# Rosetta Code: Word_frequency. Exercises: tokenising, an array str beside an
-# array i32 as a stand-in for a map, selection of the top k.
-# Wall: there is no map type and no growable array, so lookup is a linear
-# search (quadratic overall) and capacity is fixed up front at the most words
-# the text could hold. Non-ASCII letters count as separators.
+# Rosetta Code: Word_frequency. Exercises: structs, a binary search tree of
+# optional links (an `array node` of length 0 or 1, as in structs.chasm), a
+# map without a map type, selection of the top k. Non-ASCII letters count as
+# separators.
 
 : letter? ( i32 -- i32 )
   :> c
@@ -23,17 +22,61 @@
   buf n str.from-raw ;
 test lower-slice : "Hello World" 6 5 lower-slice -> "world"
 
-: index-of ( array str i32 str -- i32 )
-  :> w :> used :> words
-  -1 :> found!
-  used [ :> i  words i array.at w str.eq [ i found! leave ] when ] times
-  found ;
+# Byte-wise order: negative, zero or positive.
+: str.cmp ( str str -- i32 )
+  :> b :> a
+  a str.len b str.len i32.lt_s [ a str.len ] [ b str.len ] if :> n
+  0 :> i!
+  0 :> d!
+  [ i n i32.lt_s d i32.eqz i32.and ]
+  [ a i str.byte-at  b i str.byte-at  i32.sub d!  i 1 i32.add i! ]
+  while
+  d i32.eqz [ a str.len b str.len i32.sub ] [ d ] if ;
+test str.cmp : "cat" "cat" str.cmp -> 0
+test str.cmp : "bat" "cat" str.cmp 0 i32.lt_s -> 1
+test str.cmp : "cats" "cat" str.cmp 0 i32.gt_s -> 1
+
+# A word, its count, when it first appeared, and the subtrees before and
+# after it: each an array of 0 or 1 nodes.
+struct node  word: str  count: i32  first: i32  left: array node  right: array node
+
+: none ( -- array node )  0 array.new ( array node ) ;
+: one ( node -- array node )  :> n  1 array.new ( array node ) :> a  a 0 n array.at!  a ;
+
+# Count a word under a non-empty tree; 1 if it is new, else 0.
+: insert ( node str i32 -- i32 )
+  :> seq :> w :> root
+  root :> cur!
+  -1 :> added!
+  [ added 0 i32.lt_s ]
+  [ w cur node.word str.cmp :> c
+    c 0 i32.eq
+    [ cur  cur node.count 1 i32.add  node.count!  0 added! ]
+    [ c 0 i32.lt_s [ cur node.left ] [ cur node.right ] if :> next
+      next array.len
+      [ next 0 array.at cur! ]
+      [ w 1 seq none none node.new one :> leaf
+        c 0 i32.lt_s [ cur leaf node.left! ] [ cur leaf node.right! ] if
+        1 added! ]
+      if ]
+    if ]
+  while
+  added ;
+
+# Store the nodes under a link into out from index at; the next free index.
+: collect ( array node array node i32 -- i32 )
+  :> at :> out :> link
+  link array.len
+  [ link 0 array.at :> n
+    n node.left out at collect :> at2
+    out at2 n array.at!
+    n node.right out at2 1 i32.add collect ]
+  [ at ]
+  if ;
 
 : top-words ( str i32 -- str )
   :> k :> s
-  s str.len 2 i32.div_u 1 i32.add :> cap        # words need a separator between them
-  cap array.new ( array str ) :> words
-  cap array.new ( array i32 ) :> counts
+  none :> root!
   0 :> used!
   0 :> i!
   [ i s str.len i32.lt_u ]
@@ -41,21 +84,29 @@ test lower-slice : "Hello World" 6 5 lower-slice -> "world"
     [ i :> start
       [ i s str.len i32.lt_u [ s i str.byte-at letter? ] [ 0 ] if ] [ i 1 i32.add i! ] while
       s start i start i32.sub lower-slice :> w
-      words used w index-of :> at
-      at 0 i32.lt_s
-      [ words used w array.at!  counts used 1 array.at!  used 1 i32.add used! ]
-      [ counts at  counts at array.at 1 i32.add  array.at! ]
+      root array.len
+      [ root 0 array.at w used insert used i32.add used! ]
+      [ w 1 used none none node.new one root!  1 used! ]
       if ]
     [ i 1 i32.add i! ]
     if ]
   while
+  used array.new ( array node ) :> nodes
+  root nodes 0 collect drop
   "" :> out!
   k used i32.gt_u [ used ] [ k ] if [ :> r
     0 :> best!
-    used [ :> j  counts j array.at  counts best array.at  i32.gt_s [ j best! ] when ] times
+    used [ :> j
+      nodes j array.at :> a
+      nodes best array.at :> b
+      a node.count b node.count i32.gt_s
+      a node.count b node.count i32.eq  a node.first b node.first i32.lt_s  i32.and
+      i32.or [ j best! ] when
+    ] times
+    nodes best array.at :> win
     r 0 i32.ne [ out " " str.concat out! ] when
-    out  words best array.at str.concat  ":" str.concat  counts best array.at i32.to-str str.concat  out!
-    counts best -1 array.at!                    # taken
+    out  win node.word str.concat  ":" str.concat  win node.count i32.to-str str.concat  out!
+    win -1 node.count!                          # taken
   ] times
   out ;
 test top-words : "The cat and the hat; the BAT and a cat!" 3 top-words -> "the:3 cat:2 and:2"

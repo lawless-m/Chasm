@@ -1,0 +1,38 @@
+# A program for `chasm build --wasi`, which maps the four host words onto
+# WASI preview1:
+#   /dev/cons      stdin and stdout
+#   /dev/time      clock_time_get
+#   /file/<path>   path_open of <path> under the first preopened directory
+# Build and run it under any WASI preview1 runtime, for example:
+#   chasm build --wasi examples/wasi.chasm -o wasi.wasm
+#   wasmtime --dir=. wasi.wasm
+# `chasm run examples/wasi.chasm` runs it natively through the ring, where
+# /file/README.md is the host's /README.md.
+
+: greeting ( str -- str )  "hello from " swap str.concat ;
+test greeting : "wasi" greeting -> "hello from wasi"
+
+# The longest prefix of at most n bytes that ends on a codepoint boundary.
+: prefix ( str i32 -- str )
+  :> n :> s
+  s str.len n i32.lt_s [ s str.len ] [ n ] if :> k!
+  [ s k str.boundary? i32.eqz ] [ k 1 i32.sub k! ] while
+  s 0 k str.slice ;
+test prefix : "abcdef" 3 prefix -> "abc"
+test prefix : "ab" 5 prefix -> "ab"
+
+# A read-file result as one line: its first 20 bytes, or the error.
+: report ( str i32 -- str )
+  :> status :> text
+  status 0 i32.eq
+  [ "ok: " text 20 prefix str.concat ]
+  [ "error " status i32.to-str str.concat ]
+  if ;
+test report : "abc" 0 report -> "ok: abc"
+test report : "abcdefghijklmnopqrstuvwxyz" 0 report -> "ok: abcdefghijklmnopqrst"
+test report : "" -1 report -> "error -1"
+
+: main ( -- )
+  "wasi" greeting println
+  "/file/README.md" read-file report println
+  now 0 i64 i64.gt_s [ "time ok" println ] when ;

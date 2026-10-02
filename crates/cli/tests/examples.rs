@@ -252,3 +252,23 @@ fn usage_errors_are_json_reports_under_json() {
     let (ok, _, _) = chasm(&["--version"]);
     assert!(ok);
 }
+
+#[test]
+fn build_wasi() {
+    std::fs::create_dir_all(root().join("tmp")).unwrap();
+    let out = format!("tmp/hello-wasi-{}.wasm", std::process::id());
+    let (ok, json, err) = chasm(&[
+        "build",
+        "--json",
+        "--wasi",
+        "--no-opt",
+        "examples/hello.chasm",
+        "-o",
+        &out,
+    ]);
+    assert!(ok, "{json}{err}");
+    let j: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(j["results"]["wasi"], true);
+    assert!(root().join(&out).exists());
+    let _ = std::fs::remove_file(root().join(&out));
+}

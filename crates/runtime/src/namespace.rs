@@ -1,4 +1,5 @@
-//! The native namespace: `/dev/cons`, `/dev/time`, `/file/...`, `/mnt/<name>/...`.
+//! The native namespace: `/dev/cons`, `/dev/time`, `/file/...`,
+//! `/mnt/<name>/...` (a local directory or a 9p server) and `/net/http`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{File, OpenOptions};
@@ -8,7 +9,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use chasm_core::layout as L;
 
+use crate::ninep;
 use crate::Host;
+
+/// What `/mnt/<name>` serves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Mount {
+    /// A local directory.
+    Dir(PathBuf),
+    /// A 9P2000 file server at `host:port`, over TCP.
+    NineP(String),
+}
 
 /// Where `/dev/cons` goes.
 #[derive(Debug, Clone, Default)]
@@ -29,8 +40,10 @@ pub struct Config {
     pub console: Console,
     /// Whether `/file/...` maps to the host filesystem.
     pub file: bool,
-    /// `/mnt/<name>` to local directory.
-    pub mounts: BTreeMap<String, PathBuf>,
+    /// `/mnt/<name>` to what it serves.
+    pub mounts: BTreeMap<String, Mount>,
+    /// Whether `/net/http` and `/net/https` reach the network.
+    pub net: bool,
 }
 
 impl Default for Config {
@@ -39,6 +52,7 @@ impl Default for Config {
             console: Console::Std,
             file: true,
             mounts: BTreeMap::new(),
+            net: true,
         }
     }
 }
@@ -54,12 +68,27 @@ enum Handle {
         ends: Vec<usize>,
         pos: usize,
     },
+    /// An open file on a 9p mount.
+    NineP {
+        mount: String,
+        fid: u32,
+        offset: u64,
+    },
+    /// An HTTP request: what was written until the first read sends it.
+    Http {
+        url: String,
+        written: Vec<u8>,
+        response: Option<Result<Vec<u8>, i32>>,
+        pos: usize,
+    },
 }
 
 pub struct NativeHost {
     pub config: Config,
     handles: HashMap<i32, Handle>,
     next: i32,
+    /// 9p connections, made on the first open under each mount.
+    ninep: BTreeMap<String, ninep::Client>,
 }
 
 impl NativeHost {
@@ -68,6 +97,7 @@ impl NativeHost {
             config,
             handles: HashMap::new(),
             next: 3,
+            ninep: BTreeMap::new(),
         }
     }
 
@@ -94,6 +124,104 @@ impl NativeHost {
         id
     }
 
+    /// `sub` under the 9p mount `name`: mode 0 reads a file or directory,
+    /// 1 creates or truncates, 2 creates or appends, 3 opens read-write.
+    fn open_ninep(&mut self, name: &str, addr: &str, sub: &str, mode: i32) -> i32 {
+        if sub.split('/').any(|c| c == "..") {
+            return L::E_PERMISSION;
+        }
+        if !self.ninep.contains_key(name) {
+            match ninep::Client::connect(addr) {
+                Ok(c) => {
+                    self.ninep.insert(name.to_string(), c);
+                }
+                Err(_) => return L::E_IO,
+            }
+        }
+        let c = self.ninep.get_mut(name).unwrap();
+        let opened = match mode {
+            L::MODE_READ => c.walk(sub).and_then(|fid| {
+                let qid = c.open(fid, ninep::OREAD)?;
+                if !qid.is_dir() {
+                    return Ok(Ok(fid));
+                }
+                let entries = c.read_dir(fid);
+                let _ = c.clunk(fid);
+                let mut list: Vec<(String, u64, bool)> = entries?
+                    .into_iter()
+                    .map(|s| (s.name, s.length, s.is_dir))
+                    .collect();
+                list.sort();
+                Ok(Err(encode_records(list)))
+            }),
+            L::MODE_READ_WRITE => c
+                .walk(sub)
+                .and_then(|fid| c.open(fid, ninep::ORDWR).map(|_| Ok(fid))),
+            _ => {
+                let trunc = if mode == L::MODE_WRITE {
+                    ninep::OTRUNC
+                } else {
+                    0
+                };
+                match c.walk(sub) {
+                    Ok(fid) => c.open(fid, ninep::OWRITE | trunc).map(|_| Ok(fid)),
+                    Err(ninep::Error::NotFound) => {
+                        let (parent, leaf) = sub.rsplit_once('/').unwrap_or(("", sub));
+                        c.walk(parent).and_then(|fid| {
+                            c.create(fid, leaf, 0o644, ninep::OWRITE | trunc)
+                                .map(|_| Ok(fid))
+                        })
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+        };
+        match opened {
+            Ok(Ok(fid)) => {
+                let offset = if mode == L::MODE_APPEND {
+                    match c.stat(fid) {
+                        Ok(s) => s.length,
+                        Err(e) => return ninep_err(e),
+                    }
+                } else {
+                    0
+                };
+                self.add(Handle::NineP {
+                    mount: name.to_string(),
+                    fid,
+                    offset,
+                })
+            }
+            Ok(Err((records, ends))) => self.add(Handle::Dir {
+                records,
+                ends,
+                pos: 0,
+            }),
+            Err(e) => ninep_err(e),
+        }
+    }
+
+    /// `/net/http/<host>[:port]/<path>` or `/net/https/...`.
+    fn open_net(&mut self, rest: &str) -> i32 {
+        if !self.config.net {
+            return L::E_NOT_SUPPORTED;
+        }
+        let (scheme, rest) = rest.split_once('/').unwrap_or((rest, ""));
+        if scheme != "http" && scheme != "https" {
+            return L::E_NOT_SUPPORTED;
+        }
+        let (host, sub) = rest.split_once('/').unwrap_or((rest, ""));
+        if host.is_empty() {
+            return L::E_NOT_FOUND;
+        }
+        self.add(Handle::Http {
+            url: format!("{scheme}://{host}/{sub}"),
+            written: Vec::new(),
+            response: None,
+            pos: 0,
+        })
+    }
+
     fn resolve(&self, path: &str) -> Result<PathBuf, i32> {
         let safe = |rest: &str| -> Result<PathBuf, i32> {
             let p = Path::new(rest);
@@ -111,13 +239,23 @@ impl NativeHost {
         }
         if let Some(rest) = path.strip_prefix("/mnt/") {
             let (name, sub) = rest.split_once('/').unwrap_or((rest, ""));
-            let root = self.config.mounts.get(name).ok_or(L::E_NOT_FOUND)?;
-            return Ok(root.join(safe(sub)?));
+            return match self.config.mounts.get(name) {
+                Some(Mount::Dir(root)) => Ok(root.join(safe(sub)?)),
+                _ => Err(L::E_NOT_FOUND),
+            };
         }
         if path.starts_with("/net/") {
             return Err(L::E_NOT_SUPPORTED);
         }
         Err(L::E_NOT_FOUND)
+    }
+}
+
+fn ninep_err(e: ninep::Error) -> i32 {
+    match e {
+        ninep::Error::NotFound => L::E_NOT_FOUND,
+        ninep::Error::Permission => L::E_PERMISSION,
+        ninep::Error::Io(_) => L::E_IO,
     }
 }
 
@@ -142,6 +280,11 @@ fn dir_records(path: &Path) -> std::io::Result<(Vec<u8>, Vec<usize>)> {
         ));
     }
     entries.sort();
+    Ok(encode_records(entries))
+}
+
+/// Directory records for sorted entries, and where each record ends.
+fn encode_records(entries: Vec<(String, u64, bool)>) -> (Vec<u8>, Vec<usize>) {
     let mut out = Vec::new();
     let mut ends = Vec::new();
     for (name, size, is_dir) in entries {
@@ -151,7 +294,7 @@ fn dir_records(path: &Path) -> std::io::Result<(Vec<u8>, Vec<usize>)> {
         out.push(is_dir as u8);
         ends.push(out.len());
     }
-    Ok((out, ends))
+    (out, ends)
 }
 
 impl Host for NativeHost {
@@ -169,6 +312,16 @@ impl Host for NativeHost {
                 }
             }
             _ => {}
+        }
+        if let Some(rest) = path.strip_prefix("/net/") {
+            return self.open_net(rest);
+        }
+        if let Some(rest) = path.strip_prefix("/mnt/") {
+            let (name, sub) = rest.split_once('/').unwrap_or((rest, ""));
+            if let Some(Mount::NineP(addr)) = self.config.mounts.get(name) {
+                let addr = addr.clone();
+                return self.open_ninep(name, &addr, sub, mode);
+            }
         }
         let p = match self.resolve(path) {
             Ok(p) => p,
@@ -232,6 +385,34 @@ impl Host for NativeHost {
                 Ok(n) => n as i32,
                 Err(e) => io_err(e),
             },
+            Some(Handle::NineP { mount, fid, offset }) => {
+                let Some(c) = self.ninep.get_mut(mount.as_str()) else {
+                    return L::E_IO;
+                };
+                match c.read(*fid, *offset, buf.len() as u32) {
+                    Ok(data) => {
+                        buf[..data.len()].copy_from_slice(&data);
+                        *offset += data.len() as u64;
+                        data.len() as i32
+                    }
+                    Err(e) => ninep_err(e),
+                }
+            }
+            Some(Handle::Http {
+                url,
+                written,
+                response,
+                pos,
+            }) => {
+                let body = match response.get_or_insert_with(|| crate::net::perform(url, written)) {
+                    Ok(body) => body,
+                    Err(e) => return *e,
+                };
+                let n = buf.len().min(body.len() - *pos);
+                buf[..n].copy_from_slice(&body[*pos..*pos + n]);
+                *pos += n;
+                n as i32
+            }
             Some(Handle::Dir { records, ends, pos }) => {
                 if *pos >= records.len() {
                     return 0;
@@ -277,12 +458,38 @@ impl Host for NativeHost {
                 Ok(()) => buf.len() as i32,
                 Err(e) => io_err(e),
             },
+            Some(Handle::NineP { mount, fid, offset }) => {
+                let Some(c) = self.ninep.get_mut(mount.as_str()) else {
+                    return L::E_IO;
+                };
+                match c.write(*fid, *offset, buf) {
+                    Ok(n) => {
+                        *offset += n as u64;
+                        n as i32
+                    }
+                    Err(e) => ninep_err(e),
+                }
+            }
+            Some(Handle::Http {
+                written,
+                response: None,
+                ..
+            }) => {
+                written.extend_from_slice(buf);
+                buf.len() as i32
+            }
             Some(_) => L::E_PERMISSION,
         }
     }
 
     fn close(&mut self, handle: i32) -> i32 {
         match self.handles.remove(&handle) {
+            Some(Handle::NineP { mount, fid, .. }) => {
+                if let Some(c) = self.ninep.get_mut(&mount) {
+                    let _ = c.clunk(fid);
+                }
+                0
+            }
             Some(_) => 0,
             None => L::E_BAD_HANDLE,
         }

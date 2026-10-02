@@ -72,3 +72,27 @@ After M5: dead words are left out of the module and `run` does not use
 Cranelift already optimises the module at load time, so Binaryen helps only
 quicksort and costs sieve and mandelbrot. `build` still uses `-O3` for size;
 `run` uses it only with `--opt`.
+
+## Ring servicing
+
+`bench/ring.chasm` makes 200,000 one-byte `host.read`s on one handle,
+200,000 one-byte `host.write`s, and 200,000 calls of `now` (each an open, a
+read and a close of `/dev/time`: three trips through the ring). Every trip
+writes a submission entry, rings the doorbell import, dispatches in
+`service_ring` and takes the completion. `bench/rust/ring.rs` makes the same
+system calls directly: unbuffered one-byte `read` and `write`, and
+`SystemTime::now`. The difference is the ring's own cost.
+
+2026-10-02, commit 00daa53, AMD Ryzen 5 5500, median of five runs:
+
+| Operation | Chasm ns | Rust ns | Ring cost ns |
+|---|---:|---:|---:|
+| 1-byte read | 586 | 415 | 171 |
+| 1-byte write | 886 | 682 | 204 |
+| `now` (3 trips) | 1576 | 1208 | 368 |
+
+A trip through the ring costs about 120 to 200 ns, under half the system call
+it carries. An io_uring backend is not built (`ARCHITECTURE.md` section 18):
+a Chasm host word submits one entry and waits for it, so there is nothing to
+batch.
+

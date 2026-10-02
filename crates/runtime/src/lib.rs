@@ -11,6 +11,8 @@ use chasm_core::layout as L;
 pub mod namespace;
 #[cfg(feature = "native")]
 pub mod native;
+pub mod net;
+pub mod ninep;
 #[cfg(feature = "native")]
 pub mod repl;
 

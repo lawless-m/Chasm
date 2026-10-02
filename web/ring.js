@@ -8,7 +8,8 @@ const decoder = new TextDecoder();
 const decode = (u8) => decoder.decode(u8.slice());
 
 /// The browser namespace: `/dev/cons` (output only; reads see end of
-/// input) and `/dev/time`. Everything else is not found.
+/// input), `/dev/time`, and `/net/http` and `/net/https` through `fetch`.
+/// Everything else is not found.
 export class Namespace {
   constructor(layout, { onOutput }) {
     this.L = layout;
@@ -30,13 +31,78 @@ export class Namespace {
     if (path === "/dev/time") {
       return mode === L.MODE_READ ? this.add({ kind: "time", done: false }) : L.E_PERMISSION;
     }
+    if (path.startsWith("/net/")) return this.openNet(path.slice(5));
     return L.E_NOT_FOUND;
+  }
+
+  // `/net/http/<host>[:port]/<path>` or `/net/https/...`.
+  openNet(rest) {
+    const L = this.L;
+    const slash = rest.indexOf("/");
+    const scheme = slash < 0 ? rest : rest.slice(0, slash);
+    if (scheme !== "http" && scheme !== "https") return L.E_NOT_SUPPORTED;
+    const after = slash < 0 ? "" : rest.slice(slash + 1);
+    const cut = after.indexOf("/");
+    const host = cut < 0 ? after : after.slice(0, cut);
+    if (!host) return L.E_NOT_FOUND;
+    const sub = cut < 0 ? "" : after.slice(cut + 1);
+    return this.add({ kind: "http", url: `${scheme}://${host}/${sub}`, written: [], body: null, pos: 0 });
+  }
+
+  // Send the request written so far: header lines, an empty line, a body.
+  // Resolves to the response body or a negative error code.
+  async request(h) {
+    const L = this.L;
+    const all = new Uint8Array(h.written.reduce((n, c) => n + c.length, 0));
+    let at = 0;
+    for (const c of h.written) {
+      all.set(c, at);
+      at += c.length;
+    }
+    // Browsers drop forbidden header names (Host, Content-Length, ...) on
+    // append, as the Fetch standard requires.
+    const headers = new Headers();
+    let body = new Uint8Array(0);
+    if (all.length) {
+      let pos = 0;
+      for (;;) {
+        const nl = all.indexOf(10, pos);
+        if (nl < 0) return L.E_MALFORMED;
+        let line = decode(all.subarray(pos, nl));
+        pos = nl + 1;
+        if (line.endsWith("\r")) line = line.slice(0, -1);
+        if (line === "") break;
+        const colon = line.indexOf(": ");
+        if (colon < 0) return L.E_MALFORMED;
+        try {
+          headers.append(line.slice(0, colon), line.slice(colon + 2));
+        } catch {
+          return L.E_MALFORMED;
+        }
+      }
+      body = all.slice(pos);
+    }
+    let resp;
+    try {
+      resp = await fetch(h.url, body.length ? { method: "POST", headers, body } : { method: "GET", headers });
+    } catch {
+      return L.E_IO;
+    }
+    if (resp.status === 404) return L.E_NOT_FOUND;
+    if (resp.status === 401 || resp.status === 403) return L.E_PERMISSION;
+    if (resp.status < 200 || resp.status > 299) return L.E_IO;
+    try {
+      return new Uint8Array(await resp.arrayBuffer());
+    } catch {
+      return L.E_IO;
+    }
   }
 
   read(handle, buf) {
     const h = this.handles.get(handle);
     if (!h) return this.L.E_BAD_HANDLE;
     if (h.kind === "cons") return 0;
+    if (h.kind === "http") return this.readHttp(h, buf);
     if (h.done) return 0;
     if (buf.length < 8) return this.L.E_IO;
     const ns = BigInt(Date.now()) * 1000000n;
@@ -45,9 +111,23 @@ export class Namespace {
     return 8;
   }
 
+  async readHttp(h, buf) {
+    if (h.body === null) h.body = await this.request(h);
+    if (typeof h.body === "number") return h.body;
+    const n = Math.min(buf.length, h.body.length - h.pos);
+    buf.set(h.body.subarray(h.pos, h.pos + n));
+    h.pos += n;
+    return n;
+  }
+
   write(handle, buf) {
     const h = this.handles.get(handle);
     if (!h) return this.L.E_BAD_HANDLE;
+    if (h.kind === "http") {
+      if (h.body !== null) return this.L.E_PERMISSION;
+      h.written.push(buf.slice());
+      return buf.length;
+    }
     if (h.kind !== "cons") return this.L.E_PERMISSION;
     this.onOutput(decode(buf));
     return buf.length;
@@ -58,8 +138,10 @@ export class Namespace {
   }
 }
 
-/// Process every pending submission and post its completion.
-export function serviceRing(memory, L, host) {
+/// Process every pending submission, in order, and post its completion. A
+/// host call may return a promise (an HTTP request); it is awaited before
+/// the next entry.
+export async function serviceRing(memory, L, host) {
   const i32 = new Int32Array(memory.buffer);
   const dv = new DataView(memory.buffer);
   const u8 = new Uint8Array(memory.buffer);
@@ -80,12 +162,12 @@ export function serviceRing(memory, L, host) {
     let result;
     if (op === L.OP_OPEN) {
       const r = range(a0, a1);
-      result = r ? host.open(decode(r), a2) : L.E_IO;
+      result = r ? await host.open(decode(r), a2) : L.E_IO;
     } else if (op === L.OP_READ || op === L.OP_WRITE) {
       const r = range(a1, a2);
-      result = !r ? L.E_IO : op === L.OP_READ ? host.read(a0, r) : host.write(a0, r);
+      result = !r ? L.E_IO : await (op === L.OP_READ ? host.read(a0, r) : host.write(a0, r));
     } else if (op === L.OP_CLOSE) {
-      result = host.close(a0);
+      result = await host.close(a0);
     } else {
       result = L.E_NOT_SUPPORTED;
     }

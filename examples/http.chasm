@@ -1,0 +1,62 @@
+# HTTP through the namespace: open /net/http/<host>/<path>, write header
+# lines, an empty line and a body, then read the response body. Nothing
+# written is a GET; a body makes a POST. Run with a URL path on stdin:
+#   echo /net/http/127.0.0.1:8111/hello.txt | chasm run examples/http.chasm
+# With no input it GETs /net/http/example.com/.
+
+: header ( str str -- str )
+  :> value :> name
+  name ": " str.concat value str.concat "\n" str.concat ;
+test header : "X-Chasm" "7" header -> "X-Chasm: 7\n"
+test header : "Accept" "text/plain" header -> "Accept: text/plain\n"
+
+: send ( i32 str -- )
+  :> s :> h
+  h s str.addr s str.len host.write drop ;
+
+# Read a handle to the end and close it: the contents and 0, or "" and the
+# first negative code.
+: drain ( i32 -- str i32 )
+  :> h
+  4096 :> cap!
+  cap mem.alloc :> buf!
+  0 :> n!
+  0 :> r!
+  [ h buf n i32.add cap n i32.sub host.read r!  r 0 i32.gt_s ]
+  [ n r i32.add n!
+    n cap i32.eq [
+      cap 2 i32.mul mem.alloc :> nb
+      nb buf n memory.copy
+      nb buf!
+      cap 2 i32.mul cap!
+    ] when ]
+  while
+  h host.close drop
+  r 0 i32.lt_s [ "" r ] [ buf n str.from-raw 0 ] if ;
+
+# path, header lines, body -- response body, status
+: request ( str str str -- str i32 )
+  :> body :> headers :> path
+  path 3 host.open :> h
+  h 0 i32.lt_s
+  [ "" h ]
+  [ h headers send  h "\n" send  h body send  h drain ]
+  if ;
+test request : "/nowhere" "" "" request -> "" -1
+
+: get ( str -- str i32 )  "" "" request ;
+test get : "/nowhere" get -> "" -1
+
+: show ( str i32 -- )
+  :> status :> body
+  status 0 i32.eq
+  [ body print ]
+  [ "error " print  status i32.to-str println ]
+  if ;
+
+: main ( -- )
+  read-line :> more :> line
+  more 0 i32.ne line str.len 0 i32.gt_s i32.and :> given
+  given [ line ] [ "/net/http/example.com/" ] if :> path
+  path get show
+  given [ path "X-Chasm" "7" header "hello" request show ] when ;

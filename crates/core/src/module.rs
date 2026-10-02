@@ -22,7 +22,7 @@ fn m(offset: u32) -> MemArg {
 }
 
 /// `alloc(n) -> addr`: 8-byte aligned bump allocation, zero-filled, growing memory as needed.
-fn rt_alloc(ctx: &mut Ctx) -> Function {
+fn rt_alloc(ctx: &mut Ctx, shift: u32) -> Function {
     // params: n=0; locals: p=1, new=2
     let mut f = Function::new([(2, ValType::I32)]);
     let (oom_a, oom_l) = ctx.intern_str("out of memory");
@@ -62,7 +62,7 @@ fn rt_alloc(ctx: &mut Ctx) -> Function {
         I::I32Const(oom_l),
         I::I32Const(w_a),
         I::I32Const(w_l),
-        I::Call(FN_TRAP),
+        I::Call(FN_TRAP + shift),
         I::End,
         I::End,
         I::I32Const(0),
@@ -169,24 +169,39 @@ pub struct ModuleOptions {
     /// The words to emit; `None` emits every word. A word keeps its table
     /// slot (its id) either way, so function values stay valid.
     pub live: Option<std::collections::HashSet<usize>>,
+    /// Import WASI preview1 in place of the ring host and export `_start`.
+    pub wasi: bool,
 }
 
 /// The runtime helpers in function-index order: (index, type, body, name).
-fn runtime_helpers(ctx: &mut Ctx) -> Vec<(u32, u32, Function, &'static str)> {
+/// The runtime helpers, numbered after `shift` extra imports; over WASI, the
+/// ring and trap helpers call preview1 instead.
+fn runtime_helpers(
+    ctx: &mut Ctx,
+    shift: u32,
+    wasi: bool,
+) -> Vec<(u32, u32, Function, &'static str)> {
     let t_alloc = ctx.intern_type(vec![ValType::I32], vec![ValType::I32]);
     let t_trap = ctx.intern_type(vec![ValType::I32; 4], vec![]);
     let t_ring = ctx.intern_type(vec![ValType::I32; 4], vec![ValType::I32]);
+    let (trap, ring) = if wasi {
+        let (newline, _) = ctx.intern_str("\n");
+        (crate::wasi::rt_trap(newline), crate::wasi::rt_ring())
+    } else {
+        (rt_trap(), rt_ring())
+    };
     vec![
-        (FN_ALLOC, t_alloc, rt_alloc(ctx), "rt.alloc"),
-        (FN_TRAP, t_trap, rt_trap(), "rt.trap"),
-        (FN_RING, t_ring, rt_ring(), "rt.ring"),
+        (FN_ALLOC + shift, t_alloc, rt_alloc(ctx, shift), "rt.alloc"),
+        (FN_TRAP + shift, t_trap, trap, "rt.trap"),
+        (FN_RING + shift, t_ring, ring, "rt.ring"),
     ]
 }
 
 /// A word's function: its compiled body, or a stub that traps as unresolved.
 /// `remap` gives a word's function index from its id when words are left
-/// out, so direct calls are renumbered.
-fn word_function(ctx: &mut Ctx, w: &Word, remap: Option<&[Option<u32>]>) -> Function {
+/// out or `shift` extra imports move every index, so direct calls are
+/// renumbered.
+fn word_function(ctx: &mut Ctx, w: &Word, remap: Option<&[Option<u32>]>, shift: u32) -> Function {
     match &w.body {
         Some(c) => {
             let mut f = Function::new_with_locals_types(c.locals.iter().copied());
@@ -195,6 +210,9 @@ fn word_function(ctx: &mut Ctx, w: &Word, remap: Option<&[Option<u32>]>) -> Func
                     (I::Call(x), Some(m)) if *x >= crate::check::FIRST_WORD_FN => {
                         let id = (*x - crate::check::FIRST_WORD_FN) as usize;
                         f.instruction(&I::Call(m[id].expect("a live word calls only live words")));
+                    }
+                    (I::Call(x), _) if shift > 0 => {
+                        f.instruction(&I::Call(x + shift));
                     }
                     _ => {
                         f.instruction(i);
@@ -214,7 +232,7 @@ fn word_function(ctx: &mut Ctx, w: &Word, remap: Option<&[Option<u32>]>) -> Func
                 I::I32Const(ml),
                 I::I32Const(wa),
                 I::I32Const(wl),
-                I::Call(FN_TRAP),
+                I::Call(FN_TRAP + shift),
                 I::Unreachable,
                 I::End,
             ] {
@@ -241,13 +259,23 @@ fn version_section() -> CustomSection<'static> {
 
 pub fn assemble(ctx: &mut Ctx, opts: &ModuleOptions) -> Vec<u8> {
     let void = ctx.intern_type(vec![], vec![]);
+    // Imported functions: (module, name, type). Everything after them is
+    // numbered `shift` past the single-import layout of `check`.
+    let import_fns: Vec<(&str, &str, u32)> = if opts.wasi {
+        crate::wasi::imports(ctx)
+    } else {
+        vec![(L::IMPORT_MODULE, L::IMPORT_RING_ENTER, void)]
+    };
+    let shift = import_fns.len() as u32 - 1;
 
     let mut funcs = FunctionSection::new();
     let mut code = CodeSection::new();
     let mut names = NameMap::new();
-    names.append(0, "chasm.ring_enter");
+    for (k, (module, name, _)) in import_fns.iter().enumerate() {
+        names.append(k as u32, &format!("{module}.{name}"));
+    }
 
-    for (idx, ty, f, name) in runtime_helpers(ctx) {
+    for (idx, ty, f, name) in runtime_helpers(ctx, shift, opts.wasi) {
         funcs.function(ty);
         code.function(&f);
         names.append(idx, name);
@@ -258,9 +286,9 @@ pub fn assemble(ctx: &mut Ctx, opts: &ModuleOptions) -> Vec<u8> {
         .collect();
     let mut index: Vec<Option<u32>> = vec![None; ctx.words.len()];
     for (k, &id) in kept.iter().enumerate() {
-        index[id] = Some(Word::func_index(k));
+        index[id] = Some(Word::func_index(k) + shift);
     }
-    let remap = opts.live.as_ref().map(|_| index.as_slice());
+    let remap = (opts.live.is_some() || shift > 0).then_some(index.as_slice());
     for &id in &kept {
         let w = ctx.words[id].clone();
         let ty = ctx.intern_type(
@@ -268,19 +296,35 @@ pub fn assemble(ctx: &mut Ctx, opts: &ModuleOptions) -> Vec<u8> {
             w.effect.wasm_results(&ctx.struct_types),
         );
         funcs.function(ty);
-        let f = word_function(ctx, &w, remap);
+        let f = word_function(ctx, &w, remap, shift);
         code.function(&f);
         names.append(index[id].unwrap(), &w.name);
     }
+    // `_start` for WASI runtimes: calls `main`.
+    let main_fn = ctx
+        .by_name
+        .get("main")
+        .and_then(|&id| index.get(id).copied().flatten());
+    let start_fn = match main_fn {
+        Some(main) if opts.wasi => {
+            let at = Word::func_index(kept.len()) + shift;
+            funcs.function(void);
+            let mut f = Function::new([]);
+            f.instruction(&I::Call(main));
+            f.instruction(&I::End);
+            code.function(&f);
+            names.append(at, "_start");
+            Some(at)
+        }
+        _ => None,
+    };
 
     let types = type_section(ctx);
 
     let mut imports = ImportSection::new();
-    imports.import(
-        L::IMPORT_MODULE,
-        L::IMPORT_RING_ENTER,
-        EntityType::Function(void),
-    );
+    for (module, name, ty) in &import_fns {
+        imports.import(module, name, EntityType::Function(*ty));
+    }
 
     let nwords = ctx.words.len() as u64;
     let mut tables = TableSection::new();
@@ -316,6 +360,9 @@ pub fn assemble(ctx: &mut Ctx, opts: &ModuleOptions) -> Vec<u8> {
     }
     for (name, id) in &opts.test_exports {
         exports.export(name, ExportKind::Func, index[*id].unwrap());
+    }
+    if let Some(at) = start_fn {
+        exports.export("_start", ExportKind::Func, at);
     }
 
     // Table slot `id` holds word `id`; a left-out word's slot stays null.
@@ -423,7 +470,7 @@ pub fn assemble_step(ctx: &mut Ctx, ids: &[WordId], shared_memory: bool) -> Vec<
     let mut names = NameMap::new();
     names.append(0, "chasm.ring_enter");
 
-    for (idx, ty, f, name) in runtime_helpers(ctx) {
+    for (idx, ty, f, name) in runtime_helpers(ctx, 0, false) {
         funcs.function(ty);
         code.function(&f);
         names.append(idx, name);
@@ -441,7 +488,7 @@ pub fn assemble_step(ctx: &mut Ctx, ids: &[WordId], shared_memory: bool) -> Vec<
             )
         };
         funcs.function(ty);
-        let f = word_function(ctx, &w, None);
+        let f = word_function(ctx, &w, None, 0);
         code.function(&f);
         let index = crate::check::FIRST_WORD_FN + k as u32;
         names.append(index, &w.name);

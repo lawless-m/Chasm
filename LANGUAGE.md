@@ -210,7 +210,7 @@ test parse-header : "abc" parse-header -> 3 0
 
 Four host imports, specified in `ARCHITECTURE.md` 5d: `host.open`, `host.read`, `host.write`, `host.close`. All other I/O is a path in the namespace.
 
-**Modes** for `host.open`: `0` read, `1` write (truncate), `2` append, `3` read-write. **Error codes** are negative `i32`: `-1` not found, `-2` permission, `-3` not supported on this host, `-4` I/O error, `-5` bad handle. Further codes may be added; programs should treat any negative value as failure.
+**Modes** for `host.open`: `0` read, `1` write (truncate), `2` append, `3` read-write. **Error codes** are negative `i32`: `-1` not found, `-2` permission, `-3` not supported on this host, `-4` I/O error, `-5` bad handle, `-6` malformed request. Further codes may be added; programs should treat any negative value as failure.
 
 **Directory records**, as returned by reading a directory handle, each record in order: `u32` name byte length, name bytes (UTF-8), `u64` size, `u8` is-dir flag. Records are packed with no padding. A read may return any whole number of records; a partial record is never returned.
 
@@ -274,3 +274,4 @@ Recorded here so the spec matches the compiler. `docs/reference.md` is the user-
 
 1. **`)force` is a REPL command outside the language**, like `)forget` (section 14.4); no file can contain it. It takes one or more definitions and optional `test` lines, ending at an empty line, and changes effects deliberately.
 2. **Refuse and list.** If any dependant of a changed word fails to check against the new effect, nothing changes and `E_FORCE` (a new stable code) lists the broken dependants. A forced word's own tests are dropped, so its new contract's tests go in the same chunk.
+3. **`/net/http/<host>[:port]/<path>`** (and `/net/https/...` for TLS) is an HTTP request. What is written to the handle is the rest of the request after its first line: `Name: value` header lines, an empty line, the body, so `"Accept: text/plain\n\n"` is one header and no body. The request is sent at the first read: nothing written is a GET, a header block with an empty body is a GET with those headers, and a non-empty body makes a POST. The read returns the response body only. Status 404 is `-1`, 401 and 403 are `-2`, any other status outside 200 to 299 or a failed connection is `-4`, and a malformed header block is `-6` (a new code). The browser host drops header names the Fetch standard forbids (`Host`, `Content-Length`, ...).

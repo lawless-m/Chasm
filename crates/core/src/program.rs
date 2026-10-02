@@ -40,6 +40,8 @@ pub struct Options {
     /// Whole-program export (`build`, `run`): keep only the words `main` and
     /// the `export` words reach, and refuse reachable unresolved words.
     pub export: bool,
+    /// Import WASI preview1 in place of the ring host and export `_start`.
+    pub wasi: bool,
 }
 
 impl Default for Options {
@@ -48,6 +50,7 @@ impl Default for Options {
             prelude: true,
             test_exports: false,
             export: false,
+            wasi: false,
         }
     }
 }
@@ -299,7 +302,14 @@ pub fn compile(sources: &[Source], opts: &Options) -> Compilation {
         } else {
             Vec::new()
         };
-        let bytes = assemble(&mut ctx, &ModuleOptions { test_exports, live });
+        let bytes = assemble(
+            &mut ctx,
+            &ModuleOptions {
+                test_exports,
+                live,
+                wasi: opts.wasi,
+            },
+        );
         match validate(&bytes) {
             Ok(()) => Some(bytes),
             Err(e) => {

@@ -1,13 +1,18 @@
 # Conway's Game of Life on a fixed grid with dead edges.
-# Rosetta Code: Conway's_Game_of_Life. Exercises: a 2-D grid in a flat
-# array i32, index arithmetic, a board written as text.
+# Rosetta Code: Conway's_Game_of_Life. Exercises: a struct holding an array
+# and its width, a 2-D grid in a flat array i32, index arithmetic, a board
+# written as text.
 #
-# A board is an array i32 (1 alive, 0 dead) and its width w, row after row.
-# As text it is `.` and `#`, rows separated by a separator string.
+# A board's cells are 1 alive, 0 dead, row after row, w to a row. As text it
+# is `.` and `#`, rows separated by a separator string.
+
+struct board  cells: array i32  w: i32
 
 # The cell at x y, 0 off the edge.
-: cell ( array i32 i32 i32 i32 -- i32 )
-  :> y :> x :> w :> g
+: cell ( board i32 i32 -- i32 )
+  :> y :> x :> b
+  b board.w :> w
+  b board.cells :> g
   x 0 i32.lt_s  x w i32.ge_s  i32.or
   y 0 i32.lt_s  i32.or
   y  g array.len w i32.div_s  i32.ge_s  i32.or
@@ -15,47 +20,52 @@
   [ g  y w i32.mul x i32.add  array.at ]
   if ;
 
-: neighbours ( array i32 i32 i32 i32 -- i32 )
-  :> y :> x :> w :> g
+: neighbours ( board i32 i32 -- i32 )
+  :> y :> x :> b
   0 :> n!
   9 [ :> k                                  # k walks the 3 by 3 block
     k 4 i32.ne
-    [ g w  x k 3 i32.rem_u i32.add 1 i32.sub  y k 3 i32.div_u i32.add 1 i32.sub  cell
+    [ b  x k 3 i32.rem_u i32.add 1 i32.sub  y k 3 i32.div_u i32.add 1 i32.sub  cell
       n i32.add n! ]
     when
   ] times
   n ;
 
-: step ( array i32 i32 -- array i32 )
-  :> w :> g
+: step ( board -- board )
+  :> b
+  b board.w :> w
+  b board.cells :> g
   g array.len array.new ( array i32 ) :> next
   g array.len [ :> i
-    g w  i w i32.rem_u  i w i32.div_u  neighbours :> n
+    b  i w i32.rem_u  i w i32.div_u  neighbours :> n
     g i array.at
     [ n 2 i32.eq  n 3 i32.eq  i32.or ]      # a live cell survives with 2 or 3
     [ n 3 i32.eq ]                          # a dead one is born with exactly 3
     if :> alive
     next i alive array.at!
   ] times
-  next ;
+  next w board.new ;
 
-# Text to cells: `#` alive, `.` dead, anything else (row separators) skipped.
-: board ( str -- array i32 )
-  :> s
+# Text to a board of width w: `#` alive, `.` dead, anything else (row
+# separators) skipped.
+: parse ( str i32 -- board )
+  :> w :> s
   0 :> n!
   s str.len [ s swap str.byte-at :> c  c 35 i32.eq c 46 i32.eq i32.or [ n 1 i32.add n! ] when ] times
   n array.new ( array i32 ) :> g
   0 :> k!
   s str.len [ :> i
-    s i str.byte-at :> b
-    b 35 i32.eq  b 46 i32.eq  i32.or
-    [ g k  b 35 i32.eq  array.at!  k 1 i32.add k! ]
+    s i str.byte-at :> ch
+    ch 35 i32.eq  ch 46 i32.eq  i32.or
+    [ g k  ch 35 i32.eq  array.at!  k 1 i32.add k! ]
     when
   ] times
-  g ;
+  g w board.new ;
 
-: show ( array i32 i32 str -- str )
-  :> sep :> w :> g
+: show ( board str -- str )
+  :> sep :> b
+  b board.w :> w
+  b board.cells :> g
   "" :> out!
   g array.len [ :> i
     i 0 i32.ne  i w i32.rem_u i32.eqz  i32.and [ out sep str.concat out! ] when
@@ -63,18 +73,18 @@
   ] times
   out ;
 
-test board : ".#./..#" board 3 "/" show -> ".#./..#"
-test step : ".../###/..." board 3 step 3 "/" show -> ".#./.#./.#."              # blinker turns
-test step : ".../###/..." board 3 step 3 step 3 "/" show -> ".../###/..."         # period 2
-test step : "..../.##./.##./...." board 4 step 4 "/" show -> "..../.##./.##./...."  # block is stable
-test step : ".#..../..#.../###.../....../....../......" board
-            6 step 6 step 6 step 6 step 6 "/" show
-            -> "....../..#.../...#../.###../....../......"                         # glider moves 1 down-right
+test parse : ".#./..#" 3 parse "/" show -> ".#./..#"
+test step : ".../###/..." 3 parse step "/" show -> ".#./.#./.#."              # blinker turns
+test step : ".../###/..." 3 parse step step "/" show -> ".../###/..."         # period 2
+test step : "..../.##./.##./...." 4 parse step "/" show -> "..../.##./.##./...."  # block is stable
+test step : ".#..../..#.../###.../....../....../......" 6 parse
+            step step step step "/" show
+            -> "....../..#.../...#../.###../....../......"                  # glider moves 1 down-right
 
 : main ( -- )
-  ".#......../..#......./###......./........../........../........../........../.........." board :> g!
+  ".#......../..#......./###......./........../........../........../........../.........." 10 parse :> b!
   5 [ :> gen
     "generation " print gen i32.to-str println
-    g 10 "\n" show println
-    g 10 step g!
+    b "\n" show println
+    b step b!
   ] times ;
