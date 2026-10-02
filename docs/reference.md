@@ -122,9 +122,10 @@ polymorphic.
 | Form | Type |
 |---|---|
 | `42` `-7` `0xFF` | `i32` (any value from -2^31 to 2^32-1; large values wrap to their bit pattern) |
-| `42i64` | `i64` |
+| `42 i64` | `i64`: an integer then the word `i64` is one literal, up to 2^64-1 |
 | `1.5` `2e10` | `f64` |
-| `1.5f32` | `f32` |
+
+There is no `f32` literal: `1.5 f32.demote_f64`.
 | `"text"` | `str`; escapes `\" \\ \n \t \u{1F600}` |
 
 ## 5. Stack shuffles
@@ -171,10 +172,11 @@ semantics (including traps on integer divide by zero):
 - `i32.eqz i32.eq i32.ne i32.lt_s i32.lt_u i32.gt_s i32.gt_u i32.le_s i32.le_u i32.ge_s i32.ge_u` (return `i32` 0 or 1)
 - The same set for `i64`, plus `i64.extend32_s`.
 - `f32`/`f64`: `add sub mul div min max copysign abs neg ceil floor trunc nearest sqrt eq ne lt gt le ge`
+- Widening: `i64 ( i32 -- i64 )` sign-extends, exactly. It is the only conversion with a short name; lossy ones keep their wasm names so the reader sees how the value is cut.
 - Conversions: `i32.wrap_i64`, `i64.extend_i32_s`/`_u`, `iNN.trunc_fMM_s`/`_u`, `iNN.trunc_sat_fMM_s`/`_u`, `fNN.convert_iMM_s`/`_u`, `f32.demote_f64`, `f64.promote_f32`, `*.reinterpret_*`.
 - Memory: `i32.load` ... `i64.load32_u` take `( i32 -- T )`; stores take `( i32 T -- )` (address below value). Natural alignment, offset 0. `memory.size ( -- i32 )`, `memory.grow ( i32 -- i32 )`, `memory.copy ( dst src n -- )`, `memory.fill ( dst byte n -- )`.
 
-Note there is no `i64.neg`: write `0i64 x i64.sub`.
+Note there is no `i64.neg`: write `0 i64 x i64.sub`.
 
 ## 8. Control flow
 

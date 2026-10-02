@@ -53,11 +53,11 @@ try {
   assert.equal(r.trap.message, "boom");
   assert.deepEqual(r.stack, n(12));
 
-  r = await repl.step('drop "a" "b" str.concat 2.5 7i64');
+  r = await repl.step('drop "a" "b" str.concat 2.5 7 i64');
   assert.deepEqual(r.stack, [
     { type: "str", value: '"ab"' },
     { type: "f64", value: "2.5" },
-    { type: "i64", value: "7i64" },
+    { type: "i64", value: "7 i64" },
   ]);
 
   console.log("node-repl.mjs ok");

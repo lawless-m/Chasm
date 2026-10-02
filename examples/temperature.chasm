@@ -9,17 +9,17 @@
 
 # Two digits, with a leading zero below 10.
 : two-digits ( i64 -- str )
-  dup 10i64 i64.lt_s [ i64.to-str "0" swap str.concat ] [ i64.to-str ] if ;
-test two-digits : 5i64 two-digits -> "05"
-test two-digits : 15i64 two-digits -> "15"
+  dup 10 i64 i64.lt_s [ i64.to-str "0" swap str.concat ] [ i64.to-str ] if ;
+test two-digits : 5 i64 two-digits -> "05"
+test two-digits : 15 i64 two-digits -> "15"
 
 # An f64 rounded to two decimals, as text.
 : hundredths ( f64 -- str )
   100.0 f64.mul f64.nearest i64.trunc_f64_s :> h
-  h 0i64 i64.lt_s [ "-" ] [ "" ] if :> sign
-  h 0i64 i64.lt_s [ 0i64 h i64.sub ] [ h ] if :> a
-  sign  a 100i64 i64.div_s i64.to-str str.concat
-  "." str.concat  a 100i64 i64.rem_s two-digits str.concat ;
+  h 0 i64 i64.lt_s [ "-" ] [ "" ] if :> sign
+  h 0 i64 i64.lt_s [ 0 i64 h i64.sub ] [ h ] if :> a
+  sign  a 100 i64 i64.div_s i64.to-str str.concat
+  "." str.concat  a 100 i64 i64.rem_s two-digits str.concat ;
 test hundredths : 2.5 hundredths -> "2.50"
 test hundredths : -0.125 hundredths -> "-0.12"   # nearest rounds half to even
 

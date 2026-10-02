@@ -24,8 +24,8 @@ test abs : 7 abs -> 7
 test gcd : 48 18 gcd -> 6
 
 : fact ( i64 -- i64 )
-  dup 1i64 i64.le_s [ drop 1i64 ] [ dup 1i64 i64.sub fact i64.mul ] if ;
-test fact : 20i64 fact -> 2432902008176640000i64
+  dup 1 i64 i64.le_s [ drop 1 i64 ] [ dup 1 i64 i64.sub fact i64.mul ] if ;
+test fact : 20 i64 fact -> 2432902008176640000 i64
 
 : hypot ( f64 f64 -- f64 )
   dup f64.mul          ( f64 f64 )   # x y*y
@@ -37,4 +37,4 @@ test hypot : 3.0 4.0 hypot -> 5.0
   "10 squared is " print  10 square i32.to-str println
   "sum-to 100 is " print  100 sum-to i32.to-str println
   "gcd 1071 462 is " print  1071 462 gcd i32.to-str println
-  "20! is " print  20i64 fact i64.to-str println ;
+  "20! is " print  20 i64 fact i64.to-str println ;

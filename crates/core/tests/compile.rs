@@ -101,7 +101,7 @@ fn errors() {
     assert_eq!(err(": f ( i32 -- ) :> x 1 x! ;"), "E_LOCAL");
     assert_eq!(err(": f ( i32 -- [ -- i32 ] ) :> x [ x ] ;"), "E_CAPTURE");
     assert_eq!(
-        err(": sq ( i32 -- i32 ) dup i32.mul ;\ntest sq : 3 sq -> 9i64"),
+        err(": sq ( i32 -- i32 ) dup i32.mul ;\ntest sq : 3 sq -> 9 i64"),
         "E_TEST_TYPE"
     );
     assert_eq!(err(": main ( i32 -- ) drop ;"), "E_MAIN_EFFECT");

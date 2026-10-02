@@ -1,6 +1,6 @@
 # Chasm: Language Specification
 
-Status: draft v0.8 (M1 and M2 decisions recorded; see sections 12 and 13). Chasm source files use the `.chasm` extension. Companion to `ARCHITECTURE.md`. Sections marked **TBD** are not yet decided.
+Status: draft v0.9 (M1 to M3 decisions recorded; see sections 12 to 14). Chasm source files use the `.chasm` extension. Companion to `ARCHITECTURE.md`. Sections marked **TBD** are not yet decided.
 
 ## 1. Types
 
@@ -22,13 +22,12 @@ A word's effect lists checker types. Its wasm function type is the effect with e
 
 | Form | Type | Example |
 |---|---|---|
-| decimal or hex integer, no suffix | `i32` | `42`, `-7`, `0xFF` |
-| integer with `i64` suffix | `i64` | `42i64` |
-| decimal with a point or exponent, no suffix | `f64` | `1.5`, `2e10` |
-| float with `f32` suffix | `f32` | `1.5f32` |
+| decimal or hex integer | `i32` | `42`, `-7`, `0xFF` |
+| integer followed by the word `i64` | `i64` | `42 i64`, `0xFF i64` |
+| decimal with a point or exponent | `f64` | `1.5`, `2e10` |
 | double-quoted | `str` | `"hello"` |
 
-String literals are UTF-8, immutable, and live in read-only data. Escapes: `\"`, `\\`, `\n`, `\t`, `\u{XXXX}`. Integer literals that do not fit their type are a compile error; an unsuffixed integer may be anything from -2^31 to 2^32-1 (values above 2^31-1 are taken as their bit pattern), and likewise for `i64`.
+String literals are UTF-8, immutable, and live in read-only data. Escapes: `\"`, `\\`, `\n`, `\t`, `\u{XXXX}`. Integer literals that do not fit their type are a compile error; an `i32` literal may be anything from -2^31 to 2^32-1 (values above 2^31-1 are taken as their bit pattern), and likewise for `i64`. There is no `f32` literal: write `1.5 f32.demote_f64`, and in a test compare an `f32` result after `f64.promote_f32`, which is exact.
 
 ## 3. Numeric primitives
 
@@ -234,3 +233,7 @@ Recorded here so the spec matches the compiler. `docs/reference.md` is the user-
 3. **Stack echo.** After each chunk the REPL prints the stack as `( types ) values`, bottom to top, for example `( i32 str ) 9 "hi"`, or `( )` when empty. Arrays print as `<n elements>` and function values as `#slot`.
 4. **Tests at the REPL** run as soon as their word has a body, and again whenever the word is redefined; a test of a declared word waits for its body.
 5. **Literals in the REPL** (section 4) are placed by the host at the heap pointer, one window per step; identical literals are shared within a step only.
+
+## 14. Decisions taken in M3
+
+1. **Literal types and conversion words.** No literal has a type suffix. An integer is an `i32`; an integer token followed directly by the word `i64` is a single `i64` literal (`42 i64`, also in a test's expected values), written as the value it means, so `4294967295 i64` is 4294967295. Applied to any other `i32`, `i64` is a prelude word `( i32 -- i64 )` that sign-extends. A type name is a conversion word only for an exact widening from one source type; every lossy conversion (`i32.wrap_i64`, `i32.trunc_f64_s`, `f32.demote_f64`, ...) keeps its wasm name, so the reader sees how the value is cut. Values print the same way: `120 i64`.

@@ -117,7 +117,7 @@ fn tests_run_when_their_word_has_a_body() {
     assert_eq!(step.tests[0].word, "h");
 
     assert_eq!(ok(&mut s, "test i32.add : 1 2 i32.add -> 3").tests.len(), 1);
-    let step = s.step("test sq : 3 sq -> 9i64", 0x20_0000);
+    let step = s.step("test sq : 3 sq -> 9 i64", 0x20_0000);
     assert_eq!(step.diagnostics[0].code, "E_TEST_TYPE");
     assert!(step.tests.is_empty());
 

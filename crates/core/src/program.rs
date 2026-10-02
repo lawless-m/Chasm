@@ -60,7 +60,7 @@ impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::I32(v) => write!(f, "{v}"),
-            Value::I64(v) => write!(f, "{v}i64"),
+            Value::I64(v) => write!(f, "{v} i64"),
             Value::F32(v) => write!(f, "{v:?}f32"),
             Value::F64(v) => write!(f, "{v:?}"),
             Value::Str(s) => write!(f, "{s:?}"),

@@ -4,40 +4,40 @@
 
 : collatz-length ( i64 -- i64 )
   :> n!
-  1i64 :> len!
-  [ n 1i64 i64.ne ]
-  [ n 2i64 i64.rem_u 0i64 i64.eq
-    [ n 2i64 i64.div_u n! ]
-    [ n 3i64 i64.mul 1i64 i64.add n! ]
+  1 i64 :> len!
+  [ n 1 i64 i64.ne ]
+  [ n 2 i64 i64.rem_u 0 i64 i64.eq
+    [ n 2 i64 i64.div_u n! ]
+    [ n 3 i64 i64.mul 1 i64 i64.add n! ]
     if
-    len 1i64 i64.add len!
+    len 1 i64 i64.add len!
   ]
   while
   len ;
 
-test collatz-length : 1i64 collatz-length -> 1i64
-test collatz-length : 2i64 collatz-length -> 2i64
-test collatz-length : 5i64 collatz-length -> 6i64
-test collatz-length : 27i64 collatz-length -> 112i64
+test collatz-length : 1 i64 collatz-length -> 1 i64
+test collatz-length : 2 i64 collatz-length -> 2 i64
+test collatz-length : 5 i64 collatz-length -> 6 i64
+test collatz-length : 27 i64 collatz-length -> 112 i64
 
 # The start below limit with the longest sequence, and that length.
 : longest-collatz ( i32 -- i32 i64 )
   :> limit
   0 :> num!
-  0i64 :> max-len!
+  0 i64 :> max-len!
   limit 1 i32.sub [ :> i              # 1 to limit - 1
     i 1 i32.add :> n
-    n i64.extend_i32_u collatz-length :> len
+    n i64 collatz-length :> len
     len max-len i64.gt_s
     [ n num! len max-len! ]
     when
   ] times
   num max-len ;
 
-test longest-collatz : 100 longest-collatz -> 97 119i64
+test longest-collatz : 100 longest-collatz -> 97 119 i64
 
 : main ( -- )
-  "Collatz length from 27: " print 27i64 collatz-length i64.to-str println
+  "Collatz length from 27: " print 27 i64 collatz-length i64.to-str println
   100000 longest-collatz :> max-len :> max-num
   "Longest Collatz under 100,000 starts at " print max-num i32.to-str
   print " with length " print max-len i64.to-str println ;

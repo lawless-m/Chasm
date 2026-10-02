@@ -46,87 +46,61 @@ pub fn combinator_arity(name: &str) -> Option<usize> {
     })
 }
 
-/// Parse a numeric literal. `None` if the token is not a number at all.
-pub fn parse_number(text: &str) -> Option<Result<Lit, String>> {
+/// An integer token's value: `None` if it is not an integer, `Some(None)`
+/// if it is too large to represent at all.
+fn int_value(text: &str) -> Option<Option<i128>> {
     let (neg, body) = match text.strip_prefix('-') {
         Some(rest) => (true, rest),
         None => (false, text),
     };
-    if !body.starts_with(|c: char| c.is_ascii_digit()) {
-        return None;
-    }
-    let range_err = |ty: &str| Err(format!("literal `{text}` does not fit in {ty}"));
-    // Integers, optionally hex, optionally `i64`.
-    let (digits, is_i64) = match body.strip_suffix("i64") {
-        Some(d) => (d, true),
-        None => (body, false),
-    };
-    let int = if let Some(hex) = digits
-        .strip_prefix("0x")
-        .or_else(|| digits.strip_prefix("0X"))
-    {
+    let mag = if let Some(hex) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
         if hex.is_empty() || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-            None
-        } else {
-            Some(u128::from_str_radix(hex, 16).ok())
+            return None;
         }
-    } else if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
-        Some(digits.parse::<u128>().ok())
+        u128::from_str_radix(hex, 16).ok()
+    } else if !body.is_empty() && body.chars().all(|c| c.is_ascii_digit()) {
+        body.parse::<u128>().ok()
     } else {
-        None
+        return None;
     };
-    if let Some(mag) = int {
-        let Some(mag) = mag else {
-            return Some(range_err(if is_i64 { "i64" } else { "i32" }));
-        };
-        let mag = mag as i128;
-        let v = if neg { -mag } else { mag };
-        return Some(if is_i64 {
-            if v < i64::MIN as i128 || v > u64::MAX as i128 {
-                range_err("i64")
-            } else {
-                Ok(Lit::I64(v as i64))
-            }
-        } else if v < i32::MIN as i128 || v > u32::MAX as i128 {
-            range_err("i32")
-        } else {
-            Ok(Lit::I32(v as i32))
+    Some(mag.map(|m| if neg { -(m as i128) } else { m as i128 }))
+}
+
+/// Parse a numeric literal: an `i32` integer or an `f64`. `None` if the
+/// token is not a number at all.
+pub fn parse_number(text: &str) -> Option<Result<Lit, String>> {
+    if let Some(v) = int_value(text) {
+        return Some(match v {
+            Some(v) if v >= i32::MIN as i128 && v <= u32::MAX as i128 => Ok(Lit::I32(v as i32)),
+            _ => Err(format!(
+                "literal `{text}` does not fit in i32; write `{text} i64` for an i64"
+            )),
         });
     }
-    // Floats: decimal with a point or exponent, optionally `f32`/`f64`.
-    let (fdigits, is_f32) = if let Some(d) = body.strip_suffix("f32") {
-        (d, true)
-    } else if let Some(d) = body.strip_suffix("f64") {
-        (d, false)
-    } else {
-        (body, false)
-    };
-    let looks_float = fdigits
-        .chars()
-        .all(|c| c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E' | '+' | '-'));
-    if !looks_float {
+    let body = text.strip_prefix('-').unwrap_or(text);
+    if !body.starts_with(|c: char| c.is_ascii_digit())
+        || !body.contains(['.', 'e', 'E'])
+        || !body
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E' | '+' | '-'))
+    {
         return None;
     }
-    let explicit = is_f32 || body.ends_with("f64");
-    if !explicit && !fdigits.contains(['.', 'e', 'E']) {
-        return None;
-    }
-    let v: f64 = match fdigits.parse() {
-        Ok(v) => v,
-        Err(_) => return None,
-    };
-    let v = if neg { -v } else { v };
-    Some(if is_f32 {
-        let f = v as f32;
-        if f.is_infinite() && v.is_finite() {
-            range_err("f32")
-        } else {
-            Ok(Lit::F32(f))
-        }
-    } else if v.is_infinite() {
-        range_err("f64")
+    let v: f64 = body.parse().ok()?;
+    let v = if text.starts_with('-') { -v } else { v };
+    Some(if v.is_infinite() {
+        Err(format!("literal `{text}` does not fit in f64"))
     } else {
         Ok(Lit::F64(v))
+    })
+}
+
+/// Parse an integer token as the `i64` literal written `text i64`. `None`
+/// if the token is not an integer.
+pub fn parse_i64(text: &str) -> Option<Result<Lit, String>> {
+    Some(match int_value(text)? {
+        Some(v) if v >= i64::MIN as i128 && v <= u64::MAX as i128 => Ok(Lit::I64(v as i64)),
+        _ => Err(format!("literal `{text} i64` does not fit in i64")),
     })
 }
 
@@ -228,18 +202,18 @@ impl<'a> Parser<'a> {
             let body = self.body(&["->"])?;
             let mut expected = Vec::new();
             while let Some(t) = self.peek() {
+                self.pos += 1;
                 let lit = match &t.kind {
                     TokKind::Str(s) => Lit::Str(s.clone()),
-                    TokKind::Word => match parse_number(&t.text) {
-                        Some(Ok(l)) => l,
-                        Some(Err(m)) => {
-                            return Err(Diagnostic::error(codes::E_LITERAL_RANGE, m, self.loc(t)))
+                    TokKind::Word => match self.number(t) {
+                        Some(l) => l?,
+                        None => {
+                            self.pos -= 1;
+                            break;
                         }
-                        None => break,
                     },
                 };
                 expected.push((lit, self.loc(t)));
-                self.pos += 1;
             }
             return Ok(Item::Test {
                 word: word.text.clone(),
@@ -255,6 +229,20 @@ impl<'a> Parser<'a> {
             ),
             self.loc(t),
         ))
+    }
+
+    /// The numeric literal at `t` (already consumed), or `None`. An integer
+    /// followed by `i64` is one `i64` literal, and the `i64` is consumed.
+    fn number(&mut self, t: &Token) -> Option<Result<Lit, Diagnostic>> {
+        let loc = self.loc(t);
+        let err = |m| Diagnostic::error(codes::E_LITERAL_RANGE, m, loc.clone());
+        if self.peek().is_some_and(|n| n.is("i64")) {
+            if let Some(r) = parse_i64(&t.text) {
+                self.pos += 1;
+                return Some(r.map_err(err));
+            }
+        }
+        parse_number(&t.text).map(|r| r.map_err(err))
     }
 
     fn def(&mut self, export: bool) -> Result<Item, Diagnostic> {
@@ -381,13 +369,8 @@ impl<'a> Parser<'a> {
                 TokKind::Str(s) => NodeKind::Lit(Lit::Str(s.clone())),
                 TokKind::Word => {
                     let text = t.text.as_str();
-                    if let Some(n) = parse_number(text) {
-                        match n {
-                            Ok(l) => NodeKind::Lit(l),
-                            Err(m) => {
-                                return Err(Diagnostic::error(codes::E_LITERAL_RANGE, m, loc))
-                            }
-                        }
+                    if let Some(l) = self.number(t) {
+                        NodeKind::Lit(l?)
                     } else if text == "[" {
                         NodeKind::Quote(self.body(&["]"])?)
                     } else if text == "(" {
@@ -499,10 +482,13 @@ mod tests {
         assert_eq!(parse_number("-7"), Some(Ok(Lit::I32(-7))));
         assert_eq!(parse_number("0xFF"), Some(Ok(Lit::I32(255))));
         assert_eq!(parse_number("0xFFFFFFFF"), Some(Ok(Lit::I32(-1))));
-        assert_eq!(parse_number("42i64"), Some(Ok(Lit::I64(42))));
+        assert_eq!(parse_number("42i64"), None);
+        assert_eq!(parse_i64("42"), Some(Ok(Lit::I64(42))));
+        assert_eq!(parse_i64("4294967295"), Some(Ok(Lit::I64(4294967295))));
+        assert_eq!(parse_i64("1.5"), None);
         assert_eq!(parse_number("1.5"), Some(Ok(Lit::F64(1.5))));
         assert_eq!(parse_number("2e10"), Some(Ok(Lit::F64(2e10))));
-        assert_eq!(parse_number("1.5f32"), Some(Ok(Lit::F32(1.5))));
+        assert_eq!(parse_number("1.5f32"), None);
         assert!(matches!(parse_number("4294967296"), Some(Err(_))));
         assert_eq!(parse_number("2dup"), None);
         assert_eq!(parse_number("-"), None);

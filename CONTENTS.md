@@ -7,7 +7,7 @@ Chasm (Chuck-Wasm) is a typed, concatenative, Forth-and-Factor-flavoured languag
 1. **README.md**: what it is and how to run it.
 2. **docs/reference.md**: the working language reference, i.e. what the compiler accepts today.
 3. **ARCHITECTURE.md**: goals, crate layout, pipeline, runtime, milestones M0 to M6, and (sections 13 and 14) the decisions taken while building M0 to M2.
-4. **LANGUAGE.md**: the v1 language spec; sections 12 and 13 record the M1 and M2 decisions.
+4. **LANGUAGE.md**: the v1 language spec; sections 12 to 14 record the decisions taken in M1 to M3.
 5. **FUTURE.md**: explicitly *not* v1. Read it so v1 decisions do not close these off, but build none of it.
 6. **CLAUDE.md**: how to work in the repository.
 7. **examples/**: worked programs with tests; `docs/examples.md` is the plan for growing them into a corpus and benchmark.

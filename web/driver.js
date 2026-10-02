@@ -154,7 +154,7 @@ export class Repl {
   show(ty, v) {
     switch (ty) {
       case "i64":
-        return `${v}i64`;
+        return `${v} i64`;
       case "f32":
         return float(v, true) + "f32";
       case "f64":
