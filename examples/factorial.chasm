@@ -1,6 +1,8 @@
 # n! for n in 0 to 20, as i64, recursively and iteratively.
 # Rosetta Code: Factorial. Exercises: recursion with a declared effect,
 # i64, widening an i32 with i64.extend_i32_u.
+# Above 20, n! does not fit in i64 and i64.mul wraps silently, as wasm's
+# does: 21! comes out negative and 66! onward is 0. Nothing traps.
 
 : fact-rec ( i32 -- i64 )
   :> n
@@ -17,6 +19,7 @@ test fact-rec : 20 fact-rec -> 2432902008176640000i64
 test fact-iter : 0 fact-iter -> 1i64
 test fact-iter : 5 fact-iter -> 120i64
 test fact-iter : 20 fact-iter -> 2432902008176640000i64
+test fact-iter : 21 fact-iter -> -4249290049419214848i64   # wrapped: 21! mod 2^64
 
 # The two agree everywhere in range.
 : agree? ( -- i32 )
