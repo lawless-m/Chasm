@@ -11,8 +11,12 @@ use chasm_core::layout as L;
 use chasm_core::repl::{read_stack, Defined, StackEntry, Step};
 use chasm_core::{Diagnostic, Location, Session, Value};
 use serde::Serialize;
+use std::collections::HashMap;
+
+use chasm_core::types::Ty;
 use wasmtime::{
-    Caller, Engine, Linker, Memory, MemoryType, Module, Ref, RefType, Store, Table, TableType,
+    AnyRef, AsContext, Caller, Engine, Linker, Memory, MemoryType, Module, Ref, RefType, RootScope,
+    Rooted, Store, Table, TableType, Val,
 };
 
 use crate::namespace::{Config, NativeHost};
@@ -59,13 +63,15 @@ pub struct NativeRepl {
     linker: Linker<ReplState>,
     memory: Memory,
     table: Table,
+    /// `chasm.refs`: references on the memory data stack, by slot index.
+    refs: Table,
     pub session: Session,
 }
 
 impl NativeRepl {
     pub fn new(config: Config, prelude: bool) -> Result<Self, String> {
         let e = |e: wasmtime::Error| e.to_string();
-        let engine = Engine::default();
+        let engine = crate::native::engine()?;
         let mut store = Store::new(
             &engine,
             ReplState {
@@ -78,6 +84,12 @@ impl NativeRepl {
             &mut store,
             TableType::new(RefType::FUNCREF, 0, None),
             Ref::Func(None),
+        )
+        .map_err(e)?;
+        let refs = Table::new(
+            &mut store,
+            TableType::new(RefType::ANYREF, 0, None),
+            Ref::Any(None),
         )
         .map_err(e)?;
         memory
@@ -102,6 +114,9 @@ impl NativeRepl {
             .define(&store, L::IMPORT_MODULE, L::IMPORT_TABLE, table)
             .map_err(e)?;
         linker
+            .define(&store, L::IMPORT_MODULE, L::IMPORT_REFS, refs)
+            .map_err(e)?;
+        linker
             .func_wrap(
                 L::IMPORT_MODULE,
                 L::IMPORT_RING_ENTER,
@@ -118,6 +133,7 @@ impl NativeRepl {
             linker,
             memory,
             table,
+            refs,
             session,
         };
         if !step.ok() {
@@ -171,6 +187,16 @@ impl NativeRepl {
                     &mut self.store,
                     step.table_size as u64 - have,
                     Ref::Func(None),
+                )
+                .map_err(e)?;
+        }
+        let have = self.refs.size(&self.store);
+        if have < step.refs_size as u64 {
+            self.refs
+                .grow(
+                    &mut self.store,
+                    step.refs_size as u64 - have,
+                    Ref::Any(None),
                 )
                 .map_err(e)?;
         }
@@ -238,7 +264,7 @@ impl NativeRepl {
         let mut tests = Vec::new();
         if installed {
             for t in &step.tests {
-                let n = t.result_types.iter().map(|t| t.lower().len()).sum();
+                let n = t.result_types.iter().map(|t| t.width() as usize).sum();
                 let mut vals = vec![wasmtime::Val::I32(0); n];
                 let (status, actual, error) = match self.call_slot(t.slot, &mut vals) {
                     Ok(()) => {
@@ -286,12 +312,111 @@ impl NativeRepl {
             defined: step.defined,
             trap,
             tests,
-            stack: read_stack(self.memory.data(&self.store), &self.session.stack),
+            stack: {
+                let structs = self.render_structs();
+                read_stack(
+                    self.memory.data(&self.store),
+                    &self.session.stack,
+                    &mut |i, _| structs.get(&i).cloned().unwrap_or(Value::Null),
+                )
+            },
             timing: Timing {
                 compile_us: us(t0, t1),
                 instantiate_us: us(t1, t2),
                 run_us: us(t2, t3),
             },
         }
+    }
+
+    /// The struct values on the stack, by slot index, read from `chasm.refs`.
+    fn render_structs(&mut self) -> HashMap<u32, Value> {
+        let layouts: Layouts = self
+            .session
+            .structs()
+            .iter()
+            .map(|s| (s.name.clone(), s.fields.clone()))
+            .collect();
+        let mut slots = Vec::new();
+        let mut i = 0;
+        for t in &self.session.stack {
+            if let Ty::Struct(n) = t {
+                slots.push((i, n.clone()));
+            }
+            i += t.width();
+        }
+        let mut out = HashMap::new();
+        let (refs, memory) = (self.refs, self.memory);
+        let mut scope = RootScope::new(&mut self.store);
+        for (i, name) in slots {
+            let v = match refs.get(&mut scope, i as u64) {
+                Some(Ref::Any(Some(r))) => struct_value(&mut scope, memory, &r, &name, &layouts, 0),
+                _ => Value::Null,
+            };
+            out.insert(i, v);
+        }
+        out
+    }
+}
+
+type Layouts = HashMap<String, Vec<(String, Ty)>>;
+
+/// Below this nesting depth a struct shows its fields; at it, `name{...}`.
+const MAX_DEPTH: u32 = 3;
+
+fn struct_value(
+    scope: &mut RootScope<&mut Store<ReplState>>,
+    memory: Memory,
+    r: &Rooted<AnyRef>,
+    name: &str,
+    layouts: &Layouts,
+    depth: u32,
+) -> Value {
+    if depth >= MAX_DEPTH {
+        return Value::Opaque(format!("{name}{{...}}"));
+    }
+    let (Ok(Some(s)), Some(fields)) = (r.as_struct(&*scope), layouts.get(name)) else {
+        return Value::Opaque(format!("<{name}>"));
+    };
+    let get = |scope: &mut RootScope<&mut Store<ReplState>>, k: u32| -> Option<Val> {
+        s.field(scope, k as usize).ok()
+    };
+    let int = |v: Option<Val>| v.and_then(|v| v.i32()).unwrap_or(0);
+    let mut out = Vec::new();
+    let mut w = 0;
+    for (f, t) in fields {
+        let v = match t {
+            Ty::I32 | Ty::Var(_) => Value::I32(int(get(scope, w))),
+            Ty::I64 => Value::I64(get(scope, w).and_then(|v| v.i64()).unwrap_or(0)),
+            Ty::F32 => Value::F32(get(scope, w).and_then(|v| v.f32()).unwrap_or(0.0)),
+            Ty::F64 => Value::F64(get(scope, w).and_then(|v| v.f64()).unwrap_or(0.0)),
+            Ty::Str => {
+                let a = int(get(scope, w)) as u32 as usize;
+                let n = int(get(scope, w + 1)) as u32 as usize;
+                let data = memory.data(scope.as_context());
+                let bytes = data.get(a..a.saturating_add(n)).unwrap_or(&[]);
+                Value::Str(String::from_utf8_lossy(bytes).into_owned())
+            }
+            Ty::Array(e) => {
+                let at = if matches!(e.as_ref(), Ty::Struct(_)) {
+                    w + 2
+                } else {
+                    w + 1
+                };
+                Value::Opaque(format!("<{} elements>", int(get(scope, at)) as u32))
+            }
+            Ty::Quot(_) => Value::Opaque(format!("#{}", int(get(scope, w)))),
+            Ty::Struct(n) => match get(scope, w) {
+                Some(Val::AnyRef(Some(r))) => {
+                    struct_value(scope, memory, &r, n, layouts, depth + 1)
+                }
+                _ => Value::Null,
+            },
+        };
+        out.push((f.clone(), v));
+        w += t.width();
+    }
+    Value::Struct {
+        name: name.to_string(),
+        fields: out,
     }
 }

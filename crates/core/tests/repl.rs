@@ -125,3 +125,47 @@ fn tests_run_when_their_word_has_a_body() {
     assert_eq!(step.tests.len(), 1);
     assert_eq!(step.tests[0].word, "sq");
 }
+
+#[test]
+fn struct_declaration_step() {
+    let mut s = session();
+    let step = ok(&mut s, "struct point  x: i32  y: f64");
+    assert_eq!(step.defined.len(), 5);
+    assert_eq!(step.installs.len(), 5);
+    assert!(step.module.is_some());
+    let again = ok(&mut s, "struct point  x: i32  y: f64");
+    assert!(again.defined.is_empty());
+    assert!(again.module.is_none());
+}
+
+fn has(bytes: &[u8], needle: &[u8]) -> bool {
+    bytes.windows(needle.len()).any(|w| w == needle)
+}
+
+#[test]
+fn struct_values_cross_steps() {
+    let mut plain = session();
+    let step = ok(&mut plain, "1 2 i32.add");
+    assert!(!has(step.module.as_ref().unwrap(), b"refs"));
+    assert_eq!(step.refs_size, 0);
+
+    let mut s = session();
+    ok(&mut s, "struct point  x: i32  y: f64");
+    let p = Ty::Struct("point".into());
+    let step = ok(&mut s, "7 2.5 point.new");
+    assert_eq!(step.line.as_ref().unwrap().stack_after, vec![p.clone()]);
+    assert_eq!(step.refs_size, 1);
+    assert!(has(step.module.as_ref().unwrap(), b"refs"));
+
+    s.stack = vec![p.clone()];
+    let step = ok(&mut s, "point.x");
+    assert_eq!(step.line.as_ref().unwrap().stack_after, vec![Ty::I32]);
+
+    s.stack = vec![];
+    let step = ok(&mut s, "3 array.new ( array point )");
+    assert_eq!(step.refs_size, 3);
+
+    s.stack = vec![Ty::Array(Box::new(p))];
+    let step = ok(&mut s, "array.len");
+    assert_eq!(step.line.as_ref().unwrap().stack_after, vec![Ty::I32]);
+}

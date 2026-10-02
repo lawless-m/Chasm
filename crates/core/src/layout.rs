@@ -70,6 +70,11 @@ pub const IMPORT_RING_ENTER: &str = "ring_enter";
 pub const IMPORT_MEMORY: &str = "memory";
 /// Shared funcref table import name of REPL step modules.
 pub const IMPORT_TABLE: &str = "table";
+/// Shared anyref table of REPL step modules that use structs: a reference
+/// on the memory data stack is a slot holding its own index into this table.
+pub const IMPORT_REFS: &str = "refs";
+/// Table index of `chasm.refs` in a step module (0 is `chasm.table`).
+pub const REFS_TABLE: u32 = 1;
 pub const EXPORT_MEMORY: &str = "memory";
 
 /// I/O error codes (negative i32).
@@ -126,6 +131,7 @@ pub fn constants() -> Vec<(&'static str, u32)> {
         ("DATA_STACK_END", DATA_STACK_END),
         ("LITERALS_BASE", LITERALS_BASE),
         ("STACK_SLOT", STACK_SLOT),
+        ("REFS_TABLE", REFS_TABLE),
         ("INITIAL_PAGES", INITIAL_PAGES as u32),
         ("SHARED_MAX_PAGES", SHARED_MAX_PAGES as u32),
         ("E_NOT_FOUND", E_NOT_FOUND as u32),

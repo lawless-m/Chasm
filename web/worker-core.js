@@ -5,9 +5,14 @@
 // done. No DOM, no Node APIs: `post` and `onMessage` are supplied.
 
 const decoder = new TextDecoder();
+// Import name of the refs table (`chasm_core::layout::IMPORT_REFS`).
+const L_REFS = "refs";
 
 export function attach(post, onMessage) {
   let memory, L, table;
+  // `chasm.refs`: references on the memory data stack, by slot index.
+  // Made on the first step that needs it, so engines without WasmGC never see it.
+  let refs = null;
 
   function ring_enter() {
     const cells = new Int32Array(memory.buffer);
@@ -33,7 +38,37 @@ export function attach(post, onMessage) {
     return r === undefined ? [] : Array.isArray(r) ? r : [r];
   }
 
+  // Read a struct as a plain tree by calling its accessor words through the
+  // table: JavaScript cannot read WasmGC struct fields itself.
+  function renderStruct(ref, name, structs, depth) {
+    if (ref === null) return null;
+    if (depth >= 3) return { name, fields: null };
+    const fields = structs[name].map((f) => {
+      const r = table.get(f.get)(ref);
+      const vals = r === undefined ? [] : Array.isArray(r) ? r : [r];
+      let v;
+      if (f.type === "str") {
+        const a = vals[0] >>> 0;
+        v = decoder.decode(new Uint8Array(memory.buffer).slice(a, a + (vals[1] >>> 0)));
+      } else if (f.type.startsWith("array ")) {
+        v = { elements: (f.type.slice(6) in structs ? vals[2] : vals[1]) >>> 0 };
+      } else if (f.type.startsWith("[")) {
+        v = { quot: vals[0] };
+      } else if (f.type in structs) {
+        v = renderStruct(vals[0], f.type, structs, depth + 1);
+      } else {
+        v = vals[0];
+      }
+      return [f.field, f.type, v];
+    });
+    return { name, fields };
+  }
+
   onMessage((msg) => {
+    if (msg.type === "render") {
+      post({ type: "rendered", values: msg.slots.map((s) => renderStruct(refs.get(s.index), s.name, msg.structs, 0)) });
+      return;
+    }
     if (msg.type === "init") {
       ({ memory, layout: L } = msg);
       table = new WebAssembly.Table({ element: "anyfunc", initial: 0 });
@@ -42,10 +77,15 @@ export function attach(post, onMessage) {
     if (msg.type !== "run") return;
     try {
       if (table.length < msg.tableSize) table.grow(msg.tableSize - table.length);
-      if (msg.module) {
-        const instance = new WebAssembly.Instance(new WebAssembly.Module(msg.module), {
-          chasm: { memory, table, ring_enter },
-        });
+      const mod = msg.module && new WebAssembly.Module(msg.module);
+      if (msg.refsSize > 0 || (mod && WebAssembly.Module.imports(mod).some((i) => i.name === L_REFS))) {
+        refs ??= new WebAssembly.Table({ element: "anyref", initial: 0 });
+        if (refs.length < msg.refsSize) refs.grow(msg.refsSize - refs.length);
+      }
+      if (mod) {
+        const chasm = { memory, table, ring_enter };
+        if (refs) chasm.refs = refs;
+        const instance = new WebAssembly.Instance(mod, { chasm });
         for (const i of msg.installs) table.set(i.slot, instance.exports[i.export]);
       }
     } catch (e) {

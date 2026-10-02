@@ -2,9 +2,7 @@
 # + - * / ( ), each token with its kind, offset and length.
 # Rosetta Code: none (Parsing/Lexical_analyzer is close). Exercises: a state
 # machine over bytes, a predicate passed as a function value, trap with a
-# position.
-# Wall: a token wants to be a struct. Here tokens live three i32s apart in one
-# array (kind, start, length), and every reader must know that layout.
+# position, a struct and an array of structs.
 
 : digit? ( i32 -- i32 )  :> c  c 48 i32.ge_u  c 57 i32.le_u  i32.and ;
 : alpha? ( i32 -- i32 )
@@ -30,9 +28,12 @@ test skip : "abc12+" 0 'alnum? skip -> 5
 : IDENT ( -- i32 ) 2 ;
 : OP ( -- i32 ) 3 ;
 
-: tokenize ( str -- array i32 )
+# A token: its kind, and where it is in the source.
+struct token  kind: i32  start: i32  len: i32
+
+: tokenize ( str -- array token )
   :> s
-  s str.len 3 i32.mul array.new ( array i32 ) :> toks
+  s str.len array.new ( array token ) :> toks     # at most one token per byte
   0 :> n!
   0 :> i!
   [ i s str.len i32.lt_u ]
@@ -45,32 +46,29 @@ test skip : "abc12+" 0 'alnum? skip -> 5
                 [ "unexpected character at " i i32.to-str str.concat trap ]
     if ] if ] if ] if :> kind
     kind
-    [ n 3 i32.mul :> at
-      toks at kind array.at!
-      toks at 1 i32.add start array.at!
-      toks at 2 i32.add i start i32.sub array.at!
+    [ toks n  kind start i start i32.sub token.new  array.at!
       n 1 i32.add n! ]
     when ]
   while
-  toks 0 n 3 i32.mul array.slice ;
+  toks 0 n array.slice ;
 
-: describe ( str array i32 -- str )
+: describe ( str array token -- str )
   :> toks :> s
   "" :> out!
-  toks array.len 3 i32.div_u [ :> t
-    t 3 i32.mul :> at
-    toks at array.at :> kind
-    toks at 1 i32.add array.at :> start
-    t 0 i32.ne [ out " " str.concat out! ] when
+  0 :> k!
+  toks
+  [ :> t
+    k [ out " " str.concat out! ] when
     out
-    kind NUM i32.eq [ "num " ] [ kind IDENT i32.eq [ "ident " ] [ "op " ] if ] if str.concat
-    s start  toks at 2 i32.add array.at  str.slice str.concat
-    "@" str.concat  start i32.to-str str.concat
+    t token.kind NUM i32.eq [ "num " ] [ t token.kind IDENT i32.eq [ "ident " ] [ "op " ] if ] if str.concat
+    s t token.start t token.len str.slice str.concat
+    "@" str.concat  t token.start i32.to-str str.concat
     out!
-  ] times
+    k 1 i32.add k! ]
+  each
   out ;
 
-test tokenize : "12 + foo*(3 - bar_2)" tokenize array.len 3 i32.div_u -> 9
+test tokenize : "12 + foo*(3 - bar_2)" tokenize array.len -> 9
 test describe : "12 + foo*(3 - bar_2)" dup tokenize describe
                 -> "num 12@0 op +@3 ident foo@5 op *@8 op (@9 num 3@10 op -@12 ident bar_2@14 op )@19"
 test describe : "" dup tokenize describe -> ""

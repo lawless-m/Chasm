@@ -1,6 +1,6 @@
 # Chasm: Language Specification
 
-Status: draft v0.9 (M1 to M3 decisions recorded; see sections 12 to 14). Chasm source files use the `.chasm` extension. Companion to `ARCHITECTURE.md`. Sections marked **TBD** are not yet decided.
+Status: draft v0.10 (M1 to M4 decisions recorded; see sections 12 to 15). Chasm source files use the `.chasm` extension. Companion to `ARCHITECTURE.md`. Sections marked **TBD** are not yet decided.
 
 ## 1. Types
 
@@ -11,7 +11,8 @@ Status: draft v0.9 (M1 to M3 decisions recorded; see sections 12 to 14). Chasm s
 | `f32` | `f32` | |
 | `f64` | `f64` | |
 | `str` | `i32 i32` (addr, byte length) | Checker-level type with a fixed, documented lowering. See section 4. |
-| `array T` | `i32 i32` (addr, element count) | `T` is any type in this table except `array`. See section 4a. |
+| `array T` | `i32 i32` (addr, element count); for a struct `T`, `(ref null $T_array) i32 i32` (GC array, start, count) | `T` is any type in this table except `array`. See sections 4a and 4b. |
+| struct name | `(ref null $name)` | A declared struct: a reference to a WasmGC struct. See section 4b. |
 | `[ effect ]` | `i32` (function table index) | A quotation type: a function as a value. See section 7a. |
 
 Signedness is a property of operations, not types, as in wasm. There is no `bool`, `char`, `u32`, `v128` or nested array in v1.
@@ -97,6 +98,16 @@ The quotation body's effect is checked exactly as for `if` and `while`. `leave` 
 : doubled ( array i32 -- array i32 )  [ 2 i32.mul ] map ;
 : sum ( array i32 -- i32 )  0 [ i32.add ] fold ;
 ```
+
+## 4b. Structs
+
+`struct point  x: i32  y: f64` declares a struct: the name, then `field: type` pairs while the next token is a field label, with no terminator. A field type is any type, including a struct declared above, the struct itself, or `array` of it.
+
+The declaration generates ordinary words: `point.new ( i32 f64 -- point )` (fields in order), and for each field `point.x ( point -- i32 )` and `point.x! ( point i32 -- )`. They are listed by `words` and appear in the dependency graph.
+
+Lowering: a WasmGC struct type, every field mutable. A `str` or linear `array` field is two `i32` fields, an `array <struct>` field three (reference, start, count), a struct field one reference, a quotation one `i32`. Each struct's type and the GC array type of its elements form one rec group.
+
+Rules: a struct can be named only after its declaration; redeclaring with the same fields is a no-op and with different fields is `E_REDEFINE_EFFECT`; field names `new` and names ending in `!` are reserved; struct values are not test literals. An `array <struct>` is a view `( ref start count )` over a WasmGC array: the array words and combinators work on it, and slicing shares storage. `array.new` fills it with null references, and reading a field of one traps; programs cannot otherwise make or test a null.
 
 ## 5. Shuffle primitives
 
@@ -239,3 +250,16 @@ Recorded here so the spec matches the compiler. `docs/reference.md` is the user-
 1. **Literal types and conversion words.** No literal has a type suffix. An integer is an `i32`; an integer token followed directly by the word `i64` is a single `i64` literal (`42 i64`, also in a test's expected values), written as the value it means, so `4294967295 i64` is 4294967295. Applied to any other `i32`, `i64` is a prelude word `( i32 -- i64 )` that sign-extends. A type name is a conversion word only for an exact widening from one source type; every lossy conversion (`i32.wrap_i64`, `i32.trunc_f64_s`, `f32.demote_f64`, ...) keeps its wasm name, so the reader sees how the value is cut. Values print the same way: `120 i64`.
 2. **What goes in the prelude.** A word joins the prelude when the example corpus has written it by hand more than once and any program might want it: `f64.fixed ( f64 i32 -- str )`, `array.to-str ( array i32 -- str )` and `str.from-byte ( i32 -- str )` came in this way. Prelude names are `type.verb`, because the dictionary is flat: a program may redefine a prelude word only with the same effect. Code that only some programs want (test helpers, for instance) is a question for library structure (`ARCHITECTURE.md` open question 3), not the prelude.
 3. **No include form.** A program is the files named on the command line, in order, compiled as one dictionary; the shell composes programs (`chasm test lib.chasm prog.chasm`, or `cat` into `/dev/stdin`). The core keeps no I/O and the language no mechanism for it. Files in `examples/` stay self-contained, so the examples gate can check each one alone.
+
+## 15. Decisions taken in M4
+
+1. **Source form and generated words.** `struct point  x: i32  y: f64`, no terminator; it generates `point.new`, `point.x` and `point.x!` per field as ordinary dictionary words.
+2. **One rec group per struct.** Each struct's type and its GC array type form one rec group, so a struct may hold itself and an `array` of itself; it may refer only to structs declared earlier, so mutual recursion is rejected (`E_UNKNOWN_TYPE`).
+3. **Nullable references.** Locals, fields and array elements hold `(ref null $T)`. Nulls arise only as unset elements of a fresh `array.new`, and reading a field of one traps.
+4. **Arrays of structs are views** `( ref start count )` over a WasmGC array, so slicing is free and shares storage, as for all arrays.
+5. **Struct values are not test literals**; tests compare fields.
+6. **REPL echo.** `( point ) point{x: 7, y: 2.5}`; nested structs to three levels, then `name{...}`; an unset struct is `null`; arrays `<n elements>`.
+7. **Names.** Struct names and word names are separate namespaces; generated words follow the `name.field` rule and clash with user words only through the ordinary redefinition rule.
+8. **Linear arrays are unchanged.** `array i32`, `array str` and the like stay `( addr count )` in linear memory.
+9. **No null test.** Programs never see a null value. An optional link is an `array` of length 0 or 1 (`struct node  v: i32  next: array node`), tested with `array.len`.
+

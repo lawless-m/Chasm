@@ -25,10 +25,13 @@ jobs:
         run: cargo test
       - name: Core builds for wasm32
         run: cargo build -p chasm-core --target wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Web build
         run: sh web/build.sh
       - name: Web checks
-        run: node web/test/compiler.mjs && node web/test/ring.mjs && node web/test/node-repl.mjs
+        run: node web/test/compiler.mjs && node web/test/ring.mjs && node web/test/node-repl.mjs && node web/test/node-structs.mjs
       - name: Examples
         run: |
           for f in examples/*.chasm; do

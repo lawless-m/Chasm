@@ -87,3 +87,101 @@ fn tests_run_at_once() {
     assert!(ok, "{out}{err}");
     assert!(out.contains("PASS"), "{out}");
 }
+
+const POINT: &str = "struct point  x: i32  y: f64\n";
+
+fn last_line(out: &str) -> &str {
+    out.lines().last().unwrap_or("")
+}
+
+#[test]
+fn struct_echo_and_fields() {
+    let (ok, out, err) = repl(&[], &format!("{POINT}7 2.5 point.new\n"));
+    assert!(ok, "{out}{err}");
+    assert!(out.contains("ok: point.new ( i32 f64 -- point )"));
+    assert_eq!(last_line(&out), "( point ) point{x: 7, y: 2.5}");
+    let (_, out, _) = repl(&[], &format!("{POINT}7 2.5 point.new\ndup point.x\n"));
+    assert_eq!(last_line(&out), "( point i32 ) point{x: 7, y: 2.5} 7");
+    let (_, out, _) = repl(
+        &[],
+        &format!("{POINT}7 2.5 point.new\ndup point.x\ndrop dup 9 point.x!\n"),
+    );
+    assert_eq!(last_line(&out), "( point ) point{x: 9, y: 2.5}");
+}
+
+#[test]
+fn struct_arrays_in_the_repl() {
+    let (_, out, _) = repl(&[], &format!("{POINT}2 array.new ( array point )\n"));
+    assert_eq!(last_line(&out), "( array point ) <2 elements>");
+    let (_, out, _) = repl(
+        &[],
+        &format!(
+            "{POINT}2 array.new ( array point )\ndup 0 1 1.0 point.new array.at!\ndup 0 array.at\n"
+        ),
+    );
+    assert_eq!(
+        last_line(&out),
+        "( array point point ) <2 elements> point{x: 1, y: 1.0}"
+    );
+    let (_, out, _) = repl(
+        &[],
+        &format!("{POINT}2 array.new ( array point )\ndup 0 1 1.0 point.new array.at!\ndup 0 array.at\ndrop 1 1 array.slice\n"),
+    );
+    assert_eq!(last_line(&out), "( array point ) <1 elements>");
+}
+
+#[test]
+fn struct_survives_trap_and_gc() {
+    let (ok, out, err) = repl(&[], &format!("{POINT}7 2.5 point.new\n1 0 i32.div_s\n"));
+    assert!(!ok);
+    assert!(err.contains("trap in"), "{err}");
+    assert_eq!(last_line(&out), "( point ) point{x: 7, y: 2.5}");
+    let t = std::time::Instant::now();
+    let (ok, out, err) = repl(
+        &[],
+        &format!(
+            "{POINT}: churn ( i32 -- ) [ drop 1 2.5 point.new drop ] times ;\n7 2.5 point.new\n10000000 churn\n"
+        ),
+    );
+    assert!(ok, "{out}{err}");
+    assert_eq!(last_line(&out), "( point ) point{x: 7, y: 2.5}");
+    assert!(t.elapsed().as_secs() < 10, "{:?}", t.elapsed());
+}
+
+#[test]
+fn nested_struct_echo() {
+    let (_, out, _) = repl(
+        &[],
+        &format!(
+            "{POINT}struct seg  a: point  b: point\n0 0.0 point.new 1 1.0 point.new seg.new\n"
+        ),
+    );
+    assert_eq!(
+        last_line(&out),
+        "( seg ) seg{a: point{x: 0, y: 0.0}, b: point{x: 1, y: 1.0}}"
+    );
+    // A null link comes from an unset array element.
+    let (_, out, _) = repl(
+        &[],
+        "struct node  v: i32  next: node\n: nil ( -- node ) 1 array.new ( array node ) 0 array.at ;\n1 nil node.new 2 swap node.new 3 swap node.new 4 swap node.new\n",
+    );
+    assert_eq!(
+        last_line(&out),
+        "( node ) node{v: 4, next: node{v: 3, next: node{v: 2, next: node{...}}}}"
+    );
+    let (_, out, _) = repl(
+        &[],
+        &format!("{POINT}struct bag  items: array point\n2 array.new ( array point ) bag.new\n"),
+    );
+    assert_eq!(last_line(&out), "( bag ) bag{items: <2 elements>}");
+}
+
+#[test]
+fn struct_echo_json() {
+    let (_, out, _) = repl(&["--json"], &format!("{POINT}7 2.5 point.new\n"));
+    let last: serde_json::Value = serde_json::from_str(last_line(&out)).unwrap();
+    assert_eq!(
+        last["results"]["stack"][0],
+        serde_json::json!({"type": "point", "value": "point{x: 7, y: 2.5}"})
+    );
+}

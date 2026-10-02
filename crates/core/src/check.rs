@@ -14,7 +14,7 @@ use crate::diag::{codes, Diagnostic, Location};
 use crate::graph::EdgeKind;
 use crate::layout;
 use crate::prims;
-use crate::types::{lower_all, names, Effect, Subst, Ty};
+use crate::types::{lower_all, names, ref_ty, Effect, StructTypes, Subst, Ty};
 
 pub type WordId = usize;
 
@@ -73,7 +73,7 @@ impl Word {
 pub struct Ctx {
     pub words: Vec<Word>,
     pub by_name: HashMap<String, WordId>,
-    pub types: Vec<(Vec<ValType>, Vec<ValType>)>,
+    pub types: Vec<TypeDef>,
     type_map: HashMap<(Vec<ValType>, Vec<ValType>), u32>,
     pub literals: Vec<u8>,
     lit_map: HashMap<String, u32>,
@@ -85,6 +85,27 @@ pub struct Ctx {
     /// Call words through table 0 (slot = word id) instead of directly,
     /// so a redefinition reaches existing callers (the REPL).
     pub indirect_calls: bool,
+    pub struct_types: StructTypes,
+    pub structs: Vec<StructDef>,
+    pub struct_by_name: HashMap<String, usize>,
+}
+
+/// A declared struct: its fields in order and its wasm type index.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructDef {
+    pub name: String,
+    pub fields: Vec<(String, Ty)>,
+    pub type_index: u32,
+    pub loc: Location,
+}
+
+/// An entry of the module's type section, by index. A struct is followed by
+/// its GC array type (`StructArray`, index + 1); the two form one rec group.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypeDef {
+    Func(Vec<ValType>, Vec<ValType>),
+    Struct(Vec<ValType>),
+    StructArray,
 }
 
 impl Default for Ctx {
@@ -99,6 +120,9 @@ impl Default for Ctx {
             all_names: Default::default(),
             literal_base: layout::LITERALS_BASE,
             indirect_calls: false,
+            struct_types: StructTypes::new(),
+            structs: Vec::new(),
+            struct_by_name: HashMap::new(),
         }
     }
 }
@@ -110,8 +134,48 @@ impl Ctx {
             return i;
         }
         let i = self.types.len() as u32;
-        self.types.push(key.clone());
+        self.types.push(TypeDef::Func(key.0.clone(), key.1.clone()));
         self.type_map.insert(key, i);
+        i
+    }
+
+    /// E_UNKNOWN_TYPE for any struct name in `tys` that is not declared,
+    /// except `allow` (the struct being declared, which may name itself).
+    pub fn check_types(
+        &self,
+        tys: &[Ty],
+        loc: &Location,
+        allow: Option<&str>,
+    ) -> Result<(), Diagnostic> {
+        for t in tys {
+            match t {
+                Ty::Struct(n)
+                    if !self.struct_by_name.contains_key(n) && allow != Some(n.as_str()) =>
+                {
+                    return Err(Diagnostic::error(
+                        codes::E_UNKNOWN_TYPE,
+                        format!("unknown type `{n}`; a struct can only be used after its `struct {n} ...` declaration, and only structs declared above it (or itself) may appear in its fields"),
+                        loc.clone(),
+                    ));
+                }
+                Ty::Array(e) => self.check_types(std::slice::from_ref(e), loc, allow)?,
+                Ty::Quot(e) => {
+                    self.check_types(&e.inputs, loc, allow)?;
+                    self.check_types(&e.outputs, loc, allow)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Add a struct type with these (already lowered, all mutable) fields and,
+    /// at the next index, the GC array type of that struct. Returns the
+    /// struct's index.
+    pub fn register_struct_type(&mut self, fields: Vec<ValType>) -> u32 {
+        let i = self.types.len() as u32;
+        self.types.push(TypeDef::Struct(fields));
+        self.types.push(TypeDef::StructArray);
         i
     }
 
@@ -213,22 +277,28 @@ struct LoopCtx {
     level: u32,
 }
 
-#[derive(Default)]
-struct TempAlloc {
-    counts: [u32; 4],
+/// A combinator's array: a linear `addr` local, or a struct-array view (GC
+/// array in `arr`, `start` local unless the view starts at 0, type `ti`).
+#[derive(Clone, Copy)]
+enum ArrLocals {
+    Linear(u32),
+    Gc {
+        arr: u32,
+        start: Option<u32>,
+        ti: u32,
+    },
 }
 
-fn vt_key(vt: ValType) -> usize {
-    match vt {
-        ValType::I32 => 0,
-        ValType::I64 => 1,
-        ValType::F32 => 2,
-        _ => 3,
-    }
+/// Temps are reused per exact value type, so a `(ref null $point)` temp is
+/// never shared with an `f64` or another struct's reference.
+#[derive(Default)]
+struct TempAlloc {
+    counts: HashMap<ValType, u32>,
 }
 
 fn vt_size(vt: ValType) -> u32 {
     match vt {
+        ValType::Ref(_) => panic!("references are never stored in linear memory"),
         ValType::I64 | ValType::F64 => 8,
         _ => 4,
     }
@@ -280,7 +350,7 @@ struct Walker<'c> {
     outer_locals: Vec<String>,
     nparams: u32,
     local_types: Vec<ValType>,
-    temps: HashMap<(usize, u32), u32>,
+    temps: HashMap<(ValType, u32), u32>,
     code: Vec<I<'static>>,
     depth: u32,
     loops: Vec<LoopCtx>,
@@ -316,7 +386,7 @@ impl<'c> Walker<'c> {
     fn run(&mut self, mode: &Mode<'_>, body: &Body, loc: &Location) -> Result<Effect, Diagnostic> {
         if let Mode::Declared(e) = mode {
             self.stack = e.inputs.clone();
-            let params = e.wasm_params();
+            let params = e.wasm_params(&self.ctx.struct_types);
             self.nparams = params.len() as u32;
             for i in 0..self.nparams {
                 self.op(I::LocalGet(i));
@@ -398,7 +468,18 @@ impl<'c> Walker<'c> {
         self.op(I::I32Store(memarg(layout::DATA_STACK_PTR, ValType::I32)));
         for (i, vt) in vts.into_iter().enumerate() {
             self.op(I::LocalGet(base));
-            self.op(load_vt(vt, layout::STACK_SLOT * i as u32));
+            match vt {
+                ValType::Ref(r) => {
+                    // The slot holds this value's index in `chasm.refs`.
+                    self.op(I::I32Load(memarg(
+                        layout::STACK_SLOT * i as u32,
+                        ValType::I32,
+                    )));
+                    self.op(I::TableGet(layout::REFS_TABLE));
+                    self.op(I::RefCastNullable(r.heap_type));
+                }
+                _ => self.op(load_vt(vt, layout::STACK_SLOT * i as u32)),
+            }
         }
         base
     }
@@ -416,10 +497,32 @@ impl<'c> Walker<'c> {
         self.op(I::If(BlockType::Empty));
         self.trap("data stack overflow");
         self.op(I::End);
+        let mut ix = None;
         for (j, (vt, v)) in vts.into_iter().zip(vals).enumerate() {
-            self.op(I::LocalGet(base));
-            self.op(I::LocalGet(v));
-            self.op(store_vt(vt, layout::STACK_SLOT * j as u32));
+            let off = layout::STACK_SLOT * j as u32;
+            if let ValType::Ref(_) = vt {
+                // A reference goes in `chasm.refs` at the slot's own index,
+                // and the slot holds that index.
+                let ix = *ix.get_or_insert_with(|| self.new_local(ValType::I32));
+                self.op(I::LocalGet(base));
+                self.op(I::I32Const(layout::DATA_STACK_BASE as i32));
+                self.op(I::I32Sub);
+                self.op(I::I32Const(layout::STACK_SLOT.trailing_zeros() as i32));
+                self.op(I::I32ShrU);
+                self.op(I::I32Const(j as i32));
+                self.op(I::I32Add);
+                self.op(I::LocalSet(ix));
+                self.op(I::LocalGet(ix));
+                self.op(I::LocalGet(v));
+                self.op(I::TableSet(layout::REFS_TABLE));
+                self.op(I::LocalGet(base));
+                self.op(I::LocalGet(ix));
+                self.op(I::I32Store(memarg(off, ValType::I32)));
+            } else {
+                self.op(I::LocalGet(base));
+                self.op(I::LocalGet(v));
+                self.op(store_vt(vt, off));
+            }
         }
         self.op(I::I32Const(0));
         self.op(I::LocalGet(base));
@@ -444,11 +547,11 @@ impl<'c> Walker<'c> {
     }
 
     fn lower(&self, t: &Ty) -> Vec<ValType> {
-        self.subst.resolve(t).lower()
+        self.subst.resolve(t).lower(&self.ctx.struct_types)
     }
 
     fn lower_all(&self, tys: &[Ty]) -> Vec<ValType> {
-        lower_all(&self.subst.resolve_all(tys))
+        lower_all(&self.subst.resolve_all(tys), &self.ctx.struct_types)
     }
 
     fn block_type(&mut self, params: &[Ty], results: &[Ty]) -> BlockType {
@@ -473,14 +576,14 @@ impl<'c> Walker<'c> {
     }
 
     fn temp(&mut self, ta: &mut TempAlloc, vt: ValType) -> u32 {
-        let k = vt_key(vt);
-        let n = ta.counts[k];
-        ta.counts[k] += 1;
-        if let Some(&i) = self.temps.get(&(k, n)) {
+        let n = ta.counts.entry(vt).or_insert(0);
+        let k = *n;
+        *n += 1;
+        if let Some(&i) = self.temps.get(&(vt, k)) {
             return i;
         }
         let i = self.new_local(vt);
-        self.temps.insert((k, n), i);
+        self.temps.insert((vt, k), i);
         i
     }
 
@@ -592,6 +695,16 @@ impl<'c> Walker<'c> {
         let v = self.subst.fresh();
         self.pop_expect(what, &[Ty::Array(Box::new(v.clone()))], loc)?;
         Ok(self.subst.resolve(&v))
+    }
+
+    /// The GC array type index when `elem` is a struct: an `array S` is then a
+    /// view `( ref start len )` over a WasmGC array. `None` for linear arrays
+    /// (and for unresolved elements in the checking pass, whose code is discarded).
+    fn gc_array(&self, elem: &Ty) -> Option<u32> {
+        match self.subst.resolve(elem) {
+            Ty::Struct(name) => self.ctx.struct_types.get(&name).map(|i| i + 1),
+            _ => None,
+        }
     }
 
     /// In the emitting pass, an element type must be known.
@@ -735,6 +848,7 @@ impl<'c> Walker<'c> {
                 Ok(Flow::Normal)
             }
             NodeKind::Assert(tys) => {
+                self.ctx.check_types(tys, loc, None)?;
                 if !self.unify_stack(tys) {
                     let actual = self.resolved_stack();
                     return Err(self
@@ -1005,7 +1119,15 @@ impl<'c> Walker<'c> {
     }
 
     /// Emit: push element `i` of the array at `addr` (locals) onto the stack.
-    fn load_elem(&mut self, t: &Ty, addr: u32, i: u32, ta: &mut TempAlloc) {
+    fn load_elem(&mut self, t: &Ty, arr: &ArrLocals, i: u32, ta: &mut TempAlloc) {
+        let addr = match *arr {
+            ArrLocals::Linear(addr) => addr,
+            ArrLocals::Gc { arr, start, ti } => {
+                self.gc_index(arr, start, i);
+                self.op(I::ArrayGet(ti));
+                return;
+            }
+        };
         let size = t.elem_size() as i32;
         let ea = self.temp(ta, ValType::I32);
         self.op(I::LocalGet(addr));
@@ -1015,7 +1137,7 @@ impl<'c> Walker<'c> {
         self.op(I::I32Add);
         self.op(I::LocalSet(ea));
         let mut off = 0;
-        for vt in t.lower() {
+        for vt in self.lower(t) {
             self.op(I::LocalGet(ea));
             self.op(load_vt(vt, off));
             off += vt_size(vt);
@@ -1023,7 +1145,16 @@ impl<'c> Walker<'c> {
     }
 
     /// Emit: store value locals `val` as element `i` of the array at `addr`.
-    fn store_elem(&mut self, t: &Ty, addr: u32, i: u32, val: &[u32], ta: &mut TempAlloc) {
+    fn store_elem(&mut self, t: &Ty, arr: &ArrLocals, i: u32, val: &[u32], ta: &mut TempAlloc) {
+        let addr = match *arr {
+            ArrLocals::Linear(addr) => addr,
+            ArrLocals::Gc { arr, start, ti } => {
+                self.gc_index(arr, start, i);
+                self.op(I::LocalGet(val[0]));
+                self.op(I::ArraySet(ti));
+                return;
+            }
+        };
         let size = t.elem_size() as i32;
         let ea = self.temp(ta, ValType::I32);
         self.op(I::LocalGet(addr));
@@ -1033,11 +1164,47 @@ impl<'c> Walker<'c> {
         self.op(I::I32Add);
         self.op(I::LocalSet(ea));
         let mut off = 0;
-        for (vt, &v) in t.lower().into_iter().zip(val) {
+        for (vt, &v) in self.lower(t).into_iter().zip(val) {
             self.op(I::LocalGet(ea));
             self.op(I::LocalGet(v));
             self.op(store_vt(vt, off));
             off += vt_size(vt);
+        }
+    }
+
+    /// Push the GC array and the element index `start + i` (start 0 if none).
+    fn gc_index(&mut self, arr: u32, start: Option<u32>, i: u32) {
+        self.op(I::LocalGet(arr));
+        self.op(I::LocalGet(i));
+        if let Some(s) = start {
+            self.op(I::LocalGet(s));
+            self.op(I::I32Add);
+        }
+    }
+
+    /// Where a combinator's array lives: a linear `addr`, or a struct-array
+    /// view whose GC array is in a ref local. `len` is already allocated; for
+    /// a view, `start` reuses the `addr` local and the GC array gets a new one.
+    fn source_array(&mut self, t: &Ty, addr: u32) -> ArrLocals {
+        match self.gc_array(t) {
+            Some(ti) => ArrLocals::Gc {
+                arr: self.new_local(ref_ty(ti)),
+                start: Some(addr),
+                ti,
+            },
+            None => ArrLocals::Linear(addr),
+        }
+    }
+
+    /// Pop the array (already typed) into its locals.
+    fn array_prologue(&mut self, arr: &ArrLocals, len: u32) {
+        self.op(I::LocalSet(len));
+        match *arr {
+            ArrLocals::Linear(addr) => self.op(I::LocalSet(addr)),
+            ArrLocals::Gc { arr, start, .. } => {
+                self.op(I::LocalSet(start.unwrap()));
+                self.op(I::LocalSet(arr));
+            }
         }
     }
 
@@ -1067,6 +1234,18 @@ impl<'c> Walker<'c> {
         self.close_label();
     }
 
+    /// Push a combinator's result array: `addr len`, or a view `( ref 0 len )`.
+    fn push_result(&mut self, arr: &ArrLocals, len: u32) {
+        match *arr {
+            ArrLocals::Linear(addr) => self.op(I::LocalGet(addr)),
+            ArrLocals::Gc { arr, .. } => {
+                self.op(I::LocalGet(arr));
+                self.op(I::I32Const(0));
+            }
+        }
+        self.op(I::LocalGet(len));
+    }
+
     fn each(&mut self, b: &Body, loc: &Location) -> Result<Flow, Diagnostic> {
         let t = self.pop_array("each", loc)?;
         let t = self.concrete_elem(&t, "each", loc)?;
@@ -1074,10 +1253,10 @@ impl<'c> Walker<'c> {
         let len = self.new_local(ValType::I32);
         let addr = self.new_local(ValType::I32);
         let i = self.new_local(ValType::I32);
-        self.op(I::LocalSet(len));
-        self.op(I::LocalSet(addr));
+        let arr = self.source_array(&t, addr);
+        self.array_prologue(&arr, len);
         let (exit, top) = self.coll_loop_open(&s, i, len);
-        self.load_elem(&t, addr, i, &mut TempAlloc::default());
+        self.load_elem(&t, &arr, i, &mut TempAlloc::default());
         self.stack.push(t);
         self.loops.push(LoopCtx {
             exit: Some(s.clone()),
@@ -1099,6 +1278,7 @@ impl<'c> Walker<'c> {
         let src = self.new_local(ValType::I32);
         let dst = self.new_local(ValType::I32);
         let i = self.new_local(ValType::I32);
+        let src_arr = self.source_array(&t, src);
         // Walk the body first (into its own buffer) to learn U.
         self.depth += 2;
         self.loops.push(LoopCtx {
@@ -1108,7 +1288,7 @@ impl<'c> Walker<'c> {
         self.stack.push(t.clone());
         let saved = std::mem::take(&mut self.code);
         let mut ta = TempAlloc::default();
-        self.load_elem(&t, src, i, &mut ta);
+        self.load_elem(&t, &src_arr, i, &mut ta);
         let f = self.seq(b);
         let body_code = std::mem::replace(&mut self.code, saved);
         let f = f?;
@@ -1139,21 +1319,35 @@ impl<'c> Walker<'c> {
         }
         let u = self.stack.pop().unwrap();
         let u = self.concrete_elem(&u, "map", loc)?;
-        // Prologue.
-        self.op(I::LocalSet(len));
-        self.op(I::LocalSet(src));
-        self.op(I::LocalGet(len));
-        self.op(I::I32Const(u.elem_size() as i32));
-        self.op(I::I32Mul);
-        self.op(I::Call(FN_ALLOC));
-        self.op(I::LocalSet(dst));
+        // Prologue: the result follows U, a fresh linear block or GC array.
+        self.array_prologue(&src_arr, len);
+        let dst_arr = match self.gc_array(&u) {
+            Some(ti) => {
+                let r = self.new_local(ref_ty(ti));
+                self.op(I::LocalGet(len));
+                self.op(I::ArrayNewDefault(ti));
+                self.op(I::LocalSet(r));
+                ArrLocals::Gc {
+                    arr: r,
+                    start: None,
+                    ti,
+                }
+            }
+            None => {
+                self.op(I::LocalGet(len));
+                self.op(I::I32Const(u.elem_size() as i32));
+                self.op(I::I32Mul);
+                self.op(I::Call(FN_ALLOC));
+                self.op(I::LocalSet(dst));
+                ArrLocals::Linear(dst)
+            }
+        };
         let (_exit, top) = self.coll_loop_open(&s, i, len);
         self.code.extend(body_code);
         let val = self.stash(std::slice::from_ref(&u), None).pop().unwrap();
-        self.store_elem(&u, dst, i, &val, &mut TempAlloc::default());
+        self.store_elem(&u, &dst_arr, i, &val, &mut TempAlloc::default());
         self.coll_loop_close(i, top);
-        self.op(I::LocalGet(dst));
-        self.op(I::LocalGet(len));
+        self.push_result(&dst_arr, len);
         self.stack = s;
         self.stack.push(Ty::Array(Box::new(u)));
         Ok(Flow::Normal)
@@ -1168,17 +1362,34 @@ impl<'c> Walker<'c> {
         let dst = self.new_local(ValType::I32);
         let i = self.new_local(ValType::I32);
         let cnt = self.new_local(ValType::I32);
-        self.op(I::LocalSet(len));
-        self.op(I::LocalSet(src));
-        self.op(I::LocalGet(len));
-        self.op(I::I32Const(t.elem_size() as i32));
-        self.op(I::I32Mul);
-        self.op(I::Call(FN_ALLOC));
-        self.op(I::LocalSet(dst));
+        let src_arr = self.source_array(&t, src);
+        self.array_prologue(&src_arr, len);
+        let dst_arr = match src_arr {
+            ArrLocals::Gc { ti, .. } => {
+                // A view of the first `cnt` slots of a fresh GC array.
+                let r = self.new_local(ref_ty(ti));
+                self.op(I::LocalGet(len));
+                self.op(I::ArrayNewDefault(ti));
+                self.op(I::LocalSet(r));
+                ArrLocals::Gc {
+                    arr: r,
+                    start: None,
+                    ti,
+                }
+            }
+            ArrLocals::Linear(_) => {
+                self.op(I::LocalGet(len));
+                self.op(I::I32Const(t.elem_size() as i32));
+                self.op(I::I32Mul);
+                self.op(I::Call(FN_ALLOC));
+                self.op(I::LocalSet(dst));
+                ArrLocals::Linear(dst)
+            }
+        };
         self.op(I::I32Const(0));
         self.op(I::LocalSet(cnt));
         let (_exit, top) = self.coll_loop_open(&s, i, len);
-        self.load_elem(&t, src, i, &mut TempAlloc::default());
+        self.load_elem(&t, &src_arr, i, &mut TempAlloc::default());
         let val = self.stash(std::slice::from_ref(&t), None).pop().unwrap();
         self.unstash(&val);
         self.stack.push(t.clone());
@@ -1196,15 +1407,14 @@ impl<'c> Walker<'c> {
         }
         self.op(I::If(BlockType::Empty));
         self.depth += 1;
-        self.store_elem(&t, dst, cnt, &val, &mut TempAlloc::default());
+        self.store_elem(&t, &dst_arr, cnt, &val, &mut TempAlloc::default());
         self.op(I::LocalGet(cnt));
         self.op(I::I32Const(1));
         self.op(I::I32Add);
         self.op(I::LocalSet(cnt));
         self.close_label();
         self.coll_loop_close(i, top);
-        self.op(I::LocalGet(dst));
-        self.op(I::LocalGet(cnt));
+        self.push_result(&dst_arr, cnt);
         self.stack = s;
         self.stack.push(Ty::Array(Box::new(t)));
         Ok(Flow::Normal)
@@ -1226,11 +1436,11 @@ impl<'c> Walker<'c> {
         let len = self.new_local(ValType::I32);
         let src = self.new_local(ValType::I32);
         let i = self.new_local(ValType::I32);
-        self.op(I::LocalSet(len));
-        self.op(I::LocalSet(src));
+        let src_arr = self.source_array(&t, src);
+        self.array_prologue(&src_arr, len);
         self.unstash(&acc);
         let (exit, top) = self.coll_loop_open(&su, i, len);
-        self.load_elem(&t, src, i, &mut TempAlloc::default());
+        self.load_elem(&t, &src_arr, i, &mut TempAlloc::default());
         self.stack = su.clone();
         self.stack.push(t);
         self.loops.push(LoopCtx {
@@ -1367,19 +1577,28 @@ impl<'c> Walker<'c> {
                 let mut ta = TempAlloc::default();
                 let c = self.temp(&mut ta, ValType::I32);
                 self.op(I::LocalTee(c));
-                self.op(I::I32Const(t.elem_size() as i32));
-                self.op(I::I32Mul);
-                self.op(I::Call(FN_ALLOC));
+                if let Some(ti) = self.gc_array(&t) {
+                    // Elements start as null references; reading a field of one traps.
+                    self.op(I::ArrayNewDefault(ti));
+                    self.op(I::I32Const(0));
+                } else {
+                    self.op(I::I32Const(t.elem_size() as i32));
+                    self.op(I::I32Mul);
+                    self.op(I::Call(FN_ALLOC));
+                }
                 self.op(I::LocalGet(c));
                 self.stack.push(Ty::Array(Box::new(v)));
                 return Ok(Flow::Normal);
             }
             "array.len" => {
-                self.pop_array(n, loc)?;
+                let e = self.pop_array(n, loc)?;
                 let mut ta = TempAlloc::default();
                 let t = self.temp(&mut ta, ValType::I32);
                 self.op(I::LocalSet(t));
                 self.op(I::Drop);
+                if self.gc_array(&e).is_some() {
+                    self.op(I::Drop);
+                }
                 self.op(I::LocalGet(t));
                 self.stack.push(Ty::I32);
                 return Ok(Flow::Normal);
@@ -1407,16 +1626,34 @@ impl<'c> Walker<'c> {
                 self.op(I::LocalSet(idx));
                 self.op(I::LocalSet(len));
                 self.op(I::LocalSet(addr));
+                let gc = self.gc_array(&t).map(|ti| {
+                    let r = self.temp(&mut ta, ref_ty(ti));
+                    self.op(I::LocalSet(r));
+                    (ti, r)
+                });
                 self.op(I::LocalGet(idx));
                 self.op(I::LocalGet(len));
                 self.op(I::I32GeU);
                 self.op(I::If(BlockType::Empty));
                 self.trap(&format!("{n}: index out of bounds"));
                 self.op(I::End);
-                if store {
-                    self.store_elem(&t, addr, idx, &val, &mut ta);
+                if let Some((ti, r)) = gc {
+                    // `addr` holds the view's start.
+                    self.op(I::LocalGet(r));
+                    self.op(I::LocalGet(addr));
+                    self.op(I::LocalGet(idx));
+                    self.op(I::I32Add);
+                    if store {
+                        self.op(I::LocalGet(val[0]));
+                        self.op(I::ArraySet(ti));
+                    } else {
+                        self.op(I::ArrayGet(ti));
+                        self.stack.push(t);
+                    }
+                } else if store {
+                    self.store_elem(&t, &ArrLocals::Linear(addr), idx, &val, &mut ta);
                 } else {
-                    self.load_elem(&t, addr, idx, &mut ta);
+                    self.load_elem(&t, &ArrLocals::Linear(addr), idx, &mut ta);
                     self.stack.push(t);
                 }
                 return Ok(Flow::Normal);
@@ -1434,6 +1671,7 @@ impl<'c> Walker<'c> {
                 for l in [cnt, start, len, addr] {
                     self.op(I::LocalSet(l));
                 }
+                let gc = self.gc_array(&t).is_some();
                 self.op(I::LocalGet(start));
                 self.op(I::LocalGet(len));
                 self.op(I::I32GtU);
@@ -1446,10 +1684,14 @@ impl<'c> Walker<'c> {
                 self.op(I::If(BlockType::Empty));
                 self.trap("array.slice: range out of bounds");
                 self.op(I::End);
+                // A struct-array view keeps its GC array (still on the stack
+                // below) and moves its start; a linear view moves its address.
                 self.op(I::LocalGet(addr));
                 self.op(I::LocalGet(start));
-                self.op(I::I32Const(t.elem_size() as i32));
-                self.op(I::I32Mul);
+                if !gc {
+                    self.op(I::I32Const(t.elem_size() as i32));
+                    self.op(I::I32Mul);
+                }
                 self.op(I::I32Add);
                 self.op(I::LocalGet(cnt));
                 self.stack.push(arr);
@@ -1478,7 +1720,10 @@ impl<'c> Walker<'c> {
                 let q = Ty::Quot(e.clone()).to_string();
                 self.pop_expect(&format!("call {q}"), &e.inputs, loc)?;
                 if self.emit {
-                    let ti = self.ctx.intern_type(e.wasm_params(), e.wasm_results());
+                    let ti = self.ctx.intern_type(
+                        e.wasm_params(&self.ctx.struct_types),
+                        e.wasm_results(&self.ctx.struct_types),
+                    );
                     self.op(I::CallIndirect {
                         type_index: ti,
                         table_index: 0,
@@ -1496,7 +1741,10 @@ impl<'c> Walker<'c> {
             if !self.ctx.indirect_calls {
                 self.op(I::Call(Word::func_index(id)));
             } else if self.emit {
-                let ti = self.ctx.intern_type(e.wasm_params(), e.wasm_results());
+                let ti = self.ctx.intern_type(
+                    e.wasm_params(&self.ctx.struct_types),
+                    e.wasm_results(&self.ctx.struct_types),
+                );
                 self.op(I::I32Const(id as i32));
                 self.op(I::CallIndirect {
                     type_index: ti,
@@ -1561,6 +1809,57 @@ mod tests {
         out.compiled.code
     }
 
+    /// A step module holding one `( ref -- ref )` word over a registered struct.
+    fn struct_step(fields: impl Fn(u32) -> Vec<ValType>) -> (Ctx, Vec<u8>) {
+        let mut ctx = Ctx::default();
+        let base = ctx.types.len() as u32;
+        let idx = ctx.register_struct_type(fields(base));
+        assert_eq!(idx, base);
+        assert_eq!(ctx.types.len() as u32, idx + 2);
+        ctx.struct_types.insert("p".into(), idx);
+        let p = Ty::Struct("p".into());
+        let id = ctx.add_word(Word {
+            name: "id".into(),
+            effect: Effect::new(vec![p.clone()], vec![p]),
+            body: Some(Compiled {
+                locals: vec![],
+                code: vec![I::LocalGet(0)],
+            }),
+            failed: false,
+            export: false,
+            origin: Origin::User,
+            kind: WordKind::Named,
+            loc: Location::default(),
+            callees: vec![],
+        });
+        let bytes = crate::module::assemble_step(&mut ctx, &[id], false);
+        (ctx, bytes)
+    }
+
+    #[test]
+    fn check_types_allows_self() {
+        let ctx = Ctx::default();
+        let node = Ty::Struct("node".into());
+        let tys = [node.clone(), Ty::Array(Box::new(node))];
+        let loc = Location::default();
+        assert!(ctx.check_types(&tys, &loc, Some("node")).is_ok());
+        assert_eq!(
+            ctx.check_types(&tys, &loc, None).unwrap_err().code,
+            codes::E_UNKNOWN_TYPE
+        );
+    }
+
+    #[test]
+    fn struct_types_validate() {
+        use crate::types::ref_ty;
+        let (_, b) = struct_step(|_| vec![ValType::I32, ValType::F64]);
+        crate::program::validate(&b).unwrap();
+        let (_, b) = struct_step(|i| vec![ref_ty(i), ValType::I32]);
+        crate::program::validate(&b).unwrap();
+        let (_, b) = struct_step(|i| vec![ref_ty(i + 1), ValType::I32, ValType::I32]);
+        crate::program::validate(&b).unwrap();
+    }
+
     fn line(src: &str, inputs: &[Ty]) -> Result<Output, Diagnostic> {
         let toks = crate::lexer::lex("t", &format!(": t ( -- ) {src} ;")).unwrap();
         let items = crate::parser::parse("t", &toks).unwrap();
@@ -1576,6 +1875,40 @@ mod tests {
             &Location::default(),
             &[],
         )
+    }
+
+    #[test]
+    fn line_refs_table() {
+        let line_in = |src: &str, inputs: &[Ty]| {
+            let toks = crate::lexer::lex("t", &format!(": t ( -- ) {src} ;")).unwrap();
+            let items = crate::parser::parse("t", &toks).unwrap();
+            let crate::ast::Item::Def { body, .. } = &items[0] else {
+                panic!()
+            };
+            let mut ctx = Ctx::default();
+            let idx = ctx.register_struct_type(vec![ValType::I32]);
+            ctx.struct_types.insert("p".into(), idx);
+            ctx.struct_by_name.insert("p".into(), 0);
+            compile_body(
+                &mut ctx,
+                "[line 1]",
+                Mode::Line(inputs),
+                body,
+                &Location::default(),
+                &[],
+            )
+            .unwrap()
+            .compiled
+            .code
+        };
+        let p = Ty::Struct("p".into());
+        let code = line_in("", std::slice::from_ref(&p));
+        assert!(code.iter().any(|i| matches!(i, I::TableGet(1))));
+        let code = line_in("0 array.new ( array p )", &[]);
+        assert_eq!(
+            code.iter().filter(|i| matches!(i, I::TableSet(1))).count(),
+            1
+        );
     }
 
     #[test]

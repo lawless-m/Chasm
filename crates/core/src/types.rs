@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use wasm_encoder::ValType;
+use wasm_encoder::{HeapType, RefType, ValType};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Ty {
@@ -15,6 +15,8 @@ pub enum Ty {
     Array(Box<Ty>),
     /// `[ effect ]`: a function table index.
     Quot(Box<Effect>),
+    /// A declared struct, by name: a WasmGC reference.
+    Struct(String),
     /// A type variable. Only arises from polymorphic primitives
     /// (`array.new`, element types); never written in user effects.
     Var(u32),
@@ -29,6 +31,19 @@ pub struct Effect {
     pub row: Option<u32>,
 }
 
+/// Struct name to the index of its wasm struct type in the module's type
+/// section; the GC array type of that struct is the next index.
+pub type StructTypes = HashMap<String, u32>;
+
+/// A nullable reference to concrete type `index` (nullable so locals are
+/// defaultable).
+pub fn ref_ty(index: u32) -> ValType {
+    ValType::Ref(RefType {
+        nullable: true,
+        heap_type: HeapType::Concrete(index),
+    })
+}
+
 impl Effect {
     pub fn new(inputs: Vec<Ty>, outputs: Vec<Ty>) -> Self {
         Effect {
@@ -38,32 +53,55 @@ impl Effect {
         }
     }
 
-    pub fn wasm_params(&self) -> Vec<ValType> {
-        lower_all(&self.inputs)
+    pub fn wasm_params(&self, structs: &StructTypes) -> Vec<ValType> {
+        lower_all(&self.inputs, structs)
     }
 
-    pub fn wasm_results(&self) -> Vec<ValType> {
-        lower_all(&self.outputs)
+    pub fn wasm_results(&self, structs: &StructTypes) -> Vec<ValType> {
+        lower_all(&self.outputs, structs)
     }
 }
 
 impl Ty {
     /// Wasm value types, in stack order. Unresolved variables lower to `i32`
     /// (only ever seen during the checking pass, whose code is discarded).
-    pub fn lower(&self) -> Vec<ValType> {
+    /// A struct is one reference; an array of structs is a view over a
+    /// WasmGC array: `( ref start len )`.
+    pub fn lower(&self, structs: &StructTypes) -> Vec<ValType> {
+        let index = |name: &str| -> u32 {
+            *structs
+                .get(name)
+                .unwrap_or_else(|| panic!("struct `{name}` lowered before it was declared"))
+        };
         match self {
             Ty::I32 | Ty::Quot(_) | Ty::Var(_) => vec![ValType::I32],
             Ty::I64 => vec![ValType::I64],
             Ty::F32 => vec![ValType::F32],
             Ty::F64 => vec![ValType::F64],
-            Ty::Str | Ty::Array(_) => vec![ValType::I32, ValType::I32],
+            Ty::Struct(name) => vec![ref_ty(index(name))],
+            Ty::Array(e) => match e.as_ref() {
+                Ty::Struct(name) => vec![ref_ty(index(name) + 1), ValType::I32, ValType::I32],
+                _ => vec![ValType::I32, ValType::I32],
+            },
+            Ty::Str => vec![ValType::I32, ValType::I32],
+        }
+    }
+
+    /// The number of wasm values the type occupies.
+    pub fn width(&self) -> u32 {
+        match self {
+            Ty::Str => 2,
+            Ty::Array(e) if matches!(e.as_ref(), Ty::Struct(_)) => 3,
+            Ty::Array(_) => 2,
+            _ => 1,
         }
     }
 
     /// Size in bytes as an array element (natural size; `str` is two `i32`s).
+    /// Never used for structs: arrays of structs are GC arrays with no byte layout.
     pub fn elem_size(&self) -> u32 {
         match self {
-            Ty::I32 | Ty::F32 | Ty::Quot(_) | Ty::Var(_) => 4,
+            Ty::I32 | Ty::F32 | Ty::Quot(_) | Ty::Var(_) | Ty::Struct(_) => 4,
             Ty::I64 | Ty::F64 | Ty::Str | Ty::Array(_) => 8,
         }
     }
@@ -78,8 +116,12 @@ impl Ty {
     }
 }
 
-pub fn lower_all(tys: &[Ty]) -> Vec<ValType> {
-    tys.iter().flat_map(Ty::lower).collect()
+pub fn lower_all(tys: &[Ty], structs: &StructTypes) -> Vec<ValType> {
+    tys.iter().flat_map(|t| t.lower(structs)).collect()
+}
+
+pub fn width_all(tys: &[Ty]) -> u32 {
+    tys.iter().map(Ty::width).sum()
 }
 
 impl fmt::Display for Ty {
@@ -102,6 +144,7 @@ impl fmt::Display for Ty {
                 }
                 write!(f, " ]")
             }
+            Ty::Struct(name) => write!(f, "{name}"),
             Ty::Var(n) => write!(f, "?{n}"),
         }
     }
@@ -221,6 +264,32 @@ mod tests {
             vec![Ty::Str],
         );
         assert_eq!(e.to_string(), "( array i32 [ i32 -- i32 ] -- str )");
+    }
+
+    #[test]
+    fn structs() {
+        let p = || Ty::Struct("p".into());
+        let e = Effect::new(vec![p()], vec![Ty::Array(Box::new(p()))]);
+        assert_eq!(e.to_string(), "( p -- array p )");
+        let widths: Vec<u32> = [
+            Ty::Str,
+            Ty::Array(Box::new(Ty::I32)),
+            Ty::Array(Box::new(p())),
+            p(),
+        ]
+        .iter()
+        .map(Ty::width)
+        .collect();
+        assert_eq!(widths, [2, 2, 3, 1]);
+        let map: StructTypes = [("p".to_string(), 3)].into();
+        assert_eq!(p().lower(&map), vec![ref_ty(3)]);
+        assert_eq!(
+            Ty::Array(Box::new(p())).lower(&map),
+            vec![ref_ty(4), ValType::I32, ValType::I32]
+        );
+        let mut s = Subst::default();
+        assert!(!s.unify(&p(), &Ty::Struct("q".into())));
+        assert!(s.unify(&p(), &p()));
     }
 
     #[test]

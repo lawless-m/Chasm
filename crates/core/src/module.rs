@@ -2,14 +2,16 @@
 //! memory, literals.
 
 use wasm_encoder::{
-    BlockType, CodeSection, ConstExpr, CustomSection, DataSection, ElementSection, Elements,
-    EntityType, ExportKind, ExportSection, Function, FunctionSection, ImportSection,
-    Instruction as I, MemArg, MemorySection, MemoryType, Module, NameMap, NameSection, RefType,
-    TableSection, TableType, TypeSection, ValType,
+    ArrayType, BlockType, CodeSection, CompositeInnerType, CompositeType, ConstExpr, CustomSection,
+    DataSection, ElementSection, Elements, EntityType, ExportKind, ExportSection, FieldType,
+    Function, FunctionSection, ImportSection, Instruction as I, MemArg, MemorySection, MemoryType,
+    Module, NameMap, NameSection, RefType, StorageType, StructType, SubType, TableSection,
+    TableType, TypeSection, ValType,
 };
 
-use crate::check::{Ctx, Word, WordId, WordKind, FN_ALLOC, FN_RING, FN_TRAP};
+use crate::check::{Ctx, TypeDef, Word, WordId, WordKind, FN_ALLOC, FN_RING, FN_TRAP};
 use crate::layout as L;
+use crate::types::ref_ty;
 
 fn m(offset: u32) -> MemArg {
     MemArg {
@@ -240,17 +242,17 @@ pub fn assemble(ctx: &mut Ctx, opts: &ModuleOptions) -> Vec<u8> {
 
     for id in 0..ctx.words.len() {
         let w = ctx.words[id].clone();
-        let ty = ctx.intern_type(w.effect.wasm_params(), w.effect.wasm_results());
+        let ty = ctx.intern_type(
+            w.effect.wasm_params(&ctx.struct_types),
+            w.effect.wasm_results(&ctx.struct_types),
+        );
         funcs.function(ty);
         let f = word_function(ctx, &w);
         code.function(&f);
         names.append(Word::func_index(id), &w.name);
     }
 
-    let mut types = TypeSection::new();
-    for (p, r) in &ctx.types {
-        types.ty().function(p.iter().copied(), r.iter().copied());
-    }
+    let types = type_section(ctx);
 
     let mut imports = ImportSection::new();
     imports.import(
@@ -334,6 +336,43 @@ pub fn assemble(ctx: &mut Ctx, opts: &ModuleOptions) -> Vec<u8> {
     module.finish()
 }
 
+/// The type section. Each struct is one rec group: the struct type, then its
+/// GC array type, so a struct may hold itself or an array of itself; types
+/// in other groups are distinct, and only earlier groups can be referenced.
+fn type_section(ctx: &Ctx) -> TypeSection {
+    let sub = |inner| SubType {
+        is_final: true,
+        supertype_idxs: vec![],
+        composite_type: CompositeType {
+            inner,
+            shared: false,
+            descriptor: None,
+            describes: None,
+        },
+    };
+    let field = |vt: ValType| FieldType {
+        element_type: StorageType::Val(vt),
+        mutable: true,
+    };
+    let mut types = TypeSection::new();
+    for (i, t) in ctx.types.iter().enumerate() {
+        match t {
+            TypeDef::Func(p, r) => {
+                types.ty().function(p.iter().copied(), r.iter().copied());
+            }
+            TypeDef::Struct(fields) => {
+                let s = CompositeInnerType::Struct(StructType {
+                    fields: fields.iter().map(|&vt| field(vt)).collect(),
+                });
+                let a = CompositeInnerType::Array(ArrayType(field(ref_ty(i as u32))));
+                types.ty().rec([sub(s), sub(a)]);
+            }
+            TypeDef::StructArray => {}
+        }
+    }
+    types
+}
+
 /// Export name of a word's function in a REPL step module.
 pub fn export_name(id: WordId) -> String {
     format!("w{id}")
@@ -364,7 +403,10 @@ pub fn assemble_step(ctx: &mut Ctx, ids: &[WordId], shared_memory: bool) -> Vec<
         let ty = if w.kind == WordKind::Line {
             void
         } else {
-            ctx.intern_type(w.effect.wasm_params(), w.effect.wasm_results())
+            ctx.intern_type(
+                w.effect.wasm_params(&ctx.struct_types),
+                w.effect.wasm_results(&ctx.struct_types),
+            )
         };
         funcs.function(ty);
         let f = word_function(ctx, &w);
@@ -374,10 +416,7 @@ pub fn assemble_step(ctx: &mut Ctx, ids: &[WordId], shared_memory: bool) -> Vec<
         exports.export(&export_name(id), ExportKind::Func, index);
     }
 
-    let mut types = TypeSection::new();
-    for (p, r) in &ctx.types {
-        types.ty().function(p.iter().copied(), r.iter().copied());
-    }
+    let types = type_section(ctx);
 
     let memory = if shared_memory {
         MemoryType {
@@ -418,6 +457,19 @@ pub fn assemble_step(ctx: &mut Ctx, ids: &[WordId], shared_memory: bool) -> Vec<
             shared: false,
         }),
     );
+    if !ctx.structs.is_empty() {
+        imports.import(
+            L::IMPORT_MODULE,
+            L::IMPORT_REFS,
+            EntityType::Table(TableType {
+                element_type: RefType::ANYREF,
+                table64: false,
+                minimum: 0,
+                maximum: None,
+                shared: false,
+            }),
+        );
+    }
 
     let mut module = Module::new();
     module.section(&types);

@@ -81,4 +81,10 @@ pub enum Item {
         expected: Vec<(Lit, Location)>,
         loc: Location,
     },
+    /// `struct name  field: type ...`
+    Struct {
+        name: String,
+        fields: Vec<(String, Ty, Location)>,
+        loc: Location,
+    },
 }

@@ -65,7 +65,7 @@ Everything below can be written with the compiler as it stands: numerics, contro
 | Brainfuck interpreter | tape as `array i32`, nested loops, bracket matching, output built as a `str` |
 | RPN calculator | a stack language implementing a stack calculator; string tokenising, `array f64` as the stack, a hand-written power word |
 | Word frequency (wall) | tokenising, parallel arrays as a poor man's map; expected to want a map type |
-| Tokenizer (wall) | `str.cp-at`, state machine, token arrays; expected to want structs |
+| Tokenizer | state machine over bytes, `struct token`, arrays of structs |
 | Apply a callback to an array | `'word`, quotation values, `call`, quotation types in effects |
 | Sort with a custom comparator | insertion sort taking `[ i32 i32 -- i32 ]` |
 | Function composition (wall) | quotation values; expected to want closures |
@@ -160,7 +160,7 @@ Append as they happen. Each entry: task, what was missing, workaround used, and 
 | Sieve, insertion sort, binary search, 100 doors | Array literals (tests take literals only) | `digits ( str -- array i32 )` builds a test array from `"31415926"`; `array.to-str` (now in the prelude) turns a result into a comparable `str` | `digits` is still repeated in each file: shared test helpers need library structure (`ARCHITECTURE.md` open question 3) |
 | Luhn test | Index alongside `fold` | `times` with the index counted from the right | Minor; an indexed fold could be a library word |
 | Word frequency | A map type; a growable array | `array str` and `array i32` side by side with linear search (quadratic); capacity fixed at the most words the text could hold | Fast enough on 30 KB (0.3 s). A map is the first real candidate for the library once there is library structure |
-| Tokenizer | Structs | Tokens three `i32`s apart in one array (kind, start, length); every reader must know the layout | The clearest case for records in `FUTURE.md` |
+| Tokenizer | Structs | Tokens three `i32`s apart in one array (kind, start, length); every reader must know the layout | Resolved by M4 structs: `struct token`, read through `token.kind`, `token.start` and `token.len` |
 | Function composition | Closures, or making a function at run time | `compose-apply` applies f after g; composition at definition time is just `double inc` | Expected. In a concatenative language static composition is juxtaposition, so the gap is only for compositions decided at run time |
 
 ## Growth

@@ -28,8 +28,28 @@ pub mod api {
         static PENDING: RefCell<Option<Vec<Ty>>> = const { RefCell::new(None) };
     }
 
-    fn to_json(step: Step, stack: &[Ty]) -> StepJson {
+    fn to_json(step: Step, stack: &[Ty], session: &Session) -> StepJson {
         let ok = step.ok();
+        // Field layouts with the table slot of each accessor word: the
+        // browser reads struct fields by calling `name.field` through the table.
+        let structs: serde_json::Map<String, serde_json::Value> = session
+            .structs()
+            .iter()
+            .map(|s| {
+                let fields = s
+                    .fields
+                    .iter()
+                    .map(|(f, t)| {
+                        json!({
+                            "field": f,
+                            "type": t.to_string(),
+                            "get": session.word_slot(&format!("{}.{f}", s.name)),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                (s.name.clone(), json!(fields))
+            })
+            .collect();
         let j = json!({
             "ok": ok,
             "diagnostics": step.diagnostics,
@@ -54,6 +74,8 @@ pub mod api {
                 "location": t.location,
             })).collect::<Vec<_>>(),
             "stack": names(stack),
+            "refs_size": step.refs_size,
+            "structs": structs,
         });
         PENDING.with(|p| *p.borrow_mut() = step.line.map(|l| l.stack_after));
         StepJson {
@@ -66,7 +88,7 @@ pub mod api {
     /// Start a session with a shared memory; returns the prelude step.
     pub fn new_session(prelude: bool, heap_ptr: u32) -> StepJson {
         let (session, step) = Session::new(prelude, true, heap_ptr);
-        let out = to_json(step, &session.stack);
+        let out = to_json(step, &session.stack, &session);
         SESSION.with(|s| *s.borrow_mut() = Some(session));
         out
     }
@@ -76,7 +98,7 @@ pub mod api {
             Some(session) => {
                 let stack = session.stack.clone();
                 let step = session.step(text, heap_ptr);
-                to_json(step, &stack)
+                to_json(step, &stack, session)
             }
             None => {
                 let d = Diagnostic::error(
@@ -227,5 +249,19 @@ mod tests {
         assert_eq!(j(&s)["stack"], serde_json::json!(["i32"]));
         assert!(needs_more(": f ( -- )"));
         assert!(layout_json().contains("\"DATA_STACK_PTR\":276"));
+        assert!(layout_json().contains("\"REFS_TABLE\":1"));
+        line_done(true);
+        let s = step("drop struct point  x: i32  y: f64", hp);
+        assert!(j(&s)["ok"] == false, "a line cannot follow a definition");
+        let s = step("struct point  x: i32  y: f64", hp);
+        let fields = &j(&s)["structs"]["point"];
+        assert_eq!(fields[0]["field"], "x");
+        assert_eq!(fields[1]["field"], "y");
+        assert_eq!(fields[0]["type"], "i32");
+        assert_eq!(fields[1]["type"], "f64");
+        assert!(fields[0]["get"].is_u64() && fields[1]["get"].is_u64());
+        let s = step("drop 7 2.5 point.new", hp);
+        assert_eq!(j(&s)["refs_size"], 1);
+        assert_eq!(j(&s)["line"]["stack_after"], serde_json::json!(["point"]));
     }
 }

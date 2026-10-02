@@ -27,7 +27,11 @@ pub enum ReplInput {
 pub fn parse_repl(file: &str, toks: &[Token]) -> Result<ReplInput, Diagnostic> {
     match toks.first() {
         None => Ok(ReplInput::Body(Vec::new())),
-        Some(t) if [":", "export", "declare", "test"].iter().any(|k| t.is(k)) => {
+        Some(t)
+            if [":", "export", "declare", "test", "struct"]
+                .iter()
+                .any(|k| t.is(k)) =>
+        {
             Ok(ReplInput::Items(parse(file, toks)?))
         }
         Some(_) => {
@@ -102,6 +106,22 @@ pub fn parse_i64(text: &str) -> Option<Result<Lit, String>> {
         Some(v) if v >= i64::MIN as i128 && v <= u64::MAX as i128 => Ok(Lit::I64(v as i64)),
         _ => Err(format!("literal `{text} i64` does not fit in i64")),
     })
+}
+
+const TYPE_KEYWORDS: [&str; 6] = ["i32", "i64", "f32", "f64", "str", "array"];
+
+fn is_punct(s: &str) -> bool {
+    matches!(s, "(" | ")" | "[" | "]" | "--" | ";" | ":" | ":>" | "->")
+}
+
+/// `x:` as a field label gives `x`.
+fn field_label(t: &Token) -> Option<&str> {
+    if t.kind != TokKind::Word {
+        return None;
+    }
+    t.text
+        .strip_suffix(':')
+        .filter(|n| !n.is_empty() && !n.starts_with(':'))
 }
 
 struct Parser<'a> {
@@ -222,13 +242,53 @@ impl<'a> Parser<'a> {
                 loc: self.loc(t),
             });
         }
+        if t.is("struct") {
+            return self.struct_item();
+        }
         Err(self.err(
             format!(
-                "expected `:`, `export`, `declare` or `test` at top level, found `{}`",
+                "expected `:`, `export`, `declare`, `test` or `struct` at top level, found `{}`",
                 t.text
             ),
             self.loc(t),
         ))
+    }
+
+    /// After `struct`: the name, then `field: type` pairs while the next token
+    /// is a field label. No terminator.
+    fn struct_item(&mut self) -> Result<Item, Diagnostic> {
+        let name = self.name("a struct name after `struct`")?;
+        let n = name.text.as_str();
+        if TYPE_KEYWORDS.contains(&n)
+            || n.starts_with('\'')
+            || parse_number(n).is_some()
+            || crate::prims::is_builtin(n)
+            || is_punct(n)
+        {
+            return Err(self.err(format!("`{n}` cannot be a struct name"), self.loc(name)));
+        }
+        let mut fields: Vec<(String, Ty, Location)> = Vec::new();
+        while let Some(label) = self.peek().filter(|t| field_label(t).is_some()) {
+            self.pos += 1;
+            let f = field_label(label).unwrap();
+            let loc = self.loc(label);
+            if f == "new" || f.ends_with('!') {
+                return Err(self.err(
+                    format!("`{f}` cannot be a field name: `{n}.new` is the constructor and `!` marks a write"),
+                    loc,
+                ));
+            }
+            if fields.iter().any(|(g, _, _)| g == f) {
+                return Err(self.err(format!("field `{f}` appears twice in `{n}`"), loc));
+            }
+            let ty = self.ty()?;
+            fields.push((f.to_string(), ty, loc));
+        }
+        Ok(Item::Struct {
+            name: n.to_string(),
+            fields,
+            loc: self.loc(name),
+        })
     }
 
     /// The numeric literal at `t` (already consumed), or `None`. An integer
@@ -305,7 +365,7 @@ impl<'a> Parser<'a> {
             Diagnostic::error(
                 codes::E_UNKNOWN_TYPE,
                 format!(
-                    "unknown type `{}` (types are i32 i64 f32 f64 str, `array T` and `[ effect ]`)",
+                    "unknown type `{}` (types are i32 i64 f32 f64 str, `array T`, `[ effect ]` or a declared struct name)",
                     t.text
                 ),
                 p.loc(t),
@@ -344,6 +404,7 @@ impl<'a> Parser<'a> {
                 self.next("`]`")?;
                 Ty::Quot(Box::new(Effect::new(inputs, outputs)))
             }
+            s if !is_punct(s) && !s.ends_with(':') => Ty::Struct(s.to_string()),
             _ => return Err(unknown(self)),
         })
     }
@@ -474,6 +535,63 @@ mod tests {
 
     fn p(src: &str) -> Vec<Item> {
         parse("t", &lex("t", src).unwrap()).unwrap()
+    }
+
+    fn perr(src: &str) -> Diagnostic {
+        parse("t", &lex("t", src).unwrap()).unwrap_err()
+    }
+
+    #[test]
+    fn structs() {
+        let items = p("struct point  x: i32  y: f64");
+        let Item::Struct { name, fields, .. } = &items[0] else {
+            panic!("{items:?}")
+        };
+        assert_eq!(name, "point");
+        let tys: Vec<_> = fields
+            .iter()
+            .map(|(n, t, _)| (n.as_str(), t.clone()))
+            .collect();
+        assert_eq!(tys, [("x", Ty::I32), ("y", Ty::F64)]);
+
+        let items = p("struct seg  a: point  b: point\n: f ( point -- i32 ) point.x ;");
+        assert_eq!(items.len(), 2);
+        let Item::Def {
+            effect: Some(e), ..
+        } = &items[1]
+        else {
+            panic!()
+        };
+        assert_eq!(e.inputs, vec![Ty::Struct("point".into())]);
+
+        let items = p("struct node  next: node  v: i32");
+        let Item::Struct { fields, .. } = &items[0] else {
+            panic!()
+        };
+        assert_eq!(fields[0].1, Ty::Struct("node".into()));
+        assert!(matches!(&p("struct empty")[0], Item::Struct { fields, .. } if fields.is_empty()));
+
+        for bad in [
+            "struct t  new: i32",
+            "struct t  x: i32  x: f64",
+            "struct i32  x: i32",
+            "struct t  x!: i32",
+            "struct",
+        ] {
+            assert_eq!(perr(bad).code, codes::E_SYNTAX, "{bad}");
+        }
+        assert!(matches!(
+            parse_repl("t", &lex("t", "struct p  x: i32").unwrap()).unwrap(),
+            ReplInput::Items(_)
+        ));
+        let items = p(": f ( i32 -- i32 ) ( a b ) ;");
+        let Item::Def { body, .. } = &items[0] else {
+            panic!()
+        };
+        assert_eq!(
+            body[0].kind,
+            NodeKind::Assert(vec![Ty::Struct("a".into()), Ty::Struct("b".into())])
+        );
     }
 
     #[test]

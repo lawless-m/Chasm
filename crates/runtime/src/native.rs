@@ -37,11 +37,20 @@ pub struct Outcome<T> {
     pub host: NativeHost,
 }
 
+/// The engine every Chasm host uses: WasmGC on, with the copying collector
+/// (far faster than the default for many short-lived structs).
+pub fn engine() -> Result<Engine, String> {
+    // Backtraces (on by default) name the trapping word via the name section.
+    let mut cfg = WtConfig::new();
+    cfg.wasm_gc(true)
+        .wasm_function_references(true)
+        .collector(wasmtime::Collector::Copying);
+    Engine::new(&cfg).map_err(|e| e.to_string())
+}
+
 impl Runner {
     pub fn new(wasm: &[u8]) -> Result<Self, String> {
-        // Backtraces (on by default) name the trapping word via the name section.
-        let cfg = WtConfig::new();
-        let engine = Engine::new(&cfg).map_err(|e| e.to_string())?;
+        let engine = engine()?;
         let module = Module::new(&engine, wasm).map_err(|e| e.to_string())?;
         Ok(Runner { engine, module })
     }
@@ -219,7 +228,7 @@ pub fn run_tests(c: &Compilation, base: &Config) -> Result<Vec<TestResult>, Stri
             pos: 0,
             output: Vec::new(),
         };
-        let n: usize = t.result_types.iter().map(|t| t.lower().len()).sum();
+        let n: usize = t.result_types.iter().map(|t| t.width() as usize).sum();
         let o = runner.call(cfg, &t.export_name, n);
         let output = o.host.captured_output().to_vec();
         let r = match o.result {

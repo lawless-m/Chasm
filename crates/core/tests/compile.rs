@@ -191,3 +191,89 @@ fn step_module_imports_memory_and_table() {
     let shared = assemble_step(&mut ctx, &[0, 1], true);
     chasm_core::validate(&shared).unwrap();
 }
+
+#[test]
+fn unknown_struct_names() {
+    for src in [
+        ": f ( foo -- ) drop ;",
+        ": f ( i32 -- i32 ) ( a b ) ;",
+        "declare g ( -- array foo )",
+        ": f ( [ foo -- ] -- ) drop ;",
+    ] {
+        assert_eq!(err(src), "E_UNKNOWN_TYPE", "{src}");
+    }
+}
+
+const POINT: &str = "struct point  x: i32  y: f64\n";
+
+#[test]
+fn struct_generated_words() {
+    let c = ok(&format!(
+        "{POINT}: origin ( -- point ) 0 0.0 point.new ;\ntest origin : origin point.x -> 0"
+    ));
+    assert_eq!(c.word("point.new").unwrap().effect, "( i32 f64 -- point )");
+    assert_eq!(c.word("point.x!").unwrap().effect, "( point i32 -- )");
+    for w in ["point.new", "point.x", "point.x!", "point.y", "point.y!"] {
+        assert!(c.word(w).is_some(), "{w}");
+    }
+    let twice = ok(&format!("{POINT}{POINT}"));
+    assert!(twice.diagnostics.is_empty());
+    assert_eq!(
+        err(&format!("{POINT}struct point  x: i32")),
+        "E_REDEFINE_EFFECT"
+    );
+    let c = ok(&format!("{POINT}struct seg  a: point  b: point"));
+    assert_eq!(c.word("seg.a").unwrap().effect, "( seg -- point )");
+    ok("struct node  next: node  v: i32");
+    assert_eq!(
+        ok("struct t  s: str").word("t.s").unwrap().effect,
+        "( t -- str )"
+    );
+    let c = ok(&format!("{POINT}struct bag  items: array point"));
+    assert_eq!(
+        c.word("bag.items").unwrap().effect,
+        "( bag -- array point )"
+    );
+    assert_eq!(err("struct a  b: b\nstruct b  x: i32"), "E_UNKNOWN_TYPE");
+    assert_eq!(
+        err(&format!("{POINT}test point.new : 1 2.0 point.new -> 1")),
+        "E_TEST_TYPE"
+    );
+}
+
+#[test]
+fn struct_values_move_like_any_value() {
+    ok(&format!(
+        "{POINT}: swap-xy ( point -- point )  :> p  p point.y i32.trunc_f64_s  p point.x f64.convert_i32_s  point.new ;\n\
+         : last ( point point -- point )  :> b :> a!  b a!  a ;\n\
+         : pick ( i32 point point -- point )  :> b :> a  [ a ] [ b ] if ;\n\
+         : bump ( point i32 -- point )  [ drop dup dup point.x 1 i32.add point.x! ] times ;\n\
+         : ap ( point [ point -- i32 ] -- i32 )  call ;\n\
+         : id ( point -- point ) ;\n\
+         : mixed ( point f64 point -- point f64 point )  rot rot rot ;"
+    ));
+}
+
+#[test]
+fn struct_array_views() {
+    ok(&format!(
+        "{POINT}: pts ( i32 -- array point )  :> n  n array.new ( array point ) :> a  n [ :> i  a i  i i f64.convert_i32_s point.new  array.at! ] times  a ;\n\
+         : mid ( array point -- array point )  1 2 array.slice ;\n\
+         : first-x ( array point -- i32 )  0 array.at point.x ;\n\
+         struct bag  items: array point  n: i32\n\
+         : count ( bag -- i32 )  bag.items array.len ;"
+    ));
+}
+
+#[test]
+fn struct_array_combinators() {
+    ok(&format!(
+        "{POINT}: sum-x ( array point -- i32 )  0 [ point.x i32.add ] fold ;\n\
+         : xs ( array point -- array i32 )  [ point.x ] map ;\n\
+         : to-points ( array i32 -- array point )  [ :> n  n n f64.convert_i32_s point.new ] map ;\n\
+         : doubled ( array point -- array point )  [ :> p  p point.x 2 i32.mul  p point.y  point.new ] map ;\n\
+         : big ( array point -- array point )  [ point.x 1 i32.gt_s ] filter ;\n\
+         : count ( array point -- i32 )  0 :> n!  [ drop n 1 i32.add n! ] each  n ;\n\
+         : furthest ( array point -- point )  0 0.0 point.new [ :> p :> best  p point.x best point.x i32.gt_s [ p ] [ best ] if ] fold ;"
+    ));
+}

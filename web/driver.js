@@ -25,8 +25,6 @@ function float(x, single) {
   return /[.eE]/.test(s) ? s : s + ".0";
 }
 
-// Wasm values each checker type lowers to.
-const width = (ty) => (ty === "str" || ty.startsWith("array ") ? 2 : 1);
 
 export class Repl {
   constructor({ compiler, memory, worker, onOutput }) {
@@ -36,7 +34,9 @@ export class Repl {
     this.worker = worker;
     this.host = new Namespace(this.L, { onOutput });
     this.stackTypes = [];
+    this.structs = {};
     this.pending = null;
+    this.pendingRender = null;
     worker.onMessage((m) => this.message(m));
     const dv = new DataView(memory.buffer);
     dv.setUint32(this.L.HEAP_PTR, this.L.LITERALS_BASE, true);
@@ -55,11 +55,23 @@ export class Repl {
       const resolve = this.pending;
       this.pending = null;
       resolve(m);
+    } else if (m.type === "rendered") {
+      const resolve = this.pendingRender;
+      this.pendingRender = null;
+      resolve(m.values);
     }
+  }
+
+  // Wasm values each checker type lowers to: a struct is one reference, an
+  // array of structs a view ( ref start len ).
+  width(ty) {
+    if (ty.startsWith("array ")) return ty.slice(6) in this.structs ? 3 : 2;
+    return ty === "str" ? 2 : 1;
   }
 
   install(step) {
     const L = this.L;
+    this.structs = step.structs ?? this.structs;
     const end = step.literal_addr + step.literals.length;
     const have = this.memory.buffer.byteLength;
     if (end > have) this.memory.grow(Math.ceil((end - have) / 65536));
@@ -72,6 +84,7 @@ export class Repl {
         module: step.module.length ? step.module : null,
         installs: step.installs,
         tableSize: step.table_size,
+        refsSize: step.refs_size ?? 0,
         line: step.line ? { slot: step.line.slot } : null,
         tests: step.tests.map((t) => ({ slot: t.slot })),
       });
@@ -109,7 +122,7 @@ export class Repl {
       defined: s.defined,
       tests,
       trap,
-      stack: this.readStack(this.stackTypes),
+      stack: await this.readStack(this.stackTypes),
     };
   }
 
@@ -124,7 +137,7 @@ export class Repl {
       } else {
         out.push(vals[i]);
       }
-      i += width(ty);
+      i += this.width(ty);
     }
     return out;
   }
@@ -166,17 +179,34 @@ export class Repl {
     }
   }
 
-  // Render the memory data stack, as core's `repl::read_stack` does.
-  readStack(types) {
+  // A struct tree from the worker, as core's `Value` Display renders it.
+  showValue(tree, ty) {
+    if (tree === null) return "null";
+    if (tree.elements !== undefined) return `<${tree.elements} elements>`;
+    if (tree.quot !== undefined) return `#${tree.quot}`;
+    if (tree.fields === undefined) return this.show(ty, tree);
+    if (tree.fields === null) return `${tree.name}{...}`;
+    const parts = tree.fields.map(([f, fty, v]) => `${f}: ${v !== null && typeof v === "object" ? this.showValue(v, fty) : v === null ? "null" : this.show(fty, v)}`);
+    return `${tree.name}{${parts.join(", ")}}`;
+  }
+
+  // Render the memory data stack, as core's `repl::read_stack` does. Struct
+  // values live in the worker's refs table, so the worker reads them.
+  async readStack(types) {
     const L = this.L;
     const dv = new DataView(this.memory.buffer);
     const slot = (i) => L.DATA_STACK_BASE + i * L.STACK_SLOT;
     const out = [];
+    const wanted = [];
     let i = 0;
     for (const ty of types) {
       const a = slot(i);
       let value;
-      if (ty === "i64") value = this.show(ty, dv.getBigInt64(a, true));
+      if (ty in this.structs) {
+        wanted.push({ at: out.length, index: i, name: ty });
+        value = null;
+      } else if (ty.startsWith("array ") && ty.slice(6) in this.structs) value = `<${dv.getUint32(slot(i + 2), true)} elements>`;
+      else if (ty === "i64") value = this.show(ty, dv.getBigInt64(a, true));
       else if (ty === "f32") value = this.show(ty, dv.getFloat32(a, true));
       else if (ty === "f64") value = this.show(ty, dv.getFloat64(a, true));
       else if (ty === "str") value = this.show(ty, this.decode(["str"], [dv.getUint32(a, true), dv.getUint32(slot(i + 1), true)])[0]);
@@ -184,7 +214,14 @@ export class Repl {
       else if (ty.startsWith("[")) value = `#${dv.getUint32(a, true)}`;
       else value = String(dv.getInt32(a, true));
       out.push({ type: ty, value });
-      i += width(ty);
+      i += this.width(ty);
+    }
+    if (wanted.length) {
+      const values = await new Promise((resolve) => {
+        this.pendingRender = resolve;
+        this.worker.post({ type: "render", slots: wanted.map(({ index, name }) => ({ index, name })), structs: this.structs });
+      });
+      wanted.forEach((w, k) => (out[w.at].value = this.showValue(values[k], w.name)));
     }
     return out;
   }

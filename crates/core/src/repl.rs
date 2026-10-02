@@ -6,7 +6,7 @@
 //! memory and table.
 
 use crate::ast::Item;
-use crate::check::{compile_body, Ctx, Mode, Origin, Word, WordId, WordKind};
+use crate::check::{compile_body, Ctx, Mode, Origin, StructDef, Word, WordId, WordKind};
 use crate::diag::{Diagnostic, Location};
 use crate::layout;
 use crate::lexer::lex;
@@ -14,7 +14,7 @@ use crate::module::{assemble_step, export_name};
 use crate::parser::{parse, parse_repl, ReplInput};
 use crate::program::Value;
 use crate::program::{process_item, register_names, validate, Program, PRELUDE, PRELUDE_NAME};
-use crate::types::{lower_all, names, Ty};
+use crate::types::{names, width_all, Ty};
 use serde::Serialize;
 
 /// Install a step module's export `export` in the shared table at `slot`.
@@ -83,6 +83,12 @@ pub struct Step {
     /// and every test of a word this step gave a body. Empty if the step
     /// has errors.
     pub tests: Vec<TestRun>,
+    /// The host grows the `chasm.refs` anyref table to at least this many
+    /// entries before running the line. A struct on the memory data stack is
+    /// one slot holding its own slot index (counted from `DATA_STACK_BASE`)
+    /// into that table; an `array <struct>` is three slots: that index for
+    /// its GC array, then `start` and `len` as plain `i32`s.
+    pub refs_size: u32,
 }
 
 impl Step {
@@ -101,6 +107,24 @@ pub struct Session {
 }
 
 impl Session {
+    pub fn has_structs(&self) -> bool {
+        !self.ctx.structs.is_empty()
+    }
+
+    pub fn structs(&self) -> &[StructDef] {
+        &self.ctx.structs
+    }
+
+    pub fn struct_fields(&self, name: &str) -> Option<&[(String, Ty)]> {
+        let &k = self.ctx.struct_by_name.get(name)?;
+        Some(&self.ctx.structs[k].fields)
+    }
+
+    /// The table slot of a named word (its id), e.g. to call `point.x`.
+    pub fn word_slot(&self, name: &str) -> Option<u32> {
+        self.ctx.by_name.get(name).map(|&id| id as u32)
+    }
+
     /// Start a session. `shared_memory` is for the browser, whose memory is
     /// shared with the worker. Returns the step installing the prelude.
     pub fn new(prelude: bool, shared_memory: bool, heap_ptr: u32) -> (Session, Step) {
@@ -151,10 +175,11 @@ impl Session {
             Ok(ReplInput::Items(items)) => {
                 register_names(&mut self.ctx, &items);
                 for item in items {
-                    let named = matches!(item, Item::Def { .. } | Item::Declare { .. });
-                    if let Some(id) =
-                        process_item(&mut self.ctx, item, Origin::User, &mut self.program)
-                    {
+                    let named = matches!(
+                        item,
+                        Item::Def { .. } | Item::Declare { .. } | Item::Struct { .. }
+                    );
+                    for id in process_item(&mut self.ctx, item, Origin::User, &mut self.program) {
                         built.push(id);
                         if named {
                             let w = &self.ctx.words[id];
@@ -248,6 +273,10 @@ impl Session {
             }
         }
         let ok = !diagnostics.iter().any(Diagnostic::is_error);
+        let refs_size = match &line {
+            Some(l) if self.has_structs() => width_all(&self.stack).max(width_all(&l.stack_after)),
+            _ => 0,
+        };
         Step {
             diagnostics,
             module,
@@ -258,6 +287,7 @@ impl Session {
             line: if ok { line } else { None },
             defined,
             tests: if ok { tests } else { Vec::new() },
+            refs_size,
         }
     }
 
@@ -299,7 +329,7 @@ pub fn needs_more(text: &str) -> bool {
     };
     if toks
         .first()
-        .is_some_and(|t| t.is("declare") || t.is("test"))
+        .is_some_and(|t| t.is("declare") || t.is("test") || t.is("struct"))
     {
         return false;
     }
@@ -328,12 +358,16 @@ pub struct StackEntry {
 
 /// Bytes of the memory data stack that `types` occupy.
 pub fn stack_bytes(types: &[Ty]) -> u32 {
-    lower_all(types).len() as u32 * layout::STACK_SLOT
+    width_all(types) * layout::STACK_SLOT
 }
 
 /// Render the memory data stack, bottom to top. Stops early if `mem` is
 /// too short.
-pub fn read_stack(mem: &[u8], types: &[Ty]) -> Vec<StackEntry> {
+pub fn read_stack(
+    mem: &[u8],
+    types: &[Ty],
+    refs: &mut dyn FnMut(u32, &str) -> Value,
+) -> Vec<StackEntry> {
     let slot = |i: u32| -> Option<[u8; 8]> {
         let a = (layout::DATA_STACK_BASE + i * layout::STACK_SLOT) as usize;
         mem.get(a..a + 8).map(|b| b.try_into().unwrap())
@@ -344,26 +378,32 @@ pub fn read_stack(mem: &[u8], types: &[Ty]) -> Vec<StackEntry> {
     for t in types {
         let Some(a) = slot(i) else { break };
         let value = match t {
-            Ty::I64 => Value::I64(i64::from_le_bytes(a)).to_string(),
-            Ty::F32 => Value::F32(f32::from_bits(lo(a))).to_string(),
-            Ty::F64 => Value::F64(f64::from_le_bytes(a)).to_string(),
+            Ty::I64 => Value::I64(i64::from_le_bytes(a)),
+            Ty::F32 => Value::F32(f32::from_bits(lo(a))),
+            Ty::F64 => Value::F64(f64::from_le_bytes(a)),
+            // A struct slot holds its own index into `chasm.refs`; the host reads it.
+            Ty::Struct(name) => refs(i, name),
+            Ty::Array(e) if matches!(e.as_ref(), Ty::Struct(_)) => {
+                let Some(len) = slot(i + 2) else { break };
+                Value::Opaque(format!("<{} elements>", lo(len)))
+            }
             Ty::Str | Ty::Array(_) => {
                 let Some(b) = slot(i + 1) else { break };
                 let (addr, n) = (lo(a) as usize, lo(b) as usize);
                 if matches!(t, Ty::Str) {
                     let bytes = mem.get(addr..addr.saturating_add(n)).unwrap_or(&[]);
-                    Value::Str(String::from_utf8_lossy(bytes).into_owned()).to_string()
+                    Value::Str(String::from_utf8_lossy(bytes).into_owned())
                 } else {
-                    format!("<{n} elements>")
+                    Value::Opaque(format!("<{n} elements>"))
                 }
             }
-            Ty::Quot(_) => format!("#{}", lo(a)),
-            Ty::I32 | Ty::Var(_) => Value::I32(lo(a) as i32).to_string(),
+            Ty::Quot(_) => Value::Opaque(format!("#{}", lo(a))),
+            Ty::I32 | Ty::Var(_) => Value::I32(lo(a) as i32),
         };
-        i += t.lower().len() as u32;
+        i += t.width();
         out.push(StackEntry {
             ty: t.to_string(),
-            value,
+            value: value.to_string(),
         });
     }
     out
@@ -379,6 +419,7 @@ mod tests {
         assert!(!needs_more(": f ( -- i32 ) 1 ;"));
         assert!(needs_more("1 [ 2"));
         assert!(!needs_more("declare f ( -- )"));
+        assert!(!needs_more("struct p  x: i32"));
         assert!(!needs_more("\"unterminated"));
     }
 
@@ -395,8 +436,35 @@ mod tests {
             value: value.into(),
         };
         assert_eq!(
-            read_stack(&mem, &[Ty::I32, Ty::Str]),
+            read_stack(&mem, &[Ty::I32, Ty::Str], &mut |_, _| panic!("no refs")),
             vec![e("i32", "7"), e("str", "\"hi\"")]
+        );
+        let point = Value::Struct {
+            name: "point".into(),
+            fields: vec![("x".into(), Value::I32(7)), ("y".into(), Value::F64(2.5))],
+        };
+        assert_eq!(
+            read_stack(&mem, &[Ty::Struct("point".into())], &mut |i, n| {
+                assert_eq!((i, n), (0, "point"));
+                point.clone()
+            }),
+            vec![e("point", "point{x: 7, y: 2.5}")]
+        );
+        assert_eq!(
+            read_stack(&mem, &[Ty::Struct("point".into())], &mut |_, _| Value::Null),
+            vec![e("point", "null")]
+        );
+        let mut views = vec![0u8; 0x10_0100];
+        for (k, v) in [5u32, 1, 2].iter().enumerate() {
+            views[base + 8 * k..base + 8 * k + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        assert_eq!(
+            read_stack(
+                &views,
+                &[Ty::Array(Box::new(Ty::Struct("point".into())))],
+                &mut |_, _| panic!("no refs")
+            ),
+            vec![e("array point", "<2 elements>")]
         );
         assert_eq!(stack_bytes(&[Ty::I32, Ty::Str]), 24);
     }

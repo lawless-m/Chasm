@@ -56,8 +56,10 @@ Codes are stable; messages may change. See section 15 for the list.
 - A chunk continues on the next line while a `:` definition or a `[`
   quotation is open.
 - After each chunk the stack is printed as `( types ) values`, bottom to
-  top, or `( )` when empty. Arrays print as `<n elements>` and function
-  values as `#slot`.
+  top, or `( )` when empty. Arrays print as `<n elements>`, function
+  values as `#slot`, structs with their fields, `( point ) point{x: 7, y: 2.5}`
+  (nested structs to three levels, then `seg{...}`), and an unset struct
+  as `null`.
 - A `test` runs at once (`PASS` or `FAIL`), or, for a declared word, as soon
   as the word gets a body. A word's tests run again when it is redefined.
 - Redefining a word with the same effect takes effect for every existing
@@ -114,7 +116,8 @@ test name : body -> expected-literals         # a test of `name`
 |---|---|---|
 | `i32` `i64` `f32` `f64` | numbers; `i32` is also boolean (0 false) and address | itself |
 | `str` | immutable UTF-8 bytes | `i32 i32` (addr, byte length) |
-| `array T` | mutable, fixed length; `T` not an array | `i32 i32` (addr, count) |
+| `array T` | mutable, fixed length; `T` not an array | `i32 i32` (addr, count); for a struct `T`, `ref i32 i32` (a view over a WasmGC array: ref, start, count) |
+| `name` | a declared struct (section 10a): a reference to a garbage-collected record | `(ref null $name)` |
 | `[ ins -- outs ]` | a function value | `i32` (table index) |
 
 An effect lists types bottom to top, rightmost on top:
@@ -239,6 +242,56 @@ match the other branch.
 : sum ( array i32 -- i32 )  0 [ i32.add ] fold ;
 ```
 
+## 10a. Structs
+
+```
+struct point  x: i32  y: f64
+```
+
+A top-level form: the name, then `field: type` pairs for as long as the next
+token is a field label. There is no terminator. A field may have any type,
+including a struct declared above, the struct itself, or an `array` of it.
+The declaration generates ordinary words, listed by `chasm words` and seen by
+`deps` and `used-by`:
+
+| Word | Effect |
+|---|---|
+| `point.new` | `( i32 f64 -- point )` fields in order |
+| `point.x` | `( point -- i32 )` read |
+| `point.x!` | `( point i32 -- )` write |
+
+- A struct value is a reference to a record the engine garbage-collects;
+  there is no `free`. Every field is mutable, and `!` means write, as for
+  locals.
+- A struct name is a type anywhere a type is written: effects, assertions,
+  fields, `array point`.
+- Declaring a struct again with the same fields does nothing; changing its
+  fields is `E_REDEFINE_EFFECT`, listing the words that use it.
+- A struct can be named only after its declaration, so two structs cannot
+  refer to each other (`E_UNKNOWN_TYPE`). The field names `new` and names
+  ending in `!` are reserved.
+- Struct values cannot be test literals; test a field instead:
+  `test point.x : 3 4.5 point.new point.x -> 3`.
+
+**Arrays of structs.** `array point` works with every array word and
+combinator; `map` may turn an `array i32` into an `array point` and back.
+`array.new` fills it with unset elements, and reading a field of one traps
+(`null reference`). Like every array it is a view: `array.slice` shares
+storage, and a write through the slice is visible in the original.
+
+**Optional links.** There is no null test. A link that may be absent is an
+`array` holding 0 or 1 elements, tested with `array.len`:
+
+```
+struct node  v: i32  next: array node
+
+: sum ( array node -- i32 )
+  :> l!
+  0 :> s!
+  [ l array.len ] [ l 0 array.at :> n  s n node.v i32.add s!  n node.next l! ] while
+  s ;
+```
+
 ## 11. Functions as values
 
 ```
@@ -330,7 +383,7 @@ Library words:
 |---|---|
 | `E_LEX`, `E_SYNTAX` | malformed source |
 | `E_LITERAL_RANGE` | a literal does not fit its type |
-| `E_UNKNOWN_TYPE` | not a type name |
+| `E_UNKNOWN_TYPE` | not a type name, or a struct used before its declaration |
 | `E_UNDEFINED` | unknown word, or used before it is defined or declared |
 | `E_STACK_UNDERFLOW` | not enough values; `expected` and `actual` are given |
 | `E_TYPE_MISMATCH` | wrong types on top of the stack |
@@ -344,7 +397,7 @@ Library words:
 | `E_CAPTURE` | a quotation value uses a local (no closures) |
 | `E_AMBIGUOUS_TYPE` | an element type is never fixed |
 | `E_DECLARE_MISMATCH` | definition or redeclaration differs from the declaration |
-| `E_REDEFINE_EFFECT` | redefinition changes an effect, or redefines a primitive; lists `dependants` |
+| `E_REDEFINE_EFFECT` | redefinition changes an effect, redefines a primitive, or changes a struct's fields; lists `dependants` |
 | `E_TEST_TYPE` | a test's expected literals do not match what its body leaves |
 | `E_MAIN_EFFECT` | `main` is not `( -- )` |
 | `E_NO_MAIN` | `run` without `main` |
@@ -355,5 +408,5 @@ Library words:
 
 See `examples/`: `hello`, `basics` (words, loops, tests), `strings`,
 `arrays` (combinators, functions as values), `contract` (declare first),
-`files` (the namespace). Any of them can also be typed or piped into
+`files` (the namespace), `structs` (structs, lists, arrays of structs). Any of them can also be typed or piped into
 `chasm repl`, e.g. `chasm repl < examples/basics.chasm`.

@@ -3,14 +3,15 @@
 use serde::Serialize;
 
 use crate::ast::{Item, Lit};
-use crate::check::{compile_body, Ctx, Mode, Origin, Word, WordId, WordKind};
+use crate::check::{compile_body, Compiled, Ctx, Mode, Origin, StructDef, Word, WordId, WordKind};
 use crate::diag::{codes, Diagnostic, Location};
 use crate::graph::{Edge, Graph};
 use crate::lexer::lex;
 use crate::module::{assemble, ModuleOptions};
 use crate::parser::parse;
 use crate::prims;
-use crate::types::{names, Effect, Ty};
+use crate::types::{names, width_all, Effect, Ty};
+use wasm_encoder::Instruction as I;
 
 pub const PRELUDE: &str = include_str!("prelude.chasm");
 pub const PRELUDE_NAME: &str = "<prelude>";
@@ -54,6 +55,15 @@ pub enum Value {
     F32(f32),
     F64(f64),
     Str(String),
+    /// A struct value read by the host, fields in declaration order.
+    Struct {
+        name: String,
+        fields: Vec<(String, Value)>,
+    },
+    Null,
+    /// A rendering the host has already settled: `<n elements>`, `#slot`,
+    /// or `name{...}` past the nesting limit.
+    Opaque(String),
 }
 
 impl std::fmt::Display for Value {
@@ -64,6 +74,18 @@ impl std::fmt::Display for Value {
             Value::F32(v) => write!(f, "{v:?}f32"),
             Value::F64(v) => write!(f, "{v:?}"),
             Value::Str(s) => write!(f, "{s:?}"),
+            Value::Struct { name, fields } => {
+                write!(f, "{name}{{")?;
+                for (k, (n, v)) in fields.iter().enumerate() {
+                    if k > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{n}: {v}")?;
+                }
+                write!(f, "}}")
+            }
+            Value::Null => write!(f, "null"),
+            Value::Opaque(s) => write!(f, "{s}"),
         }
     }
 }
@@ -276,6 +298,16 @@ pub(crate) fn register_names(ctx: &mut Ctx, items: &[Item]) {
             Item::Def { name, .. } | Item::Declare { name, .. } => {
                 ctx.all_names.insert(name.clone());
             }
+            Item::Struct { name, fields, .. } => {
+                ctx.all_names.insert(name.clone());
+                let plain: Vec<(String, Ty)> = fields
+                    .iter()
+                    .map(|(n, t, _)| (n.clone(), t.clone()))
+                    .collect();
+                for (w, _, _) in struct_words(name, &plain, 0) {
+                    ctx.all_names.insert(w);
+                }
+            }
             Item::Test { .. } => {}
         }
     }
@@ -288,12 +320,16 @@ pub(crate) fn process_item(
     item: Item,
     origin: Origin,
     p: &mut Program,
-) -> Option<WordId> {
+) -> Vec<WordId> {
     match item {
         Item::Declare { name, effect, loc } => {
             if let Some(d) = check_new_name(&name, &loc) {
                 p.diagnostics.push(d);
-                return None;
+                return vec![];
+            }
+            if let Err(d) = check_effect_types(ctx, &effect, &loc) {
+                p.diagnostics.push(d.with_word(&name));
+                return vec![];
             }
             match ctx.by_name.get(&name) {
                 Some(&id) => {
@@ -312,16 +348,16 @@ pub(crate) fn process_item(
                     }
                 }
                 None => {
-                    return Some(ctx.add_word(new_word(
+                    return vec![ctx.add_word(new_word(
                         name,
                         effect,
                         origin,
                         WordKind::Named,
                         loc,
-                    )));
+                    ))];
                 }
             }
-            None
+            vec![]
         }
         Item::Def {
             name,
@@ -332,7 +368,7 @@ pub(crate) fn process_item(
         } => {
             if let Some(d) = check_new_name(&name, &loc) {
                 p.diagnostics.push(d);
-                return None;
+                return vec![];
             }
             let Some(effect) = effect else {
                 p.diagnostics.push(
@@ -343,8 +379,12 @@ pub(crate) fn process_item(
                     )
                     .with_word(&name),
                 );
-                return None;
+                return vec![];
             };
+            if let Err(d) = check_effect_types(ctx, &effect, &loc) {
+                p.diagnostics.push(d.with_word(&name));
+                return vec![];
+            }
             let id = match ctx.by_name.get(&name) {
                 Some(&id) => {
                     let w = &ctx.words[id];
@@ -367,7 +407,7 @@ pub(crate) fn process_item(
                         d.declared_effect = Some(w.effect.to_string());
                         d.dependants = Some(dependants);
                         p.diagnostics.push(d);
-                        return None;
+                        return vec![];
                     }
                     id
                 }
@@ -389,15 +429,16 @@ pub(crate) fn process_item(
                     w.callees = out.callees;
                     w.failed = false;
                     w.loc = loc;
-                    Some(id)
+                    vec![id]
                 }
                 Err(d) => {
                     ctx.words[id].failed = true;
                     p.diagnostics.push(d);
-                    None
+                    vec![]
                 }
             }
         }
+        Item::Struct { name, fields, loc } => define_struct(ctx, name, fields, loc, origin, p),
         Item::Test {
             word,
             body,
@@ -412,7 +453,7 @@ pub(crate) fn process_item(
                 };
                 p.diagnostics
                     .push(Diagnostic::error(codes::E_UNDEFINED, msg, loc));
-                return None;
+                return vec![];
             }
             let index = p.tests.len();
             let tname = format!("[test {word} #{index}]");
@@ -420,7 +461,7 @@ pub(crate) fn process_item(
                 Ok(o) => o,
                 Err(d) => {
                     p.diagnostics.push(d);
-                    return None;
+                    return vec![];
                 }
             };
             let want: Vec<Ty> = expected.iter().map(|(l, _)| l.ty()).collect();
@@ -438,7 +479,7 @@ pub(crate) fn process_item(
                     .with_word(&word)
                     .with_stacks(names(&want), names(&out.effect.outputs)),
                 );
-                return None;
+                return vec![];
             }
             let tid = ctx.add_word(Word {
                 name: tname,
@@ -462,9 +503,167 @@ pub(crate) fn process_item(
                 location: loc,
                 result_types: want,
             });
-            None
+            vec![]
         }
     }
+}
+
+/// The words a struct declaration generates, with their effects and code:
+/// `s.new`, then `s.f` and `s.f!` for each field.
+fn struct_words(
+    name: &str,
+    fields: &[(String, Ty)],
+    idx: u32,
+) -> Vec<(String, Effect, Vec<I<'static>>)> {
+    let me = Ty::Struct(name.to_string());
+    let tys: Vec<Ty> = fields.iter().map(|(_, t)| t.clone()).collect();
+    let mut code: Vec<I> = (0..width_all(&tys)).map(I::LocalGet).collect();
+    code.push(I::StructNew(idx));
+    let mut out = vec![(
+        format!("{name}.new"),
+        Effect::new(tys, vec![me.clone()]),
+        code,
+    )];
+    let mut w = 0;
+    for (f, t) in fields {
+        let (mut get, mut set) = (Vec::new(), Vec::new());
+        for j in 0..t.width() {
+            let field = I::StructGet {
+                struct_type_index: idx,
+                field_index: w + j,
+            };
+            get.extend([I::LocalGet(0), field]);
+            set.extend([
+                I::LocalGet(0),
+                I::LocalGet(1 + j),
+                I::StructSet {
+                    struct_type_index: idx,
+                    field_index: w + j,
+                },
+            ]);
+        }
+        w += t.width();
+        out.push((
+            format!("{name}.{f}"),
+            Effect::new(vec![me.clone()], vec![t.clone()]),
+            get,
+        ));
+        out.push((
+            format!("{name}.{f}!"),
+            Effect::new(vec![me.clone(), t.clone()], vec![]),
+            set,
+        ));
+    }
+    out
+}
+
+fn render_fields(fields: &[(String, Ty)]) -> String {
+    let parts: Vec<String> = fields.iter().map(|(n, t)| format!("{n}: {t}")).collect();
+    format!("( {} )", parts.join(" "))
+}
+
+/// `struct name  field: type ...`: register the WasmGC type and define the
+/// generated words. Identical redeclaration is a no-op; changed fields are
+/// rejected like a changed effect.
+fn define_struct(
+    ctx: &mut Ctx,
+    name: String,
+    fields: Vec<(String, Ty, Location)>,
+    loc: Location,
+    origin: Origin,
+    p: &mut Program,
+) -> Vec<WordId> {
+    if let Some(d) = check_new_name(&name, &loc) {
+        p.diagnostics.push(d);
+        return vec![];
+    }
+    for (_, ty, floc) in &fields {
+        if let Err(d) = ctx.check_types(std::slice::from_ref(ty), floc, Some(&name)) {
+            p.diagnostics.push(d);
+            return vec![];
+        }
+    }
+    let plain: Vec<(String, Ty)> = fields.into_iter().map(|(n, t, _)| (n, t)).collect();
+    if let Some(&k) = ctx.struct_by_name.get(&name) {
+        let old = ctx.structs[k].fields.clone();
+        if old == plain {
+            return vec![];
+        }
+        let graph = graph_of(ctx);
+        let mut deps: Vec<String> = Vec::new();
+        for (w, _, _) in struct_words(&name, &old, 0) {
+            for c in graph.callers(&w) {
+                if !deps.contains(&c) {
+                    deps.push(c);
+                }
+            }
+        }
+        let mut d = Diagnostic::error(
+            codes::E_REDEFINE_EFFECT,
+            format!(
+                "struct `{name}` is already declared with fields {} and cannot change",
+                render_fields(&old)
+            ),
+            loc,
+        );
+        d.declared_effect = Some(render_fields(&old));
+        d.dependants = Some(deps);
+        p.diagnostics.push(d);
+        return vec![];
+    }
+    // A generated name already taken with another effect blocks the struct.
+    let preview = struct_words(&name, &plain, 0);
+    for (w, effect, _) in &preview {
+        if let Some(&id) = ctx.by_name.get(w) {
+            if ctx.words[id].effect != *effect {
+                let mut d = Diagnostic::error(
+                    codes::E_REDEFINE_EFFECT,
+                    format!(
+                        "`{w}` is defined {} but struct `{name}` generates it as {effect}",
+                        ctx.words[id].effect
+                    ),
+                    loc,
+                )
+                .with_word(w);
+                d.declared_effect = Some(ctx.words[id].effect.to_string());
+                d.dependants = Some(graph_of(ctx).callers(w));
+                p.diagnostics.push(d);
+                return vec![];
+            }
+        }
+    }
+    let idx = ctx.types.len() as u32;
+    ctx.struct_types.insert(name.clone(), idx);
+    let lowered: Vec<_> = plain
+        .iter()
+        .flat_map(|(_, t)| t.lower(&ctx.struct_types))
+        .collect();
+    let got = ctx.register_struct_type(lowered);
+    debug_assert_eq!(got, idx);
+    ctx.struct_by_name.insert(name.clone(), ctx.structs.len());
+    ctx.structs.push(StructDef {
+        name: name.clone(),
+        fields: plain.clone(),
+        type_index: idx,
+        loc: loc.clone(),
+    });
+    let mut ids = Vec::new();
+    for (w, effect, code) in struct_words(&name, &plain, idx) {
+        let body = Compiled {
+            locals: vec![],
+            code,
+        };
+        let id = match ctx.by_name.get(&w) {
+            Some(&id) => id,
+            None => ctx.add_word(new_word(w, effect, origin, WordKind::Named, loc.clone())),
+        };
+        let word = &mut ctx.words[id];
+        word.body = Some(body);
+        word.failed = false;
+        word.loc = loc.clone();
+        ids.push(id);
+    }
+    ids
 }
 
 pub fn validate(bytes: &[u8]) -> Result<(), String> {
@@ -492,6 +691,11 @@ pub(crate) fn new_word(
         loc,
         callees: Vec::new(),
     }
+}
+
+fn check_effect_types(ctx: &Ctx, e: &Effect, loc: &Location) -> Result<(), Diagnostic> {
+    ctx.check_types(&e.inputs, loc, None)?;
+    ctx.check_types(&e.outputs, loc, None)
 }
 
 pub(crate) fn check_new_name(name: &str, loc: &Location) -> Option<Diagnostic> {

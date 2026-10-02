@@ -43,9 +43,19 @@ static host works if it sends both headers.
   in the doorbell cell (`DOORBELL` in the layout), posts `ring` to the main
   thread and blocks in `Atomics.wait`. The main thread services the ring,
   stores 1 and calls `Atomics.notify`.
-- **Messages.** Main to worker: `init` (memory, layout) and `run` (module,
-  installs, table size, line slot, test slots). Worker to main: `ring` and
-  `done` (trap, test results).
+- **Messages.** Main to worker: `init` (memory, layout), `run` (module,
+  installs, table size, `refsSize`, line slot, test slots) and `render`
+  (struct slots and layouts). Worker to main: `ring`, `done` (trap, test
+  results) and `rendered` (struct values).
+- **Structs.** References cannot live in shared memory, so a struct on the
+  stack is a slot holding its index into `chasm.refs`, an `anyref` table the
+  worker owns. The worker creates it the first time a step module imports it
+  or a step's `refs_size` is above 0, so engines without WasmGC run sessions
+  without structs unchanged. JavaScript cannot read WasmGC struct fields, so
+  for the stack echo the worker calls the generated accessor words
+  (`point.x`, ...) through the table; the step JSON gives each struct's fields
+  and their accessor slots. A struct array's length is its `len` slot in
+  memory.
 - **Layout.** The JavaScript never hard-codes an address: `compiler.js`
   reads the layout from the compiler (`chasm_core::layout::constants`).
 
@@ -66,4 +76,18 @@ Run from the repository root after `build.sh`:
 node web/test/compiler.mjs    # the compiler wrapper
 node web/test/ring.mjs        # ring servicing and the namespace
 node web/test/node-repl.mjs   # end to end: driver, worker thread, shared memory, doorbell
+node web/test/node-structs.mjs  # structs end to end; needs node 22 or later (WasmGC)
 ```
+
+With node older than 22, run the struct scenario in a headless browser
+instead:
+
+```
+sh web/test/headless.sh test/structs.html STRUCTS   # prints STRUCTS ok
+```
+
+It serves `web/` with `serve.py` on port 8765, starts headless Vivaldi (or
+the browser given as a third argument) with a throwaway profile under
+`tmp/headless/`, opens the page through the debugging port (a fresh profile
+opens a welcome page in place of a command-line URL) and waits for the
+page's console to report.

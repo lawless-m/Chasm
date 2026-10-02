@@ -1,0 +1,75 @@
+# Structs: one declaration gives a constructor, a reader and a writer per
+# field. Values are garbage-collected references; arrays of structs are views
+# like every other array.
+# Exercises: struct, s.new, s.f, s.f!, str and struct fields, an optional
+# link as an array of length 0 or 1, arrays of structs with the combinators.
+
+struct point  x: i32  y: f64
+
+: origin ( -- point )  0 0.0 point.new ;
+test point.x : 3 4.5 point.new point.x -> 3
+test point.y! : origin dup 2.5 point.y! point.y -> 2.5
+
+# A str field.
+struct person  name: str  age: i32
+
+: describe ( person -- str )
+  :> p
+  p person.name " is " str.concat  p person.age i32.to-str str.concat ;
+test describe : "Ada" 36 person.new describe -> "Ada is 36"
+
+# A struct of structs.
+struct seg  a: point  b: point
+
+: run ( seg -- i32 )  :> s  s seg.b point.x  s seg.a point.x  i32.sub ;
+test run : 1 0.0 point.new 5 0.0 point.new seg.new run -> 4
+
+# A list, null-free: `next` holds 0 nodes at the end of the list, else 1.
+struct node  v: i32  next: array node
+
+: end ( -- array node )  0 array.new ( array node ) ;
+
+: cons ( i32 array node -- array node )
+  node.new :> n
+  1 array.new ( array node ) :> one
+  one 0 n array.at!
+  one ;
+
+# The list n, n-1, ..., 1.
+: countdown ( i32 -- array node )
+  :> n
+  end :> l!
+  n [ 1 i32.add l cons l! ] times
+  l ;
+
+: sum ( array node -- i32 )
+  :> l!
+  0 :> s!
+  [ l array.len ] [ l 0 array.at :> n  s n node.v i32.add s!  n node.next l! ] while
+  s ;
+test sum : 4 countdown sum -> 10
+test sum : end sum -> 0
+
+# Arrays of structs.
+: points ( i32 -- array point )
+  :> n
+  n array.new ( array point ) :> a
+  n [ :> i  a i  i i f64.convert_i32_s point.new  array.at! ] times
+  a ;
+
+: total-x ( array point -- i32 )  0 [ point.x i32.add ] fold ;
+test total-x : 4 points total-x -> 6
+test map : 4 points [ point.x 10 i32.mul ] map array.to-str -> "0 10 20 30"
+test filter : 5 points [ point.x 2 i32.ge_s ] filter array.len -> 3
+
+# A slice shares storage with its array, as for every Chasm array.
+: write-through ( -- i32 )
+  4 points :> a
+  a 1 2 array.slice  0  99 0.0 point.new  array.at!
+  a 1 array.at point.x ;
+test write-through : write-through -> 99
+
+: main ( -- )
+  "Ada" 36 person.new describe println
+  "sum of 1 to 10: " print 10 countdown sum i32.to-str println
+  "x of 5 points: " print 5 points [ point.x ] map array.to-str println ;
