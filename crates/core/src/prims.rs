@@ -238,6 +238,312 @@ pub fn special(name: &str) -> Option<(Vec<Ty>, Vec<Ty>)> {
     })
 }
 
+/// Every numeric primitive's name, for suggestions.
+const NUMERIC_NAMES: &[&str] = &[
+    "f32.abs",
+    "f32.add",
+    "f32.ceil",
+    "f32.convert_i32_s",
+    "f32.convert_i32_u",
+    "f32.convert_i64_s",
+    "f32.convert_i64_u",
+    "f32.copysign",
+    "f32.demote_f64",
+    "f32.div",
+    "f32.eq",
+    "f32.floor",
+    "f32.ge",
+    "f32.gt",
+    "f32.le",
+    "f32.load",
+    "f32.lt",
+    "f32.max",
+    "f32.min",
+    "f32.mul",
+    "f32.ne",
+    "f32.nearest",
+    "f32.neg",
+    "f32.reinterpret_i32",
+    "f32.sqrt",
+    "f32.store",
+    "f32.sub",
+    "f32.trunc",
+    "f64.abs",
+    "f64.add",
+    "f64.ceil",
+    "f64.convert_i32_s",
+    "f64.convert_i32_u",
+    "f64.convert_i64_s",
+    "f64.convert_i64_u",
+    "f64.copysign",
+    "f64.div",
+    "f64.eq",
+    "f64.floor",
+    "f64.ge",
+    "f64.gt",
+    "f64.le",
+    "f64.load",
+    "f64.lt",
+    "f64.max",
+    "f64.min",
+    "f64.mul",
+    "f64.ne",
+    "f64.nearest",
+    "f64.neg",
+    "f64.promote_f32",
+    "f64.reinterpret_i64",
+    "f64.sqrt",
+    "f64.store",
+    "f64.sub",
+    "f64.trunc",
+    "i32.add",
+    "i32.and",
+    "i32.clz",
+    "i32.ctz",
+    "i32.div_s",
+    "i32.div_u",
+    "i32.eq",
+    "i32.eqz",
+    "i32.extend16_s",
+    "i32.extend8_s",
+    "i32.ge_s",
+    "i32.ge_u",
+    "i32.gt_s",
+    "i32.gt_u",
+    "i32.le_s",
+    "i32.le_u",
+    "i32.load",
+    "i32.load16_s",
+    "i32.load16_u",
+    "i32.load8_s",
+    "i32.load8_u",
+    "i32.lt_s",
+    "i32.lt_u",
+    "i32.mul",
+    "i32.ne",
+    "i32.or",
+    "i32.popcnt",
+    "i32.reinterpret_f32",
+    "i32.rem_s",
+    "i32.rem_u",
+    "i32.rotl",
+    "i32.rotr",
+    "i32.shl",
+    "i32.shr_s",
+    "i32.shr_u",
+    "i32.store",
+    "i32.store16",
+    "i32.store8",
+    "i32.sub",
+    "i32.trunc_f32_s",
+    "i32.trunc_f32_u",
+    "i32.trunc_f64_s",
+    "i32.trunc_f64_u",
+    "i32.trunc_sat_f32_s",
+    "i32.trunc_sat_f32_u",
+    "i32.trunc_sat_f64_s",
+    "i32.trunc_sat_f64_u",
+    "i32.wrap_i64",
+    "i32.xor",
+    "i64.add",
+    "i64.and",
+    "i64.clz",
+    "i64.ctz",
+    "i64.div_s",
+    "i64.div_u",
+    "i64.eq",
+    "i64.eqz",
+    "i64.extend16_s",
+    "i64.extend32_s",
+    "i64.extend8_s",
+    "i64.extend_i32_s",
+    "i64.extend_i32_u",
+    "i64.ge_s",
+    "i64.ge_u",
+    "i64.gt_s",
+    "i64.gt_u",
+    "i64.le_s",
+    "i64.le_u",
+    "i64.load",
+    "i64.load16_s",
+    "i64.load16_u",
+    "i64.load32_s",
+    "i64.load32_u",
+    "i64.load8_s",
+    "i64.load8_u",
+    "i64.lt_s",
+    "i64.lt_u",
+    "i64.mul",
+    "i64.ne",
+    "i64.or",
+    "i64.popcnt",
+    "i64.reinterpret_f64",
+    "i64.rem_s",
+    "i64.rem_u",
+    "i64.rotl",
+    "i64.rotr",
+    "i64.shl",
+    "i64.shr_s",
+    "i64.shr_u",
+    "i64.store",
+    "i64.store16",
+    "i64.store32",
+    "i64.store8",
+    "i64.sub",
+    "i64.trunc_f32_s",
+    "i64.trunc_f32_u",
+    "i64.trunc_f64_s",
+    "i64.trunc_f64_u",
+    "i64.trunc_sat_f32_s",
+    "i64.trunc_sat_f32_u",
+    "i64.trunc_sat_f64_s",
+    "i64.trunc_sat_f64_u",
+    "i64.xor",
+];
+
+/// Every primitive's name.
+pub fn names() -> impl Iterator<Item = &'static str> {
+    const OTHER: &[&str] = &[
+        "dup",
+        "drop",
+        "swap",
+        "over",
+        "nip",
+        "tuck",
+        "rot",
+        "-rot",
+        "2dup",
+        "2drop",
+        "str.len",
+        "str.addr",
+        "str.from-raw",
+        "mem.alloc",
+        "trap",
+        "host.open",
+        "host.read",
+        "host.write",
+        "host.close",
+        "array.new",
+        "array.len",
+        "array.at",
+        "array.at!",
+        "array.slice",
+        "call",
+        "leave",
+        "if",
+        "while",
+        "until",
+        "when",
+        "unless",
+        "times",
+        "each",
+        "map",
+        "filter",
+        "fold",
+    ];
+    NUMERIC_NAMES.iter().chain(OTHER).copied()
+}
+
+/// Names from other languages and the Chasm words that do the job.
+const ALIASES: &[(&str, &str)] = &[
+    ("pop", "`drop`"),
+    ("len", "`str.len` or `array.len`"),
+    ("length", "`str.len` or `array.len`"),
+    ("size", "`str.len` or `array.len`"),
+    ("count", "`str.len` or `array.len`"),
+    ("concat", "`str.concat`"),
+    ("append", "`str.concat`"),
+    ("emit", "`print`"),
+    ("puts", "`println`"),
+    (".", "`i32.to-str println`"),
+    (".s", ""),
+    ("not", "`i32.eqz`"),
+    ("mod", "`i32.rem_s`"),
+    ("%", "`i32.rem_s`"),
+    ("+", "`i32.add`"),
+    ("-", "`i32.sub`"),
+    ("*", "`i32.mul`"),
+    ("/", "`i32.div_s`"),
+    ("=", "`i32.eq`"),
+    ("==", "`i32.eq`"),
+    ("<>", "`i32.ne`"),
+    ("!=", "`i32.ne`"),
+    ("<", "`i32.lt_s`"),
+    (">", "`i32.gt_s`"),
+    ("<=", "`i32.le_s`"),
+    (">=", "`i32.ge_s`"),
+    ("1+", "`1 i32.add`"),
+    ("1-", "`1 i32.sub`"),
+];
+
+/// "; did you mean ...?" for an unknown word: a known alias from another
+/// language, else the nearest primitive or dictionary name by edit distance.
+pub fn suggest<'a>(name: &str, dictionary: impl Iterator<Item = &'a str>) -> String {
+    if let Some((_, s)) = ALIASES.iter().find(|(a, _)| *a == name) {
+        return if s.is_empty() {
+            "; there is no stack-printing word: the REPL prints the stack after every line"
+                .to_string()
+        } else {
+            format!("; did you mean {s}?")
+        };
+    }
+    let limit = if name.chars().count() >= 8 { 2 } else { 1 };
+    let mut best: Vec<&str> = Vec::new();
+    let mut best_d = limit + 1;
+    let static_to_a = |n: &'static str| -> &'a str { n };
+    for cand in names().map(static_to_a).chain(dictionary) {
+        if cand.starts_with('[') || cand == name {
+            continue;
+        }
+        let d = distance(name, cand);
+        if d < best_d {
+            best_d = d;
+            best.clear();
+        }
+        if d == best_d && !best.contains(&cand) {
+            best.push(cand);
+        }
+    }
+    best.sort();
+    best.truncate(3);
+    match best.as_slice() {
+        [] => String::new(),
+        [one] => format!("; did you mean `{one}`?"),
+        many => format!(
+            "; did you mean {}?",
+            many.iter()
+                .map(|c| format!("`{c}`"))
+                .collect::<Vec<_>>()
+                .join(" or ")
+        ),
+    }
+}
+
+/// Levenshtein distance counting an adjacent swap as one edit.
+fn distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut d = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+    for (i, row) in d.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, cell) in d[0].iter_mut().enumerate() {
+        *cell = j;
+    }
+    for i in 1..=a.len() {
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            d[i][j] = (d[i - 1][j] + 1)
+                .min(d[i][j - 1] + 1)
+                .min(d[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
+            }
+        }
+    }
+    d[a.len()][b.len()]
+}
+
 /// Polymorphic array primitives and `call` are handled by the checker directly.
 pub fn is_builtin(name: &str) -> bool {
     numeric(name).is_some()
@@ -248,4 +554,33 @@ pub fn is_builtin(name: &str) -> bool {
             "array.new" | "array.len" | "array.at" | "array.at!" | "array.slice" | "call" | "leave"
         )
         || crate::parser::combinator_arity(name).is_some()
+}
+
+#[cfg(test)]
+mod suggest_tests {
+    use super::*;
+
+    #[test]
+    fn every_listed_name_is_a_primitive() {
+        for n in names() {
+            assert!(is_builtin(n), "{n}");
+        }
+    }
+
+    #[test]
+    fn suggestions() {
+        assert_eq!(suggest("pop", std::iter::empty()), "; did you mean `drop`?");
+        assert_eq!(suggest("dupp", std::iter::empty()), "; did you mean `dup`?");
+        assert_eq!(
+            suggest("i32.ad", std::iter::empty()),
+            "; did you mean `i32.add` or `i32.and`?"
+        );
+        assert_eq!(
+            suggest("sqaure", ["square"].into_iter()),
+            "; did you mean `square`?"
+        );
+        assert_eq!(suggest("zzzzzzzz", std::iter::empty()), "");
+        assert_eq!(suggest("total", std::iter::empty()), "");
+        assert!(suggest(".s", std::iter::empty()).contains("prints the stack"));
+    }
 }
