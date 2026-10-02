@@ -1,6 +1,6 @@
 # Chasm: Architecture and Milestones
 
-Status: draft v0.10 (M0 to M2 implemented; decisions in sections 13 and 14). **Chasm** (Chuck-Wasm, after Chuck Moore) is a typed, concatenative language that compiles to WebAssembly, with an interactive REPL, written in Rust. Source files use the `.chasm` extension; the CLI binary is `chasm`.
+Status: draft v0.11 (M0 to M2 implemented; decisions in sections 13 to 15). **Chasm** (Chuck-Wasm, after Chuck Moore) is a typed, concatenative language that compiles to WebAssembly, with an interactive REPL, written in Rust. Source files use the `.chasm` extension; the CLI binary is `chasm`.
 
 ## 1. Goals
 
@@ -11,7 +11,7 @@ Status: draft v0.10 (M0 to M2 implemented; decisions in sections 13 and 14). **C
 - The compiler core runs **both natively and as wasm in the browser** from the same source.
 - Designed so that **Claude Code can write and fix programs** from compiler feedback alone.
 
-Non-goals for v1: inference, structs, closures, garbage-collected heap types (WasmGC), the Component Model, multi-threading. See `FUTURE.md` for how these would fit. Arrays and functions as values (without capture) **are** v1.
+Non-goals for v1: inference, closures, the Component Model, multi-threading. See `FUTURE.md` for how these would fit. Arrays and functions as values (without capture) **are** v1, and structs are milestone M4, as WasmGC structs (section 15).
 
 Licence: MIT.
 
@@ -79,7 +79,7 @@ Wasm has no polymorphic instructions, and a word's effect is its wasm function t
 
 - **Shuffle primitives** (`dup`, `swap`, `drop`, `over`, `rot`, `nip`, `tuck`, `2dup`) and **collection combinators** (`each`, `map`, `filter`, `fold`) have effects written with type variables, for example `( a b -- b a )`. Checking is forward and every user word is concretely typed, so the stack is always concrete when the checker meets one of these. It instantiates the primitive at the types present and the emitter produces the matching code: `dup` on `i32` is `local.tee` into a compiler-only `i32` local, `swap` is two locals, and so on.
 - **No type variables in user effects.** A word that would need `( a b -- a b a b )` must instead be written once per type (`2dup-i32`, `2dup-f64`). Tedium is chosen over magic: every user word has a real wasm function type, a real table slot, and a single node in the dependency graph.
-- **Later, if wanted:** monomorphisation, where user effects may carry type variables and each call site gets its own specialised instance. That needs per-instance table slots and graph nodes, and shares machinery with M6 inference, so it is deferred to that point and may never be needed.
+- **Later, if wanted:** monomorphisation, where user effects may carry type variables and each call site gets its own specialised instance. That needs per-instance table slots and graph nodes, and shares machinery with M7 inference, so it is deferred to that point and may never be needed.
 
 ## 5c. Control flow
 
@@ -185,7 +185,7 @@ Uses:
 - Safe `forget`: refuse, or list what would be orphaned.
 - Dead-word detection and trimming at export.
 - Inlining candidates (leaf words) at export.
-- Cycle detection via strongly connected components. In v1 every word is declared, so this matters only for M6 inference, where recursive and mutually recursive words must keep declared effects.
+- Cycle detection via strongly connected components. In v1 every word is declared, so this matters only for M7 inference, where recursive and mutually recursive words must keep declared effects.
 - Incremental checking after a body edit.
 - `deps`, `used-by` and `unresolved` commands with JSON output for tooling and Claude Code.
 
@@ -223,11 +223,13 @@ Principles; exact fields are settled in M1 and generated from the Rust types (`s
 
 **M3: Dependency graph tooling and functions as values.** Contract tests, `deps`, `used-by`, rejection errors that name dependants, safe `forget`, dead-word detection. `'word`, quotation values, quotation types in effects, `call`, address-taken edges.
 
-**M4: Hybrid export.** Whole-program compilation, direct calls, inlining, dead-word removal, Binaryen. Refuse unresolved words.
+**M4: Structs.** `struct` declarations lowered to WasmGC struct types, with generated words and engine garbage collection (section 15). Struct values on the REPL stack through a reference table, in the native and browser REPLs. Arrays of structs. The browser checks move to node 22.
 
-**M5: Polish and tooling.** JSON output everywhere, editor integration, expanded examples, force-redefine with cascade. `/net/http`, 9p mounts, WASI export mapping, io_uring native backend if profiling justifies it.
+**M5: Hybrid export.** Whole-program compilation, direct calls, inlining, dead-word removal, Binaryen. Refuse unresolved words.
 
-**M6: Inference (optional).** Elaboration pass in front of the checker producing annotations, with row variables. Soundness unaffected because the checker re-verifies. Start with straight-line words made only of primitives, then add unification.
+**M6: Polish and tooling.** JSON output everywhere, editor integration, expanded examples, force-redefine with cascade. `/net/http`, 9p mounts, WASI export mapping, io_uring native backend if profiling justifies it.
+
+**M7: Inference (optional).** Elaboration pass in front of the checker producing annotations, with row variables. Soundness unaffected because the checker re-verifies. Start with straight-line words made only of primitives, then add unification.
 
 M1 to M3 can overlap; the graph and stub data structures are part of M1 so that M3 is tooling only.
 
@@ -235,13 +237,13 @@ M1 to M3 can overlap; the graph and stub data structures are part of M1 so that 
 
 Settled questions live in `LANGUAGE.md` (primitive set, numeric types, strings, effect syntax, tests; M1 decisions in its section 12). Still open:
 
-1. Error-recovery policy for broken dependants when the cascade (force-redefine) mode is added in M5.
+1. Error-recovery policy for broken dependants when the cascade (force-redefine) mode is added in M6.
 2. Load/store alignment and offset immediates (`LANGUAGE.md` open item 1): v1 is natural alignment, offset 0.
 3. Module or namespace structure for libraries (`LANGUAGE.md` open item 2); a flat dictionary until it hurts.
-4. `/net/http` semantics (methods, headers) when it is built in M5.
+4. `/net/http` semantics (methods, headers) when it is built in M6.
 5. Integer overflow. The primitives are wasm's (`LANGUAGE.md` section 2), so integer arithmetic wraps silently: `21 fact` is a well-typed wrong answer (`examples/factorial.chasm`). Chasm's safety is memory and type safety, not arithmetic safety, and the effect checker tracks types, not ranges. If checked arithmetic is wanted, the candidate is library words in the prelude (e.g. a trapping `i64.mul?`) beside the unchanged primitives, keeping one primitive to one instruction. Open: whether to add them, their names, and whether examples should prefer them.
 
-Row variables in effects are an M6 matter, not a v1 question; the type representation leaves room for them (section 4).
+Row variables in effects are an M7 matter, not a v1 question; the type representation leaves room for them (section 4).
 
 ## 12. Hardware notes
 
@@ -257,7 +259,7 @@ Heavy native batch work (large test corpora, benchmarks, Binaryen runs over big 
 6. **Functions as values** (`'word`, quotation values, `call`, address-taken edges) were cheap on top of the table, so they landed in M1 rather than M3.
 7. **Two-pass checking.** Each body is walked twice by the same checker: a checking pass that settles type variables, then an emitting pass with the final substitution. Blocks take the whole checker stack as parameters (multi-value), so a quotation under a combinator can reach any value below it.
 8. **Text from JSON.** Every CLI command builds the JSON report; the text output is rendered from that JSON value.
-9. **Host namespace.** `/file/<path>` is the host path `/<path>` (off with `--no-file`). `--mount name=DIR` mounts a local directory at `/mnt/name`, and `..` is refused under mounts. `/net/...` and 9p sources return "not supported" until M5.
+9. **Host namespace.** `/file/<path>` is the host path `/<path>` (off with `--no-file`). `--mount name=DIR` mounts a local directory at `/mnt/name`, and `..` is refused under mounts. `/net/...` and 9p sources return "not supported" until M6.
 
 ## 14. Decisions taken in M2
 
@@ -278,3 +280,27 @@ Heavy native batch work (large test corpora, benchmarks, Binaryen runs over big 
 7. **Tests at the REPL.** A test runs as soon as its word has a body, by calling its thunk through the table in the shared instance. A test of a declared word waits and runs when the word gets a body, and a word's tests run again whenever it is redefined. The console output of tests is not captured.
 8. **`chasm repl`.** Reads stdin line by line, continuing a chunk while a definition or quotation is open (`repl::needs_more`), and builds one report per chunk; `--json` prints each as one line, with the program's console captured into `results.output`. In text mode the program's console is the terminal and shares stdin with the REPL.
 9. **Browser.** `crates/web` exposes the session through a hand-written C ABI (`chasm_new`, `chasm_step`, `chasm_line_done`, `chasm_needs_more`, result buffers), not wasm-bindgen: the API is small, and the installed wasm-bindgen CLI did not match the crate version. The main thread owns the compiler session, the shared memory and the ring (`web/ring.js`, the same semantics as `service_ring`). The worker owns the funcref table and every step's instance, because tables cannot be shared between threads. `ring_enter` stores 0 in the doorbell, posts `ring` and waits; the main thread services the ring, stores 1 and notifies. JavaScript reads the layout from the compiler (`layout::constants`). The browser namespace has `/dev/cons` output and `/dev/time` only; console reads return end of input. The page needs cross-origin isolation (`Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Embedder-Policy: require-corp`), which `web/serve.py` provides.
+
+## 15. Decisions taken in M3
+
+1. **Structs are WasmGC structs** (milestone M4). The by-reference linear-memory design in `FUTURE.md` needed an allocator with `free`, and a manual `free` allows use-after-free, which breaks type safety; WasmGC structs are collected by the engine and cannot dangle or be misread. A spike (wasmtime 49 and Vivaldi, October 2026) confirmed what the REPL needs:
+   - Each step module declares the struct types it uses; equivalent declarations are the same type across modules, so a struct made in one step is read in a later one through the shared table.
+   - A struct on the REPL's memory data stack is one slot holding an index into a shared `anyref` table (`chasm.refs`); a line casts it back with `ref.cast`. The table is a GC root, so the value survives collection. The host reads fields for the stack echo.
+   - A cast to a different struct type traps (`cast failure`), even with the same field types.
+   - Wasmtime runs with `Collector::Copying`: 200 million short-lived structs took 0.26 s with flat memory, against 22 s with the deferred reference-counting collector. Vivaldi took 54 ms for 50 million.
+   - Node 20's V8 predates the final WasmGC encoding, so the node checks need node 22 or later.
+
+   The source form and generated words are as first sketched: one declaration, every access a dictionary word with an effect, no hand-written offsets.
+
+   ```
+   struct point  x: i32  y: f64
+   ```
+
+   | Generated word | Effect | Lowering |
+   |---|---|---|
+   | `point.new` | `( i32 f64 -- point )` | `struct.new` |
+   | `point.x` | `( point -- i32 )` | `struct.get` |
+   | `point.x!` | `( point i32 -- )` | `struct.set` |
+
+   `!` means write, as for locals. Generated words are ordinary words: `words` lists them, they appear in the dependency graph. Strings and arrays stay in linear memory; a `str` or `array T` field is two `i32` fields. Exported modules (M5) require an engine with GC.
+

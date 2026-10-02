@@ -6,44 +6,36 @@ The pattern `str` sets, a checker-level type with a fixed documented lowering, c
 
 ## 1. Structs
 
-By reference: a struct value is an `i32` pointer into linear memory. The user writes one declaration; the compiler generates the rest.
-
-```
-struct point  x: i32  y: f64
-```
-
-| Generated word | Effect | Lowering |
-|---|---|---|
-| `point.new` | `( i32 f64 -- point )` | Allocate, store fields. |
-| `point.x` | `( point -- i32 )` | `i32.load offset=0` |
-| `point.x!` | `( point i32 -- )` | `i32.store offset=0` |
-| `point.y` / `point.y!` | `( point -- f64 )` / `( point f64 -- )` | `f64.load/store offset=8` |
-| `point.size` | `( -- i32 )` | Constant. |
-
-- Layout is natural alignment with padding; the compiler reports it on request. No hand-written offsets, ever.
-- The `!` suffix means write, as for locals, so one idiom covers both.
-- Generated words are ordinary dictionary words with effects: `words point` lists them, `forget point` removes them, and they appear in the dependency graph.
-- Nested by-value fields (`origin: point`) are further loads at computed offsets.
-- A by-value lowering (fields as separate wasm values, like `str`) may be offered as an attribute for small structs such as points and ranges.
-
-Requires a real allocator with free, since structs are created and dropped constantly. The bump allocator is not enough.
+Now milestone M4, as WasmGC structs rather than linear memory: see `ARCHITECTURE.md` section 15. Still for later: a by-value lowering (fields as separate wasm values, like `str`) for small structs such as points and ranges.
 
 ## 2. Arrays and functions as values
 
-Both moved into v1 (`LANGUAGE.md` 4a and 7a). Left for later: nested arrays (`array array i32`), arrays of structs, and a real allocator so `map` results can be freed.
+Both moved into v1 (`LANGUAGE.md` 4a and 7a). Left for later: nested arrays (`array array i32`) and a real allocator so `map` results can be freed. Arrays of structs are part of M4.
+
+**Growable arrays.** Every v1 array is a fixed-length view (`( addr len )`, or `( ref start len )` for an array of structs), and slicing shares storage. The preferred growable array never moves its storage: it is a list of chunks whose sizes double (1, 2, 4, 8, ...), so growing allocates one new chunk as large as everything before it, at most 32 times.
+- Indexing is O(1): element `i` is in chunk `31 - clz(i + 1)` at offset `i + 1 - 2^chunk` (one `i32.clz` and a shift).
+- Because nothing moves, every view into a chunk stays valid, so no separate owning-array and `slice` types are needed.
+- A view is still contiguous, so it cannot span two chunks; walking the whole array goes through `each`/`fold`-style words on the growable array itself.
+- With M4 structs it is library code, not a language feature, and needs no nested arrays: `struct chunk  items: array i32` and `struct vec-i32  chunks: array chunk  count: i32`. Without generics it is written once per element type (`vec-i32`, `vec-str`, `vec-point`).
 
 ## 3. Closures
 
-A quotation plus captured locals: an environment struct and a funcref, with the function type gaining an environment parameter. Depends on by-reference structs and the allocator. Not before them.
+A quotation plus captured locals: an environment struct and a funcref, with the function type gaining an environment parameter. With structs as WasmGC structs (M4) the environment needs no allocator, so closures can follow structs directly.
 
-## 4. The WasmGC alternative
+## 4. WasmGC
 
-Structs and arrays as native wasm GC types, with the engine's garbage collector. Removes the allocator problem entirely, and makes closures natural, at the cost of tying exported modules to GC-capable engines and changing the lowering story. Possibly the better path for structs and closures, with strings and arrays staying in linear memory. To be evaluated when section 1 becomes a goal.
+Adopted for structs in M4 (`ARCHITECTURE.md` section 15). Strings and arrays stay in linear memory; whether arrays should become GC arrays too is open.
 
 ## 5. Inference
 
-Covered in `ARCHITECTURE.md` M6: an elaboration pass in front of the checker, row variables for the rest of the stack, and monomorphisation of type-variable effects. Shares machinery with first-class quotations.
+Covered in `ARCHITECTURE.md` M7: an elaboration pass in front of the checker, row variables for the rest of the stack, and monomorphisation of type-variable effects. Shares machinery with first-class quotations.
 
 ## 6. Namespaces and libraries
 
 A flat dictionary is fine until the library grows. Likely shape: a file is a module, `use name` imports it, words are prefixed by module (`str.len` is already this shape). Open question 2 in `LANGUAGE.md`.
+
+## 6. Sum types
+
+A type that is one of several shapes: `list = nil | cons`, a token kind, a JSON value. Without them, M4 code writes an optional link as an `array` of length 0 or 1 (`next: array node`, tested with `array.len`), the way Prolog's `[]` ends a list but as an empty container rather than its own value. Sum types would retire that idiom.
+
+With WasmGC the lowering is natural: one non-final supertype per sum type, a final struct subtype per variant, and matching by `br_on_cast` / `ref.test`. The checker would need an exhaustive match combinator (one quotation per variant, all leaving the same stack), in the style of `if`. Depends on M4 structs.
