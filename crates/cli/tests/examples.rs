@@ -186,3 +186,69 @@ fn run_refuses_reachable_unresolved_words() {
     assert!(err.contains("E_UNRESOLVED"), "{err}");
     let _ = std::fs::remove_file(src);
 }
+
+#[test]
+fn json_report_shape_for_every_command() {
+    std::fs::create_dir_all(root().join("tmp")).unwrap();
+    let runs: &[(&str, &[&str])] = &[
+        ("check", &["check", "--json", "examples/basics.chasm"]),
+        (
+            "build",
+            &[
+                "build",
+                "--json",
+                "examples/hello.chasm",
+                "-o",
+                "tmp/shape.wasm",
+                "--no-opt",
+            ],
+        ),
+        ("run", &["run", "--json", "examples/hello.chasm"]),
+        ("test", &["test", "--json", "examples/basics.chasm"]),
+        (
+            "unresolved",
+            &["unresolved", "--json", "examples/contract.chasm"],
+        ),
+        ("dead", &["dead", "--json", "examples/basics.chasm"]),
+        ("words", &["words", "--json", "examples/basics.chasm"]),
+        (
+            "deps",
+            &["deps", "--json", "square", "examples/basics.chasm"],
+        ),
+        (
+            "used-by",
+            &["used-by", "--json", "square", "examples/basics.chasm"],
+        ),
+    ];
+    for (command, args) in runs {
+        let (_, out, err) = chasm(args);
+        let j: serde_json::Value =
+            serde_json::from_str(&out).unwrap_or_else(|e| panic!("{command}: {e}: {out}{err}"));
+        assert_eq!(j["schema"], 1, "{command}");
+        assert_eq!(j["command"], *command, "{command}");
+        assert!(j["ok"].is_boolean(), "{command}");
+        assert!(j["diagnostics"].is_array(), "{command}");
+        assert!(j["results"].is_object(), "{command}");
+    }
+    let (ok, out, _) = chasm(&["check", "--json", "no-such-file.chasm"]);
+    assert!(!ok);
+    let j: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(j["schema"], 1);
+    assert_eq!(j["ok"], false);
+    assert_eq!(j["diagnostics"][0]["code"], "E_IO");
+    assert!(j["results"].is_object());
+    let _ = std::fs::remove_file(root().join("tmp/shape.wasm"));
+}
+
+#[test]
+fn usage_errors_are_json_reports_under_json() {
+    let (ok, out, _) = chasm(&["check", "--json"]);
+    assert!(!ok);
+    let j: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(j["schema"], 1);
+    assert_eq!(j["command"], "check");
+    assert_eq!(j["ok"], false);
+    assert_eq!(j["diagnostics"][0]["code"], "E_USAGE");
+    let (ok, _, _) = chasm(&["--version"]);
+    assert!(ok);
+}

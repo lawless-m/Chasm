@@ -4,6 +4,8 @@
 //! results }`. With `--json` that report is printed; otherwise the text
 //! output is rendered from the same JSON, so the two cannot drift.
 
+mod lsp;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -115,6 +117,8 @@ enum Cmd {
         #[arg(long)]
         no_prelude: bool,
     },
+    /// Language server over stdio, for editors.
+    Lsp,
 }
 
 struct Report {
@@ -546,6 +550,7 @@ fn exec(cli: Cli) -> (Report, bool) {
             (r, json)
         }
         Cmd::Repl { .. } => unreachable!("the REPL streams; handled in main"),
+        Cmd::Lsp => unreachable!("the language server streams; handled in main"),
         Cmd::UsedBy { word, common } => {
             let json = common.json;
             let r = graph_query("used-by", &word, &common, |comp| {
@@ -565,6 +570,8 @@ fn repl_report(o: Outcome, output: Vec<u8>) -> Report {
             "name": d.name, "effect": d.effect, "declared": d.declared,
         })).collect::<Vec<_>>(),
         "forgotten": o.forgotten,
+        "forced": o.forced.iter().map(|f| json!({ "name": f.name, "from": f.from, "to": f.to })).collect::<Vec<_>>(),
+        "rechecked": o.rechecked,
         "tests": o.tests.iter().map(|t| json!({
             "word": t.word,
             "status": t.status.as_str(),
@@ -846,6 +853,18 @@ fn render(report: &J) -> (String, String) {
             for w in strs(&r["forgotten"]) {
                 out.push_str(&format!("forgot: {w}\n"));
             }
+            for f in r["forced"].as_array().into_iter().flatten() {
+                out.push_str(&format!(
+                    "forced: {} {} -> {}\n",
+                    s(&f["name"]),
+                    s(&f["from"]),
+                    s(&f["to"])
+                ));
+            }
+            let rechecked = strs(&r["rechecked"]);
+            if !rechecked.is_empty() {
+                out.push_str(&format!("rechecked: {}\n", rechecked.join(", ")));
+            }
             for t in r["tests"].as_array().into_iter().flatten() {
                 if s(&t["status"]) == "pass" {
                     out.push_str(&format!("PASS     {}\n", s(&t["word"])));
@@ -948,7 +967,39 @@ fn print_report(report: &Report, json: bool) {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) if std::env::args().any(|a| a == "--json") => {
+            let cmd = match std::env::args().nth(1).as_deref() {
+                Some("check") => "check",
+                Some("build") => "build",
+                Some("run") => "run",
+                Some("test") => "test",
+                Some("unresolved") => "unresolved",
+                Some("dead") => "dead",
+                Some("words") => "words",
+                Some("deps") => "deps",
+                Some("used-by") => "used-by",
+                Some("repl") => "repl",
+                Some("lsp") => "lsp",
+                _ => "chasm",
+            };
+            let d = Diagnostic::error("E_USAGE", e.to_string().trim(), Location::default());
+            print_report(&failed(cmd, vec![d]), true);
+            return ExitCode::FAILURE;
+        }
+        Err(e) => e.exit(),
+    };
+    if let Cmd::Lsp = cli.cmd {
+        return match lsp::run() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(m) => {
+                let d = Diagnostic::error("E_INTERNAL", m, Location::default());
+                print_report(&failed("lsp", vec![d]), true);
+                ExitCode::FAILURE
+            }
+        };
+    }
     if let Cmd::Repl {
         host,
         json,

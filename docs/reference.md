@@ -22,6 +22,7 @@ chasm used-by WORD FILE...    # what calls WORD
 chasm dead   FILE...          # words `main` and `export` words never reach
 chasm build  FILE... -o out.wasm  # optimised with Binaryen (--no-opt to skip)
 chasm repl                    # interactive; reads chunks from stdin
+chasm lsp                     # language server over stdio (docs/editors.md)
 ```
 
 A program is the files you name, in order; there is no include form. To use
@@ -49,6 +50,27 @@ Add `--json` to any command for a machine-readable report:
                      "expected": ["i32"], "actual": ["i32", "i32"] } ],
   "results": { ... } }
 ```
+
+What `results` holds:
+
+| Command | `results` fields |
+|---|---|
+| `check` | `words`, `library_words`, `tests` (counts), `unresolved` (names), `has_main` |
+| `build` | `output`, `bytes`, `unoptimised_bytes`, `optimised`, `note` |
+| `run` | `output` (captured console), `trap` (`message`, `word`, or null), `optimised`, `note` |
+| `test` | `tests` (each `test`, `word`, `status`, `expected`, `actual`, `trap`, `output`, `location`); `summary` (`pass`, `fail`, `pending`) |
+| `unresolved` | `unresolved` (each `word`, `declared_effect`, `dependants`, `pending_tests`, `location`) |
+| `dead` | `has_roots`; `dead` (each `word`, `effect`, `location`) |
+| `words` | `words` (each `name`, `effect`, `inputs`, `outputs`, `resolved`, `failed`, `export`, `library`, `generated`, `location`) |
+| `deps` | `word`; `words` (each `word` and `kind`: `call` or `address-taken`) |
+| `used-by` | `word`; `words` (names) |
+| `repl` | one report per chunk; see section 1a |
+
+`lsp` prints no report: it speaks JSON-RPC (`docs/editors.md`).
+
+A command that cannot start (an unreadable file, a usage error) reports an
+empty `results` object with the error in `diagnostics`. The exit status is 0
+exactly when `ok` is true.
 
 Codes are stable; messages may change. See section 15 for the list.
 
@@ -87,15 +109,31 @@ Codes are stable; messages may change. See section 15 for the list.
 - A line that traps prints `trap in `[line N]`: message` and leaves the
   stack as it was.
 - A line starting with `)` is a REPL command, not Chasm, so a file never
-  holds one. `)forget word` removes a word and its tests and frees the name,
+  holds one: `)forget word` and `)force`. `)forget word` removes a word and its tests and frees the name,
   which can then be defined with any effect. It is refused (`E_FORGET`, with
   the `dependants`) while another word, a quotation in one, or another
   word's test uses it: forget those first, top-down. Primitives, prelude
   words and struct-generated words cannot be forgotten. A function value of
   a forgotten word already on the stack still runs the old code.
+- `)force` changes a word's effect deliberately. It is followed by one or
+  more definitions, and optionally `test` lines; the chunk continues until
+  an empty line. Every dependant of a changed word (a word calling it, a
+  quotation in one, another word's test; REPL lines do not count) is checked
+  again against the new effect, using any new body the chunk gives it. If
+  anything fails to check, nothing changes: `E_FORCE` lists the broken
+  dependants, followed by their errors. Otherwise everything is committed at
+  once, callers are rebuilt and the affected tests run again; the report
+  shows `forced: name old -> new` and `rechecked:` for the dependants checked
+  from their existing source. The word's own tests go, since they tested the
+  old effect: write new ones in the chunk. A function value of the word
+  taken before the force still runs the old code at the old type; `'word`
+  afterwards is the new one. Only existing user words can be forced, not
+  primitives, prelude words or struct-generated words, and the chunk may not
+  hold `declare` or `struct`.
 - `print` writes to the terminal and `read-line` reads from the same stdin
   as the REPL. With `--json` the program's output is captured into
   `results.output`; each report also has `results.defined`, `results.forgotten`,
+  `results.forced`, `results.rechecked`,
   `results.tests`, `results.trap`, `results.stack` and `results.timing`.
 
 ```
@@ -115,6 +153,35 @@ ok: twice ( i32 -- i32 )
 ( i32 ) 9
 > twice
 ( i32 ) 6561
+```
+
+Changing an effect with `)force`:
+
+```
+> : f ( -- i32 ) 1 ;
+ok: f ( -- i32 )
+( )
+> : h ( -- i32 ) f ;
+ok: h ( -- i32 )
+( )
+> )force : f ( -- i64 ) 1 i64 ;
+.
+<repl:2>:1:3: error[E_FORCE]: forcing `f` breaks h; nothing was changed
+    dependants: h
+    declared: ( -- i32 )
+<repl:2>:1:3: error[E_EFFECT_MISMATCH]: `h` is declared ( -- i32 ) but its body leaves ( i64 )
+    expected: ( i32 )
+    actual:   ( i64 )
+( )
+> )force : f ( -- i64 ) 1 i64 ;
+. : h ( -- i32 ) f i32.wrap_i64 ;
+.
+ok: f ( -- i64 )
+ok: h ( -- i32 )
+forced: f ( -- i32 ) -> ( -- i64 )
+( )
+> h
+( i32 ) 1
 ```
 
 The same REPL runs in the browser; see `web/README.md`.
@@ -437,6 +504,7 @@ Library words:
 | `E_IO`, `E_USAGE` | CLI problems |
 | `E_INTERNAL` | compiler bug |
 | `E_FORGET` | `)forget` refused: the word is still used (lists `dependants`), or is a primitive, prelude or struct-generated word |
+| `E_FORCE` | `)force` refused: a dependant no longer checks (lists `dependants`, then their errors), or the word is a primitive, prelude or struct-generated word |
 
 ## 16. Worked examples
 

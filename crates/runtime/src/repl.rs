@@ -52,6 +52,8 @@ pub struct Outcome {
     pub diagnostics: Vec<Diagnostic>,
     pub defined: Vec<Defined>,
     pub forgotten: Vec<String>,
+    pub forced: Vec<chasm_core::repl::Forced>,
+    pub rechecked: Vec<String>,
     pub trap: Option<RunError>,
     pub tests: Vec<ReplTestResult>,
     pub stack: Vec<StackEntry>,
@@ -312,6 +314,8 @@ impl NativeRepl {
             diagnostics,
             defined: step.defined,
             forgotten: step.forgotten,
+            forced: step.forced,
+            rechecked: step.rechecked,
             trap,
             tests,
             stack: {

@@ -57,6 +57,10 @@ pub mod api {
                 "name": d.name, "effect": d.effect, "declared": d.declared,
             })).collect::<Vec<_>>(),
             "forgotten": step.forgotten,
+            "forced": step.forced.iter().map(|f| json!({
+                "name": f.name, "from": f.from, "to": f.to,
+            })).collect::<Vec<_>>(),
+            "rechecked": step.rechecked,
             "installs": step.installs.iter().map(|i| json!({
                 "export": i.export, "slot": i.slot,
             })).collect::<Vec<_>>(),

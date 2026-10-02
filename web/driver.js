@@ -121,6 +121,8 @@ export class Repl {
       diagnostics,
       defined: s.defined,
       forgotten: s.forgotten,
+      forced: s.forced,
+      rechecked: s.rechecked,
       tests,
       trap,
       stack: await this.readStack(this.stackTypes),

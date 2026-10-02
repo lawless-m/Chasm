@@ -209,3 +209,44 @@ fn forget_keeps_the_stack_and_old_function_values() {
     );
     assert_eq!(last_line(&out), "( i32 ) 9", "the old `sq` still runs");
 }
+
+const FORCE: &str = ": f ( -- i32 ) 1 ;\n: g ( -- ) f drop ;\n: h ( -- i32 ) f ;\n'f\n)force : f ( -- i64 ) 1 i64 ;\n\n)force : f ( -- i64 ) 1 i64 ;\n: h ( -- i32 ) f i32.wrap_i64 ;\n\ncall\n'f call\n";
+
+#[test]
+fn force_refuses_then_commits() {
+    let (ok, out, err) = repl(&[], FORCE);
+    assert!(!ok, "the first force is refused");
+    assert!(
+        err.contains("E_FORCE") && err.contains("dependants: h"),
+        "{err}"
+    );
+    assert!(
+        out.contains("forced: f ( -- i32 ) -> ( -- i64 )\n"),
+        "{out}"
+    );
+    assert!(out.contains("rechecked: g\n"), "{out}");
+    assert!(
+        out.contains("( i32 ) 1\n"),
+        "a function value taken before the force runs the old code: {out}"
+    );
+    assert_eq!(last_line(&out), "( i32 i64 ) 1 1 i64");
+}
+
+#[test]
+fn force_json() {
+    let (_, out, _) = repl(&["--json"], FORCE);
+    let reports: Vec<serde_json::Value> = out
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let forced = reports
+        .iter()
+        .find(|r| {
+            r["results"]["forced"]
+                .as_array()
+                .is_some_and(|a| !a.is_empty())
+        })
+        .expect("a report with a forced word");
+    assert_eq!(forced["results"]["forced"][0]["to"], "( -- i64 )");
+    assert_eq!(forced["results"]["rechecked"], serde_json::json!(["g"]));
+}

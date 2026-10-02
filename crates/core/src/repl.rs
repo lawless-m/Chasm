@@ -18,7 +18,7 @@ use crate::program::{
 };
 use crate::types::{names, width_all, Ty};
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Install a step module's export `export` in the shared table at `slot`.
 #[derive(Debug, Clone)]
@@ -94,6 +94,28 @@ pub struct Step {
     pub refs_size: u32,
     /// Words a `)forget` command removed.
     pub forgotten: Vec<String>,
+    /// Words a `)force` command gave a new effect.
+    pub forced: Vec<Forced>,
+    /// Dependants a `)force` command re-checked from their stored source, in
+    /// the `dependants` spelling (`quad`, `test one`), sorted.
+    pub rechecked: Vec<String>,
+}
+
+/// The session state a `)force` restores when it is refused.
+type Snapshot = (
+    Ctx,
+    Program,
+    HashSet<usize>,
+    HashMap<WordId, Item>,
+    HashMap<usize, Item>,
+);
+
+/// A word whose effect `)force` changed, effects as written.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Forced {
+    pub name: String,
+    pub from: String,
+    pub to: String,
 }
 
 impl Step {
@@ -111,6 +133,10 @@ pub struct Session {
     steps: u32,
     /// Indices of tests whose word was forgotten; they never run again.
     forgotten_tests: HashSet<usize>,
+    /// The source item of each user word's current definition.
+    sources: HashMap<WordId, Item>,
+    /// The source item of each test, by test index.
+    test_items: HashMap<usize, Item>,
 }
 
 impl Session {
@@ -145,6 +171,8 @@ impl Session {
             shared_memory,
             steps: 0,
             forgotten_tests: HashSet::new(),
+            sources: HashMap::new(),
+            test_items: HashMap::new(),
         };
         let mut built = Vec::new();
         if prelude {
@@ -190,7 +218,16 @@ impl Session {
                         item,
                         Item::Def { .. } | Item::Declare { .. } | Item::Struct { .. }
                     );
-                    for id in process_item(&mut self.ctx, item, Origin::User, &mut self.program) {
+                    let source = item.clone();
+                    let tests = self.program.tests.len();
+                    let ids = process_item(&mut self.ctx, item, Origin::User, &mut self.program);
+                    if let (Item::Def { .. }, Some(&id)) = (&source, ids.first()) {
+                        self.sources.insert(id, source.clone());
+                    }
+                    if matches!(source, Item::Test { .. }) && self.program.tests.len() > tests {
+                        self.test_items.insert(tests, source);
+                    }
+                    for id in ids {
                         built.push(id);
                         if named {
                             let w = &self.ctx.words[id];
@@ -254,6 +291,11 @@ impl Session {
             column: 1,
             token: format!("){}", text.trim()),
         };
+        if let Some(rest) = text.strip_prefix("force") {
+            if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+                return self.force(rest, heap_ptr);
+            }
+        }
         let mut forgotten = Vec::new();
         match text.split_whitespace().collect::<Vec<_>>().as_slice() {
             ["forget", name] => match self.forget(name, &loc) {
@@ -263,7 +305,7 @@ impl Session {
             _ => self.program.diagnostics.push(Diagnostic::error(
                 codes::E_SYNTAX,
                 format!(
-                    "unknown REPL command `){}`; the command is `)forget word`",
+                    "unknown REPL command `){}`; the commands are `)forget word` and `)force` definitions",
                     text.trim()
                 ),
                 loc,
@@ -276,16 +318,237 @@ impl Session {
         step
     }
 
-    /// Remove a user word and its tests, freeing the name. Refused while any
-    /// word or another word's test uses it. Its table slot is never reused,
-    /// so a function value of it still on the stack keeps calling its code.
-    fn forget(&mut self, name: &str, loc: &Location) -> Result<(), Diagnostic> {
-        let refuse =
-            |msg: String| Diagnostic::error(codes::E_FORGET, msg, loc.clone()).with_word(name);
+    /// `)force`: change words' effects deliberately. The chunk's definitions
+    /// and every dependant of a changed word are checked together; if any
+    /// fails, nothing changes and `E_FORCE` lists what broke.
+    fn force(&mut self, text: &str, heap_ptr: u32) -> Step {
+        self.steps += 1;
+        let file = format!("<repl:{}>", self.steps);
+        let before = self.ctx.words.len();
+        let tests_before = self.program.tests.len();
+        let parsed = lex(&file, text).and_then(|t| parse(&file, &t));
+        let outcome = match parsed {
+            Err(d) => Err(vec![d]),
+            Ok(items) => self.force_items(items),
+        };
+        match outcome {
+            Ok((built, defined, forced, rechecked)) => {
+                let mut step = self.finish(heap_ptr, before, tests_before, built, defined, None);
+                step.forced = forced;
+                step.rechecked = rechecked;
+                step
+            }
+            Err(diagnostics) => {
+                self.program.diagnostics.extend(diagnostics);
+                self.finish(heap_ptr, before, tests_before, Vec::new(), Vec::new(), None)
+            }
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn force_items(
+        &mut self,
+        items: Vec<Item>,
+    ) -> Result<(Vec<WordId>, Vec<Defined>, Vec<Forced>, Vec<String>), Vec<Diagnostic>> {
+        // Refusals, before anything changes.
+        let mut changed: Vec<(String, WordId)> = Vec::new();
+        let mut in_chunk: HashSet<WordId> = HashSet::new();
+        for item in &items {
+            match item {
+                Item::Def {
+                    name, effect, loc, ..
+                } => {
+                    let id = self
+                        .changeable(name, loc, codes::E_FORCE, "forced")
+                        .map_err(|d| vec![d])?;
+                    in_chunk.insert(id);
+                    if effect
+                        .as_ref()
+                        .is_some_and(|e| *e != self.ctx.words[id].effect)
+                        && !changed.iter().any(|(n, _)| n == name)
+                    {
+                        changed.push((name.clone(), id));
+                    }
+                }
+                Item::Test { .. } => {}
+                Item::Declare { loc, .. } | Item::Struct { loc, .. } => {
+                    return Err(vec![Diagnostic::error(
+                        codes::E_SYNTAX,
+                        "`)force` takes definitions and tests; `declare` and `struct` are not allowed",
+                        loc.clone(),
+                    )]);
+                }
+            }
+        }
+        // Dependants of the changed words, on the graph before the change.
+        let mut affected_words: Vec<WordId> = Vec::new();
+        let mut affected_tests: Vec<usize> = Vec::new();
+        for (name, id) in &changed {
+            let (words, tests) = self.dependant_ids(*id, name);
+            affected_words.extend(words.into_iter().filter(|w| !in_chunk.contains(w)));
+            affected_tests.extend(tests);
+        }
+        affected_words.sort();
+        affected_words.dedup();
+        affected_tests.sort();
+        affected_tests.dedup();
+        let old_effects: Vec<String> = changed
+            .iter()
+            .map(|(_, id)| self.ctx.words[*id].effect.to_string())
+            .collect();
+
+        let snapshot = (
+            self.ctx.clone(),
+            self.program.clone(),
+            self.forgotten_tests.clone(),
+            self.sources.clone(),
+            self.test_items.clone(),
+        );
+        let errors = |p: &Program| p.diagnostics.iter().filter(|d| d.is_error()).count();
+
+        register_names(&mut self.ctx, &items);
+        for (name, id) in &changed {
+            self.ctx.by_name.remove(name);
+            self.retire(*id, name, "forced");
+        }
+        let mut built = Vec::new();
+        let mut defined = Vec::new();
+        for item in items {
+            let source = item.clone();
+            let tests = self.program.tests.len();
+            let ids = process_item(&mut self.ctx, item, Origin::User, &mut self.program);
+            if let (Item::Def { .. }, Some(&id)) = (&source, ids.first()) {
+                self.sources.insert(id, source.clone());
+            }
+            if matches!(source, Item::Test { .. }) && self.program.tests.len() > tests {
+                self.test_items.insert(tests, source.clone());
+            }
+            for id in ids {
+                built.push(id);
+                if matches!(source, Item::Def { .. }) {
+                    let w = &self.ctx.words[id];
+                    defined.push(Defined {
+                        name: w.name.clone(),
+                        effect: w.effect.to_string(),
+                        declared: w.body.is_none(),
+                    });
+                }
+            }
+        }
+        let mut broken = Vec::new();
+        let mut rechecked = Vec::new();
+        for id in affected_words {
+            let name = self.ctx.words[id].name.clone();
+            let Some(source) = self.sources.get(&id).cloned() else {
+                return Err(self.internal(snapshot, &name));
+            };
+            let errs = errors(&self.program);
+            process_item(&mut self.ctx, source, Origin::User, &mut self.program);
+            if errors(&self.program) > errs {
+                broken.push(name.clone());
+            }
+            built.push(id);
+            rechecked.push(name);
+        }
+        for index in affected_tests {
+            let label = format!("test {}", self.program.tests[index].word);
+            let Some(source) = self.test_items.get(&index).cloned() else {
+                return Err(self.internal(snapshot, &label));
+            };
+            self.forgotten_tests.insert(index);
+            let errs = errors(&self.program);
+            let tests = self.program.tests.len();
+            process_item(
+                &mut self.ctx,
+                source.clone(),
+                Origin::User,
+                &mut self.program,
+            );
+            if self.program.tests.len() > tests {
+                self.test_items.insert(tests, source);
+            }
+            if errors(&self.program) > errs {
+                broken.push(label.clone());
+            }
+            rechecked.push(label);
+        }
+
+        if errors(&self.program) > 0 {
+            let diagnostics = std::mem::take(&mut self.program.diagnostics);
+            self.restore(snapshot);
+            broken.sort();
+            broken.dedup();
+            let (name, _) = &changed.first().cloned().unwrap_or_default();
+            let what = if name.is_empty() {
+                "this `)force`".to_string()
+            } else {
+                format!("`{name}`")
+            };
+            let message = if broken.is_empty() {
+                format!("{what} does not check; nothing was changed")
+            } else {
+                format!(
+                    "forcing {what} breaks {}; nothing was changed",
+                    broken.join(", ")
+                )
+            };
+            let loc = diagnostics
+                .first()
+                .map(|d| d.location.clone())
+                .unwrap_or_default();
+            let mut d = Diagnostic::error(codes::E_FORCE, message, loc);
+            if !name.is_empty() {
+                d = d.with_word(name);
+                d.declared_effect = old_effects.first().cloned();
+            }
+            d.dependants = Some(broken);
+            return Err(std::iter::once(d).chain(diagnostics).collect());
+        }
+        let forced = changed
+            .iter()
+            .zip(old_effects)
+            .map(|((name, _), from)| Forced {
+                name: name.clone(),
+                from,
+                to: self.ctx.words[self.ctx.by_name[name]].effect.to_string(),
+            })
+            .collect();
+        rechecked.sort();
+        rechecked.dedup();
+        Ok((built, defined, forced, rechecked))
+    }
+
+    fn restore(&mut self, (ctx, program, forgotten, sources, tests): Snapshot) {
+        self.ctx = ctx;
+        self.program = program;
+        self.forgotten_tests = forgotten;
+        self.sources = sources;
+        self.test_items = tests;
+    }
+
+    fn internal(&mut self, snapshot: Snapshot, what: &str) -> Vec<Diagnostic> {
+        self.restore(snapshot);
+        vec![Diagnostic::error(
+            codes::E_INTERNAL,
+            format!("no stored source for {what} (this is a compiler bug); nothing was changed"),
+            Location::default(),
+        )]
+    }
+
+    /// The id of a user word that may be forgotten or forced. Primitives,
+    /// prelude words and struct-generated words are refused with `code`.
+    fn changeable(
+        &self,
+        name: &str,
+        loc: &Location,
+        code: &str,
+        verb: &str,
+    ) -> Result<WordId, Diagnostic> {
+        let refuse = |msg: String| Diagnostic::error(code, msg, loc.clone()).with_word(name);
         let Some(&id) = self.ctx.by_name.get(name) else {
             if crate::prims::is_builtin(name) {
                 return Err(refuse(format!(
-                    "`{name}` is a primitive and cannot be forgotten"
+                    "`{name}` is a primitive and cannot be {verb}"
                 )));
             }
             return Err(Diagnostic::error(
@@ -299,7 +562,7 @@ impl Session {
         };
         if self.ctx.words[id].origin == Origin::Library {
             return Err(refuse(format!(
-                "`{name}` is a prelude word and cannot be forgotten"
+                "`{name}` is a prelude word and cannot be {verb}"
             )));
         }
         if let Some(sd) = self.ctx.structs.iter().find(|sd| {
@@ -308,64 +571,95 @@ impl Session {
                 .any(|(w, _, _)| w == name)
         }) {
             return Err(refuse(format!(
-                "`{name}` is generated by struct `{}` and cannot be forgotten on its own",
+                "`{name}` is generated by struct `{}` and cannot be {verb} on its own",
                 sd.name
             )));
         }
+        Ok(id)
+    }
+
+    /// Remove a user word and its tests, freeing the name. Refused while any
+    /// word or another word's test uses it. Its table slot is never reused,
+    /// so a function value of it still on the stack keeps calling its code.
+    fn forget(&mut self, name: &str, loc: &Location) -> Result<(), Diagnostic> {
+        let id = self.changeable(name, loc, codes::E_FORGET, "forgotten")?;
         let dependants = self.dependants(id, name);
         if !dependants.is_empty() {
-            let mut d = refuse(format!(
-                "`{name}` is still used by {}; forget those first",
-                dependants.join(", ")
-            ));
+            let mut d = Diagnostic::error(
+                codes::E_FORGET,
+                format!(
+                    "`{name}` is still used by {}; forget those first",
+                    dependants.join(", ")
+                ),
+                loc.clone(),
+            )
+            .with_word(name);
             d.dependants = Some(dependants);
             return Err(d);
         }
         self.ctx.by_name.remove(name);
         self.ctx.all_names.remove(name);
+        self.retire(id, name, "forgotten");
+        Ok(())
+    }
+
+    /// Detach word `id` from its name: it keeps its slot and code, loses its
+    /// edges, and its tests never run again.
+    fn retire(&mut self, id: WordId, name: &str, how: &str) {
         let w = &mut self.ctx.words[id];
-        w.name = format!("[forgotten {name}]");
+        w.name = format!("[{how} {name}]");
         w.callees.clear();
         for t in &self.program.tests {
             if t.word == name {
                 self.forgotten_tests.insert(t.index);
             }
         }
-        Ok(())
     }
 
     /// The named words, and the tests of other words, that use word `id`
     /// directly or through quotations. REPL lines do not count.
     fn dependants(&self, id: WordId, name: &str) -> Vec<String> {
-        let test_of: std::collections::HashMap<WordId, &str> = self
+        let (words, tests) = self.dependant_ids(id, name);
+        let mut out: Vec<String> = words
+            .iter()
+            .map(|&w| self.ctx.words[w].name.clone())
+            .chain(
+                tests
+                    .iter()
+                    .map(|&t| format!("test {}", self.program.tests[t].word)),
+            )
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// `dependants` as ids: named words, and indices of other words' tests.
+    fn dependant_ids(&self, id: WordId, name: &str) -> (Vec<WordId>, Vec<usize>) {
+        let test_of: HashMap<WordId, usize> = self
             .program
             .tests
             .iter()
-            .filter(|t| !self.forgotten_tests.contains(&t.index))
-            .map(|t| (self.program.test_words[t.index], t.word.as_str()))
+            .filter(|t| !self.forgotten_tests.contains(&t.index) && t.word != name)
+            .map(|t| (self.program.test_words[t.index], t.index))
             .collect();
         let mut seen = HashSet::from([id]);
         let mut todo = vec![id];
-        let mut out = Vec::new();
+        let (mut words, mut tests) = (Vec::new(), Vec::new());
         while let Some(target) = todo.pop() {
             for (caller, w) in self.ctx.words.iter().enumerate() {
                 if !w.callees.iter().any(|&(c, _)| c == target) || !seen.insert(caller) {
                     continue;
                 }
                 match w.kind {
-                    WordKind::Named => out.push(w.name.clone()),
+                    WordKind::Named => words.push(caller),
                     WordKind::Quote => todo.push(caller),
-                    WordKind::Test => match test_of.get(&caller) {
-                        Some(&word) if word != name => out.push(format!("test {word}")),
-                        _ => {}
-                    },
+                    WordKind::Test => tests.extend(test_of.get(&caller)),
                     WordKind::Line => {}
                 }
             }
         }
-        out.sort();
-        out.dedup();
-        out
+        (words, tests)
     }
 
     /// Build the step module over the ids added since `before` plus `built`.
@@ -423,6 +717,8 @@ impl Session {
             tests: if ok { tests } else { Vec::new() },
             refs_size,
             forgotten: Vec::new(),
+            forced: Vec::new(),
+            rechecked: Vec::new(),
         }
     }
 
@@ -457,9 +753,19 @@ impl Session {
 }
 
 /// Whether a chunk is incomplete and the REPL should read another line:
-/// a `:` definition or a `[` quotation is still open. A lex error is left
-/// for the step to report.
+/// a `:` definition or a `[` quotation is still open, or a `)force` chunk
+/// has not yet ended with an empty line. `text` holds each line with its
+/// newline. A lex error is left for the step to report.
 pub fn needs_more(text: &str) -> bool {
+    let command = text.trim_start();
+    if command.starts_with(")force") {
+        let body = text.strip_suffix('\n').unwrap_or(text);
+        let last = body.rsplit('\n').next().unwrap_or("");
+        return !(body.contains('\n') && last.trim().is_empty());
+    }
+    if command.starts_with(')') {
+        return false;
+    }
     let Ok(toks) = lex("<repl>", text) else {
         return false;
     };

@@ -1,4 +1,5 @@
 use chasm_core::layout::LITERALS_BASE;
+use chasm_core::repl::Forced;
 use chasm_core::types::Ty;
 use chasm_core::{validate, Session, Step, Value};
 
@@ -215,4 +216,101 @@ fn forget_refuses_primitives_prelude_and_struct_words() {
     }
     assert_eq!(code(&mut s, ")forget nothing"), "E_UNDEFINED");
     assert_eq!(code(&mut s, ")frob"), "E_SYNTAX");
+}
+
+#[test]
+fn force_chunk_continues_until_a_blank_line() {
+    use chasm_core::repl::needs_more;
+    assert!(needs_more(")force : f ( -- i32 ) 1 ;\n"));
+    assert!(!needs_more(
+        ")force : f ( -- i32 ) 1 ;\n: g ( -- ) f drop ;\n\n"
+    ));
+    assert!(!needs_more(")forget f\n"));
+}
+
+fn force_setup() -> Session {
+    let mut s = session();
+    ok(&mut s, ": f ( -- i32 ) 1 ;");
+    ok(&mut s, ": g ( -- ) f drop ;");
+    ok(&mut s, ": h ( -- i32 ) f ;");
+    ok(&mut s, "test h : h -> 1");
+    s
+}
+
+#[test]
+fn force_refuses_and_changes_nothing() {
+    let mut s = force_setup();
+    let step = s.step(")force : f ( -- i64 ) 1 i64 ;", 0x20_0000);
+    assert_eq!(step.diagnostics[0].code, "E_FORCE");
+    assert_eq!(step.diagnostics[0].dependants, Some(vec!["h".to_string()]));
+    assert!(step.diagnostics.len() > 1, "the breaking error follows");
+    assert!(step.module.is_none());
+    assert!(step.forced.is_empty());
+    let line = ok(&mut s, "f").line.unwrap();
+    assert_eq!(line.stack_after, vec![Ty::I32]);
+}
+
+#[test]
+fn force_commits_atomically_with_a_fresh_slot() {
+    let mut s = force_setup();
+    let old_f = s.word_slot("f").unwrap();
+    let old_g = s.word_slot("g").unwrap();
+    let old_h = s.word_slot("h").unwrap();
+    let step = ok(
+        &mut s,
+        ")force : f ( -- i64 ) 1 i64 ;\n: h ( -- i32 ) f i32.wrap_i64 ;\n",
+    );
+    assert_eq!(
+        step.forced,
+        vec![Forced {
+            name: "f".into(),
+            from: "( -- i32 )".into(),
+            to: "( -- i64 )".into()
+        }]
+    );
+    assert_eq!(step.rechecked, vec!["g".to_string()]);
+    let defined: Vec<&str> = step.defined.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(defined, ["f", "h"]);
+    let new_f = s.word_slot("f").unwrap();
+    assert!(new_f > old_f);
+    let slots: Vec<u32> = step.installs.iter().map(|i| i.slot).collect();
+    assert!(
+        slots.contains(&new_f) && !slots.contains(&old_f),
+        "{slots:?}"
+    );
+    assert!(
+        slots.contains(&old_g) && slots.contains(&old_h),
+        "{slots:?}"
+    );
+    assert_eq!(s.word_slot("g"), Some(old_g));
+    assert!(step.tests.iter().any(|t| t.word == "h"));
+    let line = ok(&mut s, "f").line.unwrap();
+    assert_eq!(line.stack_after, vec![Ty::I64]);
+}
+
+#[test]
+fn force_drops_the_words_own_tests() {
+    let mut s = session();
+    ok(&mut s, ": f ( -- i32 ) 1 ;");
+    ok(&mut s, "test f : f -> 1");
+    let step = ok(&mut s, ")force : f ( -- i64 ) 1 i64 ;\n");
+    assert!(step.tests.is_empty(), "the old contract's test is dropped");
+    let step = ok(&mut s, ")force : f ( -- i32 ) 2 ;\ntest f : f -> 2\n");
+    assert_eq!(step.tests.len(), 1);
+    assert_eq!(step.tests[0].word, "f");
+}
+
+#[test]
+fn force_refusals() {
+    let mut s = session();
+    assert_eq!(code(&mut s, ")force : dup ( -- ) ;"), "E_FORCE");
+    assert_eq!(code(&mut s, ")force : println ( -- ) ;"), "E_FORCE");
+    assert_eq!(code(&mut s, ")force : nothing ( -- ) ;"), "E_UNDEFINED");
+    ok(&mut s, ": q ( -- ) ;");
+    assert_eq!(code(&mut s, ")force declare q ( -- )"), "E_SYNTAX");
+    ok(&mut s, "struct point  x: i32  y: f64");
+    assert_eq!(
+        code(&mut s, ")force : point.x ( point -- i32 ) ;"),
+        "E_FORCE"
+    );
 }

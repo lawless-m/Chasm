@@ -70,6 +70,7 @@ impl Word {
 }
 
 /// Shared compilation state: the word database, type interner, literals.
+#[derive(Clone)]
 pub struct Ctx {
     pub words: Vec<Word>,
     pub by_name: HashMap<String, WordId>,

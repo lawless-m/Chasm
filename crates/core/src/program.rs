@@ -326,7 +326,7 @@ pub fn compile(sources: &[Source], opts: &Options) -> Compilation {
 }
 
 /// Program state the per-item rules accumulate into.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct Program {
     pub diagnostics: Vec<Diagnostic>,
     pub tests: Vec<TestInfo>,

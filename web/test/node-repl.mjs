@@ -67,6 +67,16 @@ try {
   assert.deepEqual(r.forgotten, ["twice"]);
   assert.equal(r.stack.length, 3);
 
+  r = await repl.step(": tick ( -- [ i32 -- i32 ] ) 'sq ;");
+  assert.ok(r.ok, JSON.stringify(r.diagnostics));
+  r = await repl.step(")force : sq ( i32 -- i64 ) i64 ;\n: tick ( -- [ i32 -- i32 ] ) 'sq ;\n");
+  assert.equal(r.diagnostics[0].code, "E_FORCE");
+  r = await repl.step(")force : sq ( i32 -- i64 ) i64 ;\n: tick ( -- [ i32 -- i64 ] ) 'sq ;\n");
+  assert.ok(r.ok, JSON.stringify(r.diagnostics));
+  assert.equal(r.forced[0].to, "( i32 -- i64 )");
+  r = await repl.step("drop drop drop 3 sq");
+  assert.deepEqual(r.stack, [{ type: "i64", value: "3 i64" }]);
+
   console.log("node-repl.mjs ok");
   await worker.terminate();
 } catch (e) {

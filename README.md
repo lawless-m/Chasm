@@ -28,11 +28,13 @@ each, redefine words live.
 - `examples/`: worked examples, each with tests (`docs/examples.md`: the corpus and benchmark plan)
 - `web/README.md`: the REPL in the browser
 - `docs/performance.md`: run speed against Rust and JavaScript (`python3 bench/run.py`)
+- `docs/editors.md`: `chasm lsp` in Neovim, Helix and VS Code
 
 Status: milestones M0 (skeleton), M1 (declared effects to wasm, CLI, native
 host), M2 (interactive REPL, native and in the browser), M3 (dependency-graph
 tooling: `deps`, `used-by`, `dead`, `)forget`), M4 (structs as WasmGC
 structs) and M5 (whole-program export: dead words left out, unresolved words
-refused, Binaryen) are implemented. M6 (polish and tooling) is next.
+refused, Binaryen) are implemented. M6 (polish and tooling) is in part: JSON
+output everywhere, the `chasm lsp` language server, and `)force` in the REPL.
 
 Licence: MIT.

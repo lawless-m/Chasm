@@ -13,5 +13,7 @@ path = "src/main.rs"
 chasm-core.workspace = true
 chasm-runtime.workspace = true
 clap.workspace = true
+lsp-server = "0.10.0"
+lsp-types = "0.97.0"
 serde.workspace = true
 serde_json.workspace = true

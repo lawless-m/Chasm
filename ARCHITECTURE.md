@@ -1,6 +1,6 @@
 # Chasm: Architecture and Milestones
 
-Status: draft v0.14 (M0 to M5 implemented; decisions in sections 13 to 17). **Chasm** (Chuck-Wasm, after Chuck Moore) is a typed, concatenative language that compiles to WebAssembly, with an interactive REPL, written in Rust. Source files use the `.chasm` extension; the CLI binary is `chasm`.
+Status: draft v0.15 (M0 to M5 implemented, and M6 in part: JSON everywhere, `chasm lsp`, `)force`; decisions in sections 13 to 18). **Chasm** (Chuck-Wasm, after Chuck Moore) is a typed, concatenative language that compiles to WebAssembly, with an interactive REPL, written in Rust. Source files use the `.chasm` extension; the CLI binary is `chasm`.
 
 ## 1. Goals
 
@@ -28,7 +28,7 @@ Licence: MIT.
 |---|---|---|
 | `core` | Lexer, AST, effect checker, dependency graph, wasm emitter, word database | **No I/O.** Builds to native and wasm32 unchanged. |
 | `runtime` | Host-side support: data stack, function table, imports (print, memory, time) | Thin; separate native and browser implementations behind one trait. |
-| `cli` | `check`, `build`, `run`, `deps`, `used-by`, `unresolved`, `test`, `repl` | Text and JSON output on every command. |
+| `cli` | `check`, `build`, `run`, `deps`, `used-by`, `unresolved`, `dead`, `words`, `test`, `repl`, `lsp` | Text and JSON output on every command; `lsp` speaks JSON-RPC. |
 | `web` | `web/`: the browser REPL, over `crates/web` (`chasm-web`: the core's REPL session behind a C ABI, compiled to wasm32) | Static files only, no server. |
 | `docs` | Language reference, worked examples | Treated as part of the product (see section 9). |
 
@@ -168,7 +168,7 @@ One rule governs all three: **a word's declared effect is its interface and can 
 - **Forward references require a declared stub.** No bare undeclared names in v1.
 - **Export refuses unresolved words that are reachable** from an exported entry point, and lists them all. Unreachable stubs are dropped with the rest of the dead words.
 
-Later (not v1): an explicit force command that cascades an effect change through dependants, using the dependency graph for rebuild order. Policy for broken dependants (error, mark broken, keep old version) to be decided then.
+The REPL command `)force` changes an effect deliberately, re-checking every dependant and refusing the whole change if any breaks (section 18).
 
 ## 7. Dependency graph
 
@@ -234,13 +234,12 @@ M1 to M3 can overlap; the graph and stub data structures are part of M1 so that 
 
 ## 11. Open questions
 
-Settled questions live in `LANGUAGE.md` (primitive set, numeric types, strings, effect syntax, tests; M1 decisions in its section 12). Still open:
+Settled questions live in `LANGUAGE.md` (primitive set, numeric types, strings, effect syntax, tests; M1 decisions in its section 12); the policy for dependants broken by a forced effect change is settled in section 18. Still open:
 
-1. Error-recovery policy for broken dependants when the cascade (force-redefine) mode is added in M6.
-2. Load/store alignment and offset immediates (`LANGUAGE.md` open item 1): v1 is natural alignment, offset 0.
-3. Module or namespace structure for libraries (`LANGUAGE.md` open item 2); a flat dictionary until it hurts.
-4. `/net/http` semantics (methods, headers) when it is built in M6.
-5. Integer overflow. The primitives are wasm's (`LANGUAGE.md` section 2), so integer arithmetic wraps silently: `21 fact` is a well-typed wrong answer (`examples/factorial.chasm`). Chasm's safety is memory and type safety, not arithmetic safety, and the effect checker tracks types, not ranges. If checked arithmetic is wanted, the candidate is library words in the prelude (e.g. a trapping `i64.mul?`) beside the unchanged primitives, keeping one primitive to one instruction. Open: whether to add them, their names, and whether examples should prefer them.
+1. Load/store alignment and offset immediates (`LANGUAGE.md` open item 1): v1 is natural alignment, offset 0.
+2. Module or namespace structure for libraries (`LANGUAGE.md` open item 2); a flat dictionary until it hurts.
+3. `/net/http` semantics (methods, headers) when it is built in M6.
+4. Integer overflow. The primitives are wasm's (`LANGUAGE.md` section 2), so integer arithmetic wraps silently: `21 fact` is a well-typed wrong answer (`examples/factorial.chasm`). Chasm's safety is memory and type safety, not arithmetic safety, and the effect checker tracks types, not ranges. If checked arithmetic is wanted, the candidate is library words in the prelude (e.g. a trapping `i64.mul?`) beside the unchanged primitives, keeping one primitive to one instruction. Open: whether to add them, their names, and whether examples should prefer them.
 
 Row variables in effects are an M7 matter, not a v1 question; the type representation leaves room for them (section 4).
 
@@ -324,3 +323,12 @@ Heavy native batch work (large test corpora, benchmarks, Binaryen runs over big 
 3. **Binaryen is an external `wasm-opt`**, version 121 or later (120 cannot read blocks with inputs, which the emitter uses); CI pins release 133 by checksum. `build` runs `wasm-opt -O3 -g` with exactly the features Chasm emits, validates the result, and falls back to the unoptimised module with a note if the tool is missing, fails, or produces an invalid module. With dead words already gone it saves about a quarter more (sieve: 1992 to 1517 bytes), by inlining small words and tidying locals.
 4. **`run` does not use `wasm-opt` by default** (`--opt` turns it on). Measured under wasmtime (median of five, ms, sieve / mandelbrot / n-queens / quicksort): none 92.9 / 113.9 / 110.5 / 92.7; `-O3` 108.9 / 126.8 / 108.2 / 82.8; `-O1`, `-O2`, `-O4` and `-Os` are no better overall. Cranelift optimises at load time, and Binaryen's passes are tuned for V8.
 5. **No inliner of our own.** Binaryen's inliner alone (`--inlining-optimizing`) changed nothing measurable under wasmtime (94.4 / 114.5 / 110.1 / 93.7), so a Chasm inliner would cost effort for no speed. Revisit if a browser measurement shows a gain.
+
+## 18. Decisions taken in M6
+
+1. **`)force` refuses and lists.** The chunk's definitions and every dependant of a changed word (named words, quotations in them, other words' tests; REPL lines do not count) are checked in a transaction on the session (`Session::force`). Any error restores the snapshot and reports `E_FORCE` with the broken dependants, followed by their errors. Success commits everything, installs the rebuilt words at their slots and re-runs their tests. Only the words that call a changed word directly, or through quotations, are re-checked: their own effects are unchanged, so their callers are unaffected.
+2. **A forced word takes a fresh id and table slot.** The old slot keeps the old code and type, so a function value already on the memory data stack stays type-safe, as with `)forget`. Dependants keep their slots, because their effects are unchanged. The forced word's own tests are dropped; they tested the old effect.
+3. **The session keeps source.** `Session` keeps each user word's and test's source item (`sources`, `test_items`, the latter keyed by test index) to re-check from, and `Ctx` and `Program` are `Clone` for the snapshot.
+4. **A `)force` chunk continues until an empty line** (`needs_more`); the browser asks with the pending newline included, as the native REPL does, so one empty line ends it in both.
+5. **Editor integration is `chasm lsp`**, a Language Server Protocol server over stdio in the CLI crate (`lsp-server`, `lsp-types`): diagnostics with their Chasm codes on open, change and save, hover with effects, and go-to-definition, all for the single open document with the prelude. No editor-specific extension; `docs/editors.md` configures Neovim, Helix and VS Code's generic client. The core stays free of I/O.
+6. **JSON everywhere.** Every command prints the same `{schema, ok, command, diagnostics, results}` report, including clap usage errors under `--json` (`E_USAGE`), pinned by the test `json_report_shape_for_every_command`; `docs/reference.md` section 1 lists each command's `results`. `lsp` is the exception: it speaks JSON-RPC.

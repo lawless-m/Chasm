@@ -26,6 +26,8 @@ function render(r) {
   }
   for (const d of r.defined) print(`ok: ${d.name} ${d.effect}${d.declared ? " (declared)" : ""}\n`);
   for (const w of r.forgotten) print(`forgot: ${w}\n`);
+  for (const f of r.forced) print(`forced: ${f.name} ${f.from} -> ${f.to}\n`);
+  if (r.rechecked.length) print(`rechecked: ${r.rechecked.join(", ")}\n`);
   for (const t of r.tests) {
     if (t.status === "pass") {
       print(`PASS     ${t.word}\n`);
@@ -77,7 +79,7 @@ async function main() {
   input.addEventListener("keydown", async (e) => {
     if (e.key !== "Enter" || e.shiftKey || busy) return;
     const text = input.value;
-    if (compiler.needsMore(text)) {
+    if (compiler.needsMore(text + "\n")) {
       prompt.textContent = ".";
       return; // let the newline go in
     }

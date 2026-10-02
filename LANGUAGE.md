@@ -1,6 +1,6 @@
 # Chasm: Language Specification
 
-Status: draft v0.11 (M1 to M5 decisions recorded; see sections 12 to 16). Chasm source files use the `.chasm` extension. Companion to `ARCHITECTURE.md`. Sections marked **TBD** are not yet decided.
+Status: draft v0.12 (M1 to M6 decisions recorded; see sections 12 to 17). Chasm source files use the `.chasm` extension. Companion to `ARCHITECTURE.md`. Sections marked **TBD** are not yet decided.
 
 ## 1. Types
 
@@ -248,7 +248,7 @@ Recorded here so the spec matches the compiler. `docs/reference.md` is the user-
 ## 14. Decisions taken in M3
 
 1. **Literal types and conversion words.** No literal has a type suffix. An integer is an `i32`; an integer token followed directly by the word `i64` is a single `i64` literal (`42 i64`, also in a test's expected values), written as the value it means, so `4294967295 i64` is 4294967295. Applied to any other `i32`, `i64` is a prelude word `( i32 -- i64 )` that sign-extends. A type name is a conversion word only for an exact widening from one source type; every lossy conversion (`i32.wrap_i64`, `i32.trunc_f64_s`, `f32.demote_f64`, ...) keeps its wasm name, so the reader sees how the value is cut. Values print the same way: `120 i64`.
-2. **What goes in the prelude.** A word joins the prelude when the example corpus has written it by hand more than once and any program might want it: `f64.fixed ( f64 i32 -- str )`, `array.to-str ( array i32 -- str )` and `str.from-byte ( i32 -- str )` came in this way. Prelude names are `type.verb`, because the dictionary is flat: a program may redefine a prelude word only with the same effect. Code that only some programs want (test helpers, for instance) is a question for library structure (`ARCHITECTURE.md` open question 3), not the prelude.
+2. **What goes in the prelude.** A word joins the prelude when the example corpus has written it by hand more than once and any program might want it: `f64.fixed ( f64 i32 -- str )`, `array.to-str ( array i32 -- str )` and `str.from-byte ( i32 -- str )` came in this way. Prelude names are `type.verb`, because the dictionary is flat: a program may redefine a prelude word only with the same effect. Code that only some programs want (test helpers, for instance) is a question for library structure (`ARCHITECTURE.md` open question 2), not the prelude.
 3. **No include form.** A program is the files named on the command line, in order, compiled as one dictionary; the shell composes programs (`chasm test lib.chasm prog.chasm`, or `cat` into `/dev/stdin`). The core keeps no I/O and the language no mechanism for it. Files in `examples/` stay self-contained, so the examples gate can check each one alone.
 
 4. **REPL commands are outside the language.** `)forget word` and any later REPL command start with `)`, which no Chasm line can; `forget` is not a keyword, so no file can contain it.
@@ -269,3 +269,8 @@ Recorded here so the spec matches the compiler. `docs/reference.md` is the user-
 ## 16. Decisions taken in M5
 
 1. **A built program has no reachable stubs.** `build` and `run` refuse a declared word without a body that `main` or an `export` word reaches (`E_UNRESOLVED`); `check` and `test` still accept it, so contract-first work goes on as before. Words no root reaches are left out of the module.
+
+## 17. Decisions taken in M6
+
+1. **`)force` is a REPL command outside the language**, like `)forget` (section 14.4); no file can contain it. It takes one or more definitions and optional `test` lines, ending at an empty line, and changes effects deliberately.
+2. **Refuse and list.** If any dependant of a changed word fails to check against the new effect, nothing changes and `E_FORCE` (a new stable code) lists the broken dependants. A forced word's own tests are dropped, so its new contract's tests go in the same chunk.
