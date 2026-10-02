@@ -156,7 +156,7 @@ Append as they happen. Each entry: task, what was missing, workaround used, and 
 
 | Task | Missing | Workaround | Note |
 |---|---|---|---|
-| | | | |
+| Temperature conversion | `f64.to-str` (no float formatting in the library) | `hundredths`: scale by 100, `f64.nearest`, format the `i64` | Small; a candidate for the prelude rather than `FUTURE.md` |
 
 ## Growth
 

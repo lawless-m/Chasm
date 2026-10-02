@@ -1,0 +1,29 @@
+# n! for n in 0 to 20, as i64, recursively and iteratively.
+# Rosetta Code: Factorial. Exercises: recursion with a declared effect,
+# i64, widening an i32 with i64.extend_i32_u.
+
+: fact-rec ( i32 -- i64 )
+  :> n
+  n 2 i32.lt_s [ 1i64 ] [ n 1 i32.sub fact-rec  n i64.extend_i32_u i64.mul ] if ;
+test fact-rec : 0 fact-rec -> 1i64
+test fact-rec : 5 fact-rec -> 120i64
+test fact-rec : 20 fact-rec -> 2432902008176640000i64
+
+: fact-iter ( i32 -- i64 )
+  :> n
+  1i64 :> acc!
+  n [ 1 i32.add i64.extend_i32_u acc i64.mul acc! ] times   # times 1 to n
+  acc ;
+test fact-iter : 0 fact-iter -> 1i64
+test fact-iter : 5 fact-iter -> 120i64
+test fact-iter : 20 fact-iter -> 2432902008176640000i64
+
+# The two agree everywhere in range.
+: agree? ( -- i32 )
+  1 :> ok!
+  21 [ :> i  i fact-rec i fact-iter i64.ne [ 0 ok! ] when ] times
+  ok ;
+test agree? : agree? -> 1
+
+: main ( -- )
+  21 [ :> i  i i32.to-str print "! = " print i fact-iter i64.to-str println ] times ;

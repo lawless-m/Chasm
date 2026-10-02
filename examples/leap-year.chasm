@@ -1,0 +1,24 @@
+# Gregorian leap years: divisible by 4, except centuries, except multiples of 400.
+# Rosetta Code: Leap_year. Exercises: nested if returning a boolean i32.
+
+: leap-year ( i32 -- i32 )
+  :> y
+  y 400 i32.rem_u 0 i32.eq
+  [ 1 ]
+  [ y 100 i32.rem_u 0 i32.eq
+    [ 0 ]
+    [ y 4 i32.rem_u 0 i32.eq ]
+    if
+  ]
+  if ;
+
+test leap-year : 1900 leap-year -> 0
+test leap-year : 2000 leap-year -> 1
+test leap-year : 2004 leap-year -> 1
+test leap-year : 2024 leap-year -> 1
+test leap-year : 2025 leap-year -> 0
+
+: main ( -- )
+  1900 leap-year [ "1900 is leap" ] [ "1900 is not leap" ] if println
+  2000 leap-year [ "2000 is leap" ] [ "2000 is not leap" ] if println
+  2024 leap-year [ "2024 is leap" ] [ "2024 is not leap" ] if println ;

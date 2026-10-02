@@ -1,0 +1,19 @@
+# Sum the decimal digits of a non-negative i32.
+# Rosetta Code: Sum_digits_of_an_integer. Exercises: while, a mutable parameter.
+
+: sum-digits ( i32 -- i32 )
+  :> n!
+  0 :> sum!
+  [ n 0 i32.gt_u ]
+  [ sum n 10 i32.rem_u i32.add sum! n 10 i32.div_u n! ]
+  while
+  sum ;
+
+test sum-digits : 0 sum-digits -> 0
+test sum-digits : 1 sum-digits -> 1
+test sum-digits : 123 sum-digits -> 6
+test sum-digits : 9876 sum-digits -> 30
+
+: main ( -- )
+  123 sum-digits :> s
+  "Sum of digits of 123 is " print s i32.to-str println ;

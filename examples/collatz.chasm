@@ -1,0 +1,43 @@
+# Hailstone sequence length from n (counting n and the final 1), and the
+# start under 100,000 with the longest sequence.
+# Rosetta Code: Hailstone_sequence. Exercises: while, i64, widening, two results.
+
+: collatz-length ( i64 -- i64 )
+  :> n!
+  1i64 :> len!
+  [ n 1i64 i64.ne ]
+  [ n 2i64 i64.rem_u 0i64 i64.eq
+    [ n 2i64 i64.div_u n! ]
+    [ n 3i64 i64.mul 1i64 i64.add n! ]
+    if
+    len 1i64 i64.add len!
+  ]
+  while
+  len ;
+
+test collatz-length : 1i64 collatz-length -> 1i64
+test collatz-length : 2i64 collatz-length -> 2i64
+test collatz-length : 5i64 collatz-length -> 6i64
+test collatz-length : 27i64 collatz-length -> 112i64
+
+# The start below limit with the longest sequence, and that length.
+: longest-collatz ( i32 -- i32 i64 )
+  :> limit
+  0 :> num!
+  0i64 :> max-len!
+  limit 1 i32.sub [ :> i              # 1 to limit - 1
+    i 1 i32.add :> n
+    n i64.extend_i32_u collatz-length :> len
+    len max-len i64.gt_s
+    [ n num! len max-len! ]
+    when
+  ] times
+  num max-len ;
+
+test longest-collatz : 100 longest-collatz -> 97 119i64
+
+: main ( -- )
+  "Collatz length from 27: " print 27i64 collatz-length i64.to-str println
+  100000 longest-collatz :> max-len :> max-num
+  "Longest Collatz under 100,000 starts at " print max-num i32.to-str
+  print " with length " print max-len i64.to-str println ;

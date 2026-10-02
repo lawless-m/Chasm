@@ -1,0 +1,17 @@
+# The n-th Fibonacci number, F(0) = 0, F(1) = 1, iteratively, as i64.
+# Rosetta Code: Fibonacci_sequence. Exercises: mutable locals, times.
+
+: fib ( i32 -- i64 )
+  :> n
+  0i64 :> a!
+  1i64 :> b!
+  n [ drop  a b i64.add :> c  b a!  c b! ] times
+  a ;
+test fib : 0 fib -> 0i64
+test fib : 1 fib -> 1i64
+test fib : 2 fib -> 1i64
+test fib : 10 fib -> 55i64
+test fib : 90 fib -> 2880067194370816120i64   # the largest asked for
+
+: main ( -- )
+  21 [ :> i  "F(" print i i32.to-str print ") = " print i fib i64.to-str println ] times ;

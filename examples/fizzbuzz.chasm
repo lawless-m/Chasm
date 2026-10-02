@@ -1,0 +1,18 @@
+# Print 1 to 100, with Fizz for multiples of 3, Buzz for 5, FizzBuzz for both.
+# Rosetta Code: FizzBuzz. Exercises: i32.rem_u, when, a mutable str local.
+
+: fizzbuzz-line ( i32 -- str )
+  :> n
+  "" :> out!
+  n 3 i32.rem_u 0 i32.eq [ out "Fizz" str.concat out! ] when
+  n 5 i32.rem_u 0 i32.eq [ out "Buzz" str.concat out! ] when
+  out "" str.eq [ n i32.to-str out! ] when
+  out ;
+
+test fizzbuzz-line : 1 fizzbuzz-line -> "1"
+test fizzbuzz-line : 3 fizzbuzz-line -> "Fizz"
+test fizzbuzz-line : 5 fizzbuzz-line -> "Buzz"
+test fizzbuzz-line : 15 fizzbuzz-line -> "FizzBuzz"
+
+: main ( -- )
+  100 [ :> i  i 1 i32.add fizzbuzz-line println ] times ;
