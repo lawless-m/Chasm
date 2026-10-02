@@ -737,8 +737,18 @@ fn render(report: &J) -> (String, String) {
             let stack = r["stack"].as_array().cloned().unwrap_or_default();
             let types: Vec<String> = stack.iter().map(|e| s(&e["type"])).collect();
             let values: Vec<String> = stack.iter().map(|e| s(&e["value"])).collect();
+            let has_struct = types
+                .iter()
+                .zip(&values)
+                .any(|(t, v)| v.starts_with(&format!("{t}{{")));
             if stack.is_empty() {
                 out.push_str("( )\n");
+            } else if has_struct {
+                out.push_str("(\n");
+                for (t, v) in types.iter().zip(&values) {
+                    out.push_str(&format!("{t} {v}\n"));
+                }
+                out.push_str(")\n");
             } else {
                 out.push_str(&format!("( {} ) {}\n", types.join(" "), values.join(" ")));
             }

@@ -57,9 +57,17 @@ Codes are stable; messages may change. See section 15 for the list.
   quotation is open.
 - After each chunk the stack is printed as `( types ) values`, bottom to
   top, or `( )` when empty. Arrays print as `<n elements>`, function
-  values as `#slot`, structs with their fields, `( point ) point{x: 7, y: 2.5}`
+  values as `#slot`, structs with their fields, `point{x: 7, y: 2.5}`
   (nested structs to three levels, then `seg{...}`), and an unset struct
-  as `null`.
+  as `null`. A stack holding a struct prints one entry per line, type then
+  value, between `(` and `)`:
+
+  ```
+  (
+  point point{x: 7, y: 2.5}
+  i32 7
+  )
+  ```
 - A `test` runs at once (`PASS` or `FAIL`), or, for a declared word, as soon
   as the word gets a body. A word's tests run again when it is redefined.
 - Redefining a word with the same effect takes effect for every existing

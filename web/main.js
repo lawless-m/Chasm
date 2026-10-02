@@ -35,7 +35,11 @@ function render(r) {
   }
   if (r.trap) print(r.trap.word ? `trap in \`${r.trap.word}\`: ${r.trap.message}\n` : `trap: ${r.trap.message}\n`, "err");
   const s = r.stack;
-  print(s.length ? `( ${s.map((e) => e.type).join(" ")} ) ${s.map((e) => e.value).join(" ")}\n` : "( )\n", "stack");
+  if (s.some((e) => e.value.startsWith(`${e.type}{`))) {
+    print(`(\n${s.map((e) => `${e.type} ${e.value}\n`).join("")})\n`, "stack");
+  } else {
+    print(s.length ? `( ${s.map((e) => e.type).join(" ")} ) ${s.map((e) => e.value).join(" ")}\n` : "( )\n", "stack");
+  }
 }
 
 async function main() {

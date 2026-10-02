@@ -94,19 +94,29 @@ fn last_line(out: &str) -> &str {
     out.lines().last().unwrap_or("")
 }
 
+/// The last stack echo, which spans several lines when it holds a struct.
+fn last_stack(out: &str) -> String {
+    let lines: Vec<&str> = out.lines().collect();
+    let start = lines
+        .iter()
+        .rposition(|l| *l == "(" || l.starts_with("( "))
+        .unwrap_or(0);
+    lines[start..].join("\n")
+}
+
 #[test]
 fn struct_echo_and_fields() {
     let (ok, out, err) = repl(&[], &format!("{POINT}7 2.5 point.new\n"));
     assert!(ok, "{out}{err}");
     assert!(out.contains("ok: point.new ( i32 f64 -- point )"));
-    assert_eq!(last_line(&out), "( point ) point{x: 7, y: 2.5}");
+    assert_eq!(last_stack(&out), "(\npoint point{x: 7, y: 2.5}\n)");
     let (_, out, _) = repl(&[], &format!("{POINT}7 2.5 point.new\ndup point.x\n"));
-    assert_eq!(last_line(&out), "( point i32 ) point{x: 7, y: 2.5} 7");
+    assert_eq!(last_stack(&out), "(\npoint point{x: 7, y: 2.5}\ni32 7\n)");
     let (_, out, _) = repl(
         &[],
         &format!("{POINT}7 2.5 point.new\ndup point.x\ndrop dup 9 point.x!\n"),
     );
-    assert_eq!(last_line(&out), "( point ) point{x: 9, y: 2.5}");
+    assert_eq!(last_stack(&out), "(\npoint point{x: 9, y: 2.5}\n)");
 }
 
 #[test]
@@ -120,8 +130,8 @@ fn struct_arrays_in_the_repl() {
         ),
     );
     assert_eq!(
-        last_line(&out),
-        "( array point point ) <2 elements> point{x: 1, y: 1.0}"
+        last_stack(&out),
+        "(\narray point <2 elements>\npoint point{x: 1, y: 1.0}\n)"
     );
     let (_, out, _) = repl(
         &[],
@@ -135,7 +145,7 @@ fn struct_survives_trap_and_gc() {
     let (ok, out, err) = repl(&[], &format!("{POINT}7 2.5 point.new\n1 0 i32.div_s\n"));
     assert!(!ok);
     assert!(err.contains("trap in"), "{err}");
-    assert_eq!(last_line(&out), "( point ) point{x: 7, y: 2.5}");
+    assert_eq!(last_stack(&out), "(\npoint point{x: 7, y: 2.5}\n)");
     let t = std::time::Instant::now();
     let (ok, out, err) = repl(
         &[],
@@ -144,7 +154,7 @@ fn struct_survives_trap_and_gc() {
         ),
     );
     assert!(ok, "{out}{err}");
-    assert_eq!(last_line(&out), "( point ) point{x: 7, y: 2.5}");
+    assert_eq!(last_stack(&out), "(\npoint point{x: 7, y: 2.5}\n)");
     assert!(t.elapsed().as_secs() < 10, "{:?}", t.elapsed());
 }
 
@@ -157,8 +167,8 @@ fn nested_struct_echo() {
         ),
     );
     assert_eq!(
-        last_line(&out),
-        "( seg ) seg{a: point{x: 0, y: 0.0}, b: point{x: 1, y: 1.0}}"
+        last_stack(&out),
+        "(\nseg seg{a: point{x: 0, y: 0.0}, b: point{x: 1, y: 1.0}}\n)"
     );
     // A null link comes from an unset array element.
     let (_, out, _) = repl(
@@ -166,14 +176,14 @@ fn nested_struct_echo() {
         "struct node  v: i32  next: node\n: nil ( -- node ) 1 array.new ( array node ) 0 array.at ;\n1 nil node.new 2 swap node.new 3 swap node.new 4 swap node.new\n",
     );
     assert_eq!(
-        last_line(&out),
-        "( node ) node{v: 4, next: node{v: 3, next: node{v: 2, next: node{...}}}}"
+        last_stack(&out),
+        "(\nnode node{v: 4, next: node{v: 3, next: node{v: 2, next: node{...}}}}\n)"
     );
     let (_, out, _) = repl(
         &[],
         &format!("{POINT}struct bag  items: array point\n2 array.new ( array point ) bag.new\n"),
     );
-    assert_eq!(last_line(&out), "( bag ) bag{items: <2 elements>}");
+    assert_eq!(last_stack(&out), "(\nbag bag{items: <2 elements>}\n)");
 }
 
 #[test]

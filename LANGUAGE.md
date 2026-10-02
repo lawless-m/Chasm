@@ -258,7 +258,7 @@ Recorded here so the spec matches the compiler. `docs/reference.md` is the user-
 3. **Nullable references.** Locals, fields and array elements hold `(ref null $T)`. Nulls arise only as unset elements of a fresh `array.new`, and reading a field of one traps.
 4. **Arrays of structs are views** `( ref start count )` over a WasmGC array, so slicing is free and shares storage, as for all arrays.
 5. **Struct values are not test literals**; tests compare fields.
-6. **REPL echo.** `( point ) point{x: 7, y: 2.5}`; nested structs to three levels, then `name{...}`; an unset struct is `null`; arrays `<n elements>`.
+6. **REPL echo.** `point{x: 7, y: 2.5}`, and a stack holding a struct prints one entry per line (`point point{x: 7, y: 2.5}`) between `(` and `)`; nested structs to three levels, then `name{...}`; an unset struct is `null`; arrays `<n elements>`.
 7. **Names.** Struct names and word names are separate namespaces; generated words follow the `name.field` rule and clash with user words only through the ordinary redefinition rule.
 8. **Linear arrays are unchanged.** `array i32`, `array str` and the like stay `( addr count )` in linear memory.
 9. **No null test.** Programs never see a null value. An optional link is an `array` of length 0 or 1 (`struct node  v: i32  next: array node`), tested with `array.len`.
