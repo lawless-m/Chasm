@@ -166,6 +166,9 @@ fn rt_ring() -> Function {
 pub struct ModuleOptions {
     /// Export `__test_N` thunks: (export name, word id).
     pub test_exports: Vec<(String, usize)>,
+    /// The words to emit; `None` emits every word. A word keeps its table
+    /// slot (its id) either way, so function values stay valid.
+    pub live: Option<std::collections::HashSet<usize>>,
 }
 
 /// The runtime helpers in function-index order: (index, type, body, name).
@@ -181,12 +184,22 @@ fn runtime_helpers(ctx: &mut Ctx) -> Vec<(u32, u32, Function, &'static str)> {
 }
 
 /// A word's function: its compiled body, or a stub that traps as unresolved.
-fn word_function(ctx: &mut Ctx, w: &Word) -> Function {
+/// `remap` gives a word's function index from its id when words are left
+/// out, so direct calls are renumbered.
+fn word_function(ctx: &mut Ctx, w: &Word, remap: Option<&[Option<u32>]>) -> Function {
     match &w.body {
         Some(c) => {
             let mut f = Function::new_with_locals_types(c.locals.iter().copied());
             for i in &c.code {
-                f.instruction(i);
+                match (i, remap) {
+                    (I::Call(x), Some(m)) if *x >= crate::check::FIRST_WORD_FN => {
+                        let id = (*x - crate::check::FIRST_WORD_FN) as usize;
+                        f.instruction(&I::Call(m[id].expect("a live word calls only live words")));
+                    }
+                    _ => {
+                        f.instruction(i);
+                    }
+                }
             }
             f.instruction(&I::End);
             f
@@ -240,16 +253,24 @@ pub fn assemble(ctx: &mut Ctx, opts: &ModuleOptions) -> Vec<u8> {
         names.append(idx, name);
     }
 
-    for id in 0..ctx.words.len() {
+    let kept: Vec<usize> = (0..ctx.words.len())
+        .filter(|id| opts.live.as_ref().is_none_or(|l| l.contains(id)))
+        .collect();
+    let mut index: Vec<Option<u32>> = vec![None; ctx.words.len()];
+    for (k, &id) in kept.iter().enumerate() {
+        index[id] = Some(Word::func_index(k));
+    }
+    let remap = opts.live.as_ref().map(|_| index.as_slice());
+    for &id in &kept {
         let w = ctx.words[id].clone();
         let ty = ctx.intern_type(
             w.effect.wasm_params(&ctx.struct_types),
             w.effect.wasm_results(&ctx.struct_types),
         );
         funcs.function(ty);
-        let f = word_function(ctx, &w);
+        let f = word_function(ctx, &w, remap);
         code.function(&f);
-        names.append(Word::func_index(id), &w.name);
+        names.append(index[id].unwrap(), &w.name);
     }
 
     let types = type_section(ctx);
@@ -290,20 +311,31 @@ pub fn assemble(ctx: &mut Ctx, opts: &ModuleOptions) -> Vec<u8> {
             && w.kind == crate::check::WordKind::Named
             && exported.insert(w.name.clone())
         {
-            exports.export(&w.name, ExportKind::Func, Word::func_index(id));
+            exports.export(&w.name, ExportKind::Func, index[id].unwrap());
         }
     }
     for (name, id) in &opts.test_exports {
-        exports.export(name, ExportKind::Func, Word::func_index(*id));
+        exports.export(name, ExportKind::Func, index[*id].unwrap());
     }
 
+    // Table slot `id` holds word `id`; a left-out word's slot stays null.
     let mut elems = ElementSection::new();
-    let fidx: Vec<u32> = (0..ctx.words.len()).map(Word::func_index).collect();
-    if !fidx.is_empty() {
+    let mut id = 0;
+    while id < index.len() {
+        if index[id].is_none() {
+            id += 1;
+            continue;
+        }
+        let start = id;
+        let mut run = Vec::new();
+        while let Some(Some(f)) = index.get(id) {
+            run.push(*f);
+            id += 1;
+        }
         elems.active(
             Some(0),
-            &ConstExpr::i32_const(0),
-            Elements::Functions(fidx.into()),
+            &ConstExpr::i32_const(start as i32),
+            Elements::Functions(run.into()),
         );
     }
 
@@ -409,7 +441,7 @@ pub fn assemble_step(ctx: &mut Ctx, ids: &[WordId], shared_memory: bool) -> Vec<
             )
         };
         funcs.function(ty);
-        let f = word_function(ctx, &w);
+        let f = word_function(ctx, &w, None);
         code.function(&f);
         let index = crate::check::FIRST_WORD_FN + k as u32;
         names.append(index, &w.name);

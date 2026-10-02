@@ -31,7 +31,8 @@ each, redefine words live.
 
 Status: milestones M0 (skeleton), M1 (declared effects to wasm, CLI, native
 host), M2 (interactive REPL, native and in the browser), M3 (dependency-graph
-tooling: `deps`, `used-by`, `dead`, `)forget`) and M4 (structs as WasmGC
-structs) are implemented. M5 (hybrid export) is next.
+tooling: `deps`, `used-by`, `dead`, `)forget`), M4 (structs as WasmGC
+structs) and M5 (whole-program export: dead words left out, unresolved words
+refused, Binaryen) are implemented. M6 (polish and tooling) is next.
 
 Licence: MIT.

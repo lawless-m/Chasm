@@ -13,14 +13,14 @@ compile to WebAssembly functions whose types are their effects.
 
 ```
 chasm check  FILE...          # types and effects only; fast
-chasm run    FILE...          # build and run `main ( -- )`
+chasm run    FILE...          # build and run `main ( -- )` (--opt: also wasm-opt)
 chasm test   FILE...          # run the `test` lines
 chasm unresolved FILE...      # declared words with no body yet
 chasm words  FILE...          # every word and its effect
 chasm deps WORD FILE...       # what WORD calls (--all for transitive)
 chasm used-by WORD FILE...    # what calls WORD
 chasm dead   FILE...          # words `main` and `export` words never reach
-chasm build  FILE... -o out.wasm
+chasm build  FILE... -o out.wasm  # optimised with Binaryen (--no-opt to skip)
 chasm repl                    # interactive; reads chunks from stdin
 ```
 
@@ -28,6 +28,16 @@ A program is the files you name, in order; there is no include form. To use
 a library, name it first: `chasm test lib.chasm prog.chasm`. A pipeline
 works too, `cat lib.chasm prog.chasm | chasm test /dev/stdin`, but then error
 locations count lines in the concatenated text.
+
+`build` and `run` compile the whole program from its roots, `main` and the
+`export` words: words they never reach are left out of the module, and a
+reachable word that is declared but has no body is refused (`E_UNRESOLVED`).
+A program with no root keeps every word. `build` then runs Binaryen's
+`wasm-opt -O3` (version 121 or later; `$CHASM_WASM_OPT` names another
+binary), which shrinks the module by about a quarter; if it is missing or
+fails, the unoptimised module is written with a note. `run` skips that step
+unless given `--opt`, because under wasmtime it is as often slower as faster
+(`docs/performance.md`).
 
 Add `--json` to any command for a machine-readable report:
 
@@ -346,7 +356,8 @@ test parse-int : "1234" parse-int -> 1234
 ```
 
 - A declared word compiles to a stub that traps with `unresolved word <name>`.
-  Callers check, compile and run until they reach it.
+  Callers check, compile and test until they reach it; `build` and `run`
+  refuse a stub that `main` or an `export` word can reach.
 - A later definition must match the declared effect exactly
   (`E_DECLARE_MISMATCH`). Redefining a word with the same effect replaces its
   body for every caller; changing an effect is rejected (`E_REDEFINE_EFFECT`)
@@ -422,6 +433,7 @@ Library words:
 | `E_TEST_TYPE` | a test's expected literals do not match what its body leaves |
 | `E_MAIN_EFFECT` | `main` is not `( -- )` |
 | `E_NO_MAIN` | `run` without `main` |
+| `E_UNRESOLVED` | `build` or `run`: a word `main` or an `export` word reaches is declared but has no body; lists `dependants` |
 | `E_IO`, `E_USAGE` | CLI problems |
 | `E_INTERNAL` | compiler bug |
 | `E_FORGET` | `)forget` refused: the word is still used (lists `dependants`), or is a primitive, prelude or struct-generated word |

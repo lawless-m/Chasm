@@ -126,3 +126,63 @@ fn errors_are_reported_with_codes() {
         serde_json::json!(["i32", "i32"])
     );
 }
+
+fn scratch(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("chasm-test-{}-{name}", std::process::id()))
+}
+
+#[test]
+fn build_optimises_with_binaryen() {
+    let out = scratch("sieve.wasm");
+    let out = out.to_str().unwrap();
+    let (ok, json, err) = chasm(&["build", "--json", "examples/sieve.chasm", "-o", out]);
+    assert!(ok, "{json}{err}");
+    let j: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let r = &j["results"];
+    assert_eq!(
+        r["optimised"], true,
+        "is Binaryen 121 or later installed? {r}"
+    );
+    assert!(r["bytes"].as_u64() < r["unoptimised_bytes"].as_u64());
+    let (_, json, _) = chasm(&[
+        "build",
+        "--json",
+        "--no-opt",
+        "examples/sieve.chasm",
+        "-o",
+        out,
+    ]);
+    let j: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(j["results"]["optimised"], false);
+    assert!(j["results"]["note"].is_null());
+    let _ = std::fs::remove_file(out);
+}
+
+#[test]
+fn build_without_binaryen_notes_it_and_still_writes() {
+    let out = scratch("hello.wasm");
+    let o = Command::new(env!("CARGO_BIN_EXE_chasm"))
+        .args(["build", "examples/hello.chasm", "-o", out.to_str().unwrap()])
+        .env("CHASM_WASM_OPT", "no-such-wasm-opt")
+        .current_dir(root())
+        .output()
+        .unwrap();
+    assert!(o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("not optimised"));
+    assert!(out.exists());
+    let _ = std::fs::remove_file(out);
+}
+
+#[test]
+fn run_refuses_reachable_unresolved_words() {
+    let src = scratch("stub.chasm");
+    std::fs::write(
+        &src,
+        "declare later ( -- i32 )\n: main ( -- ) later drop ;\n",
+    )
+    .unwrap();
+    let (ok, _, err) = chasm(&["run", src.to_str().unwrap()]);
+    assert!(!ok);
+    assert!(err.contains("E_UNRESOLVED"), "{err}");
+    let _ = std::fs::remove_file(src);
+}

@@ -1,6 +1,7 @@
 //! Whole-program driver: sources in, diagnostics + word database + module out.
 
 use serde::Serialize;
+use std::collections::HashSet;
 
 use crate::ast::{Item, Lit};
 use crate::check::{compile_body, Compiled, Ctx, Mode, Origin, StructDef, Word, WordId, WordKind};
@@ -36,6 +37,9 @@ pub struct Options {
     pub prelude: bool,
     /// Export test thunks as `__test_N`.
     pub test_exports: bool,
+    /// Whole-program export (`build`, `run`): keep only the words `main` and
+    /// the `export` words reach, and refuse reachable unresolved words.
+    pub export: bool,
 }
 
 impl Default for Options {
@@ -43,6 +47,7 @@ impl Default for Options {
         Options {
             prelude: true,
             test_exports: false,
+            export: false,
         }
     }
 }
@@ -277,6 +282,12 @@ pub fn compile(sources: &[Source], opts: &Options) -> Compilation {
         })
         .collect();
 
+    let live = if opts.export {
+        live_words(&ctx, &graph, &mut diags)
+    } else {
+        None
+    };
+
     let ok = !diags.iter().any(Diagnostic::is_error);
     let wasm = if ok {
         let test_exports = if opts.test_exports {
@@ -288,7 +299,7 @@ pub fn compile(sources: &[Source], opts: &Options) -> Compilation {
         } else {
             Vec::new()
         };
-        let bytes = assemble(&mut ctx, &ModuleOptions { test_exports });
+        let bytes = assemble(&mut ctx, &ModuleOptions { test_exports, live });
         match validate(&bytes) {
             Ok(()) => Some(bytes),
             Err(e) => {
@@ -751,6 +762,48 @@ pub(crate) fn check_new_name(name: &str, loc: &Location) -> Option<Diagnostic> {
         ));
     }
     None
+}
+
+/// The ids of the words `main` and the `export` words reach, following call
+/// and address-taken edges. Reports every reachable word that is declared
+/// but has no body. `None` when there is no root: nothing is trimmed.
+fn live_words(ctx: &Ctx, graph: &Graph, diags: &mut Vec<Diagnostic>) -> Option<HashSet<WordId>> {
+    let roots: Vec<&str> = ctx
+        .words
+        .iter()
+        .filter(|w| w.kind == WordKind::Named && (w.export || w.name == "main"))
+        .map(|w| w.name.as_str())
+        .collect();
+    if roots.is_empty() {
+        return None;
+    }
+    let names = graph.reachable(roots.iter().copied());
+    let mut live = HashSet::new();
+    for (id, w) in ctx.words.iter().enumerate() {
+        if w.kind == WordKind::Test || !names.contains(&w.name) {
+            continue;
+        }
+        live.insert(id);
+        if w.kind == WordKind::Named && w.body.is_none() && !w.failed {
+            let mut d =
+                Diagnostic::error(
+                    codes::E_UNRESOLVED,
+                    format!(
+                    "`{}` is declared {} but has no body, and {} {} it; define it before building",
+                    w.name,
+                    w.effect,
+                    roots.iter().map(|r| format!("`{r}`")).collect::<Vec<_>>().join(", "),
+                    if roots.len() == 1 { "reaches" } else { "reach" }
+                ),
+                    w.loc.clone(),
+                )
+                .with_word(&w.name);
+            d.declared_effect = Some(w.effect.to_string());
+            d.dependants = Some(graph.callers(&w.name));
+            diags.push(d);
+        }
+    }
+    Some(live)
 }
 
 pub(crate) fn graph_of(ctx: &Ctx) -> Graph {

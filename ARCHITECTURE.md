@@ -1,6 +1,6 @@
 # Chasm: Architecture and Milestones
 
-Status: draft v0.13 (M0 to M4 implemented; decisions in sections 13 to 16). **Chasm** (Chuck-Wasm, after Chuck Moore) is a typed, concatenative language that compiles to WebAssembly, with an interactive REPL, written in Rust. Source files use the `.chasm` extension; the CLI binary is `chasm`.
+Status: draft v0.14 (M0 to M5 implemented; decisions in sections 13 to 17). **Chasm** (Chuck-Wasm, after Chuck Moore) is a typed, concatenative language that compiles to WebAssembly, with an interactive REPL, written in Rust. Source files use the `.chasm` extension; the CLI binary is `chasm`.
 
 ## 1. Goals
 
@@ -184,14 +184,13 @@ Uses:
 - Rejection errors that name affected dependants.
 - Safe `forget`: refuse, or list what would be orphaned.
 - Dead-word detection and trimming at export.
-- Inlining candidates (leaf words) at export.
 - Cycle detection via strongly connected components. In v1 every word is declared, so this matters only for M7 inference, where recursive and mutually recursive words must keep declared effects.
 - Incremental checking after a body edit.
 - `deps`, `used-by` and `unresolved` commands with JSON output for tooling and Claude Code.
 
 ## 8. Export (hybrid mode)
 
-The REPL uses indirect calls. The export step does whole-program compilation: direct calls, inlining of leaf and small words, dead-word removal, then optional Binaryen optimisation via an external `wasm-opt` binary (not a crate dependency, so the browser build stays light). It fails if any reachable declared word is unresolved. Same source, two back ends; the checker is shared.
+The REPL uses indirect calls. The export step does whole-program compilation: direct calls and dead-word removal, then Binaryen optimisation via an external `wasm-opt` binary (not a crate dependency, so the browser build stays light), which also inlines small words; Chasm has no inliner of its own (section 17). It fails if any reachable declared word is unresolved. Same source, two back ends; the checker is shared.
 
 ## 9. Designing for Claude Code
 
@@ -225,7 +224,7 @@ Principles; exact fields are settled in M1 and generated from the Rust types (`s
 
 **M4: Structs.** `struct` declarations lowered to WasmGC struct types, with generated words and engine garbage collection (section 15). Struct values on the REPL stack through a reference table, in the native and browser REPLs. Arrays of structs. The browser checks move to node 22.
 
-**M5: Hybrid export.** Whole-program compilation, direct calls, inlining, dead-word removal, Binaryen. Refuse unresolved words.
+**M5: Hybrid export.** Whole-program compilation, direct calls, dead-word removal, Binaryen. Refuse unresolved words. Inlining is left to Binaryen (section 17).
 
 **M6: Polish and tooling.** JSON output everywhere, editor integration, expanded examples, force-redefine with cascade. `/net/http`, 9p mounts, WASI export mapping, io_uring native backend if profiling justifies it.
 
@@ -318,3 +317,10 @@ Heavy native batch work (large test corpora, benchmarks, Binaryen runs over big 
 7. **Export.** The whole-program path has no refs table. A module that uses structs needs a GC-capable engine (M5).
 8. **Checks.** CI runs the web checks on node 22 and adds `node web/test/node-structs.mjs`; node 20 cannot run WasmGC. Locally, `sh web/test/headless.sh test/structs.html STRUCTS` runs the same scenario in headless Vivaldi. It opens the page through the debugging port, because a fresh browser profile opens a welcome page at start-up in place of the command-line URL.
 
+## 17. Decisions taken in M5
+
+1. **Export mode.** `Options.export` (set by `build` and `run`) computes the words `main` and the `export` words reach along call and address-taken edges (`live_words`). Every reachable word declared without a body is refused with `E_UNRESOLVED`, listing its callers; unreachable stubs are dropped silently. A program with no root keeps every word and refuses nothing.
+2. **Dead words are left out of the module** (`ModuleOptions.live`). Live words are renumbered and direct `call`s remapped, but each keeps its table slot (its id), so a `'word` value is the same number either way; a dead word's slot stays null. Dropping the prelude words a program does not use takes sieve from 3792 to 1992 bytes.
+3. **Binaryen is an external `wasm-opt`**, version 121 or later (120 cannot read blocks with inputs, which the emitter uses); CI pins release 133 by checksum. `build` runs `wasm-opt -O3 -g` with exactly the features Chasm emits, validates the result, and falls back to the unoptimised module with a note if the tool is missing, fails, or produces an invalid module. With dead words already gone it saves about a quarter more (sieve: 1992 to 1517 bytes), by inlining small words and tidying locals.
+4. **`run` does not use `wasm-opt` by default** (`--opt` turns it on). Measured under wasmtime (median of five, ms, sieve / mandelbrot / n-queens / quicksort): none 92.9 / 113.9 / 110.5 / 92.7; `-O3` 108.9 / 126.8 / 108.2 / 82.8; `-O1`, `-O2`, `-O4` and `-Os` are no better overall. Cranelift optimises at load time, and Binaryen's passes are tuned for V8.
+5. **No inliner of our own.** Binaryen's inliner alone (`--inlining-optimizing`) changed nothing measurable under wasmtime (94.4 / 114.5 / 110.1 / 93.7), so a Chasm inliner would cost effort for no speed. Revisit if a browser measurement shows a gain.

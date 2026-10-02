@@ -60,6 +60,9 @@ enum Cmd {
         /// Output path (default: first file with .wasm extension).
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Skip Binaryen's `wasm-opt`.
+        #[arg(long)]
+        no_opt: bool,
     },
     /// Build and run `main ( -- )`.
     Run {
@@ -67,6 +70,9 @@ enum Cmd {
         common: Common,
         #[command(flatten)]
         host: HostArgs,
+        /// Also run Binaryen's `wasm-opt -O3`, as `build` does (often slower under wasmtime).
+        #[arg(long)]
+        opt: bool,
     },
     /// Run the tests written beside each word.
     Test {
@@ -130,8 +136,80 @@ impl Report {
     }
 }
 
+/// The wasm features Chasm emits; `wasm-opt` may use no others.
+const WASM_OPT_FEATURES: &[&str] = &[
+    "--enable-multivalue",
+    "--enable-reference-types",
+    "--enable-gc",
+    "--enable-bulk-memory",
+    "--enable-sign-ext",
+    "--enable-nontrapping-float-to-int",
+    "--enable-mutable-globals",
+];
+
+/// Run Binaryen's `wasm-opt -O3` (or `$CHASM_WASM_OPT`) over a module. Returns
+/// the module to use and, when optimisation was wanted but did not happen,
+/// why. A result that does not validate is not used.
+fn optimise(raw: &[u8], skip: bool) -> (Vec<u8>, Option<String>) {
+    if skip {
+        return (raw.to_vec(), None);
+    }
+    let tool = std::env::var("CHASM_WASM_OPT").unwrap_or_else(|_| "wasm-opt".to_string());
+    let dir = std::env::temp_dir();
+    let input = dir.join(format!("chasm-{}.wasm", std::process::id()));
+    let output = dir.join(format!("chasm-{}.opt.wasm", std::process::id()));
+    if let Err(e) = std::fs::write(&input, raw) {
+        return (
+            raw.to_vec(),
+            Some(format!(
+                "not optimised: cannot write `{}`: {e}",
+                input.display()
+            )),
+        );
+    }
+    let ran = std::process::Command::new(&tool)
+        .args(["-O3", "-g"])
+        .args(WASM_OPT_FEATURES)
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output();
+    let result = match ran {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(format!(
+            "not optimised: `{tool}` not found; install Binaryen 121 or later, or pass --no-opt"
+        )),
+        Err(e) => Err(format!("not optimised: cannot run `{tool}`: {e}")),
+        Ok(o) if !o.status.success() => Err(format!(
+            "not optimised: `{tool}` failed: {}",
+            String::from_utf8_lossy(&o.stderr)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+        )),
+        Ok(_) => match std::fs::read(&output) {
+            Ok(bytes) => match chasm_core::validate(&bytes) {
+                Ok(()) => Ok(bytes),
+                Err(e) => Err(format!(
+                    "not optimised: `{tool}` produced an invalid module: {e}"
+                )),
+            },
+            Err(e) => Err(format!(
+                "not optimised: cannot read `{}`: {e}",
+                output.display()
+            )),
+        },
+    };
+    let _ = std::fs::remove_file(&input);
+    let _ = std::fs::remove_file(&output);
+    match result {
+        Ok(bytes) => (bytes, None),
+        Err(note) => (raw.to_vec(), Some(note)),
+    }
+}
+
 #[allow(clippy::result_large_err)]
-fn load(c: &Common, test_exports: bool) -> Result<Compilation, Diagnostic> {
+fn load(c: &Common, test_exports: bool, export: bool) -> Result<Compilation, Diagnostic> {
     let mut sources = Vec::new();
     for f in &c.files {
         let name = f.display().to_string();
@@ -154,6 +232,7 @@ fn load(c: &Common, test_exports: bool) -> Result<Compilation, Diagnostic> {
         &Options {
             prelude: !c.no_prelude,
             test_exports,
+            export,
         },
     ))
 }
@@ -201,7 +280,7 @@ fn exec(cli: Cli) -> (Report, bool) {
     match cli.cmd {
         Cmd::Check(c) => {
             let json = c.json;
-            let r = match load(&c, false) {
+            let r = match load(&c, false, false) {
                 Err(d) => failed("check", vec![d]),
                 Ok(comp) => Report {
                     command: "check",
@@ -218,19 +297,30 @@ fn exec(cli: Cli) -> (Report, bool) {
             };
             (r, json)
         }
-        Cmd::Build { common, output } => {
+        Cmd::Build {
+            common,
+            output,
+            no_opt,
+        } => {
             let json = common.json;
-            let r = match load(&common, false) {
+            let r = match load(&common, false, true) {
                 Err(d) => failed("build", vec![d]),
                 Ok(comp) => match &comp.wasm {
                     None => failed("build", comp.diagnostics),
-                    Some(bytes) => {
+                    Some(raw) => {
+                        let (bytes, note) = optimise(raw, no_opt);
                         let out = output.unwrap_or_else(|| common.files[0].with_extension("wasm"));
-                        match std::fs::write(&out, bytes) {
+                        match std::fs::write(&out, &bytes) {
                             Ok(()) => Report {
                                 command: "build",
                                 ok: true,
-                                results: json!({ "output": out.display().to_string(), "bytes": bytes.len() }),
+                                results: json!({
+                                    "output": out.display().to_string(),
+                                    "bytes": bytes.len(),
+                                    "unoptimised_bytes": raw.len(),
+                                    "optimised": !no_opt && note.is_none(),
+                                    "note": note,
+                                }),
                                 diagnostics: comp.diagnostics,
                             },
                             Err(e) => failed(
@@ -247,7 +337,7 @@ fn exec(cli: Cli) -> (Report, bool) {
             };
             (r, json)
         }
-        Cmd::Run { common, host } => {
+        Cmd::Run { common, host, opt } => {
             let json = common.json;
             let mut cfg = match host_config(&host) {
                 Ok(c) => c,
@@ -261,7 +351,7 @@ fn exec(cli: Cli) -> (Report, bool) {
                     )
                 }
             };
-            let comp = match load(&common, false) {
+            let comp = match load(&common, false, true) {
                 Ok(c) => c,
                 Err(d) => return (failed("run", vec![d]), json),
             };
@@ -286,7 +376,8 @@ fn exec(cli: Cli) -> (Report, bool) {
                     output: Vec::new(),
                 };
             }
-            let runner = match Runner::new(wasm) {
+            let (wasm, note) = optimise(wasm, !opt);
+            let runner = match Runner::new(&wasm) {
                 Ok(r) => r,
                 Err(m) => {
                     return (
@@ -304,13 +395,13 @@ fn exec(cli: Cli) -> (Report, bool) {
                 Ok(()) => Report {
                     command: "run",
                     ok: true,
-                    results: json!({ "output": output, "trap": null }),
+                    results: json!({ "output": output, "trap": null, "optimised": opt && note.is_none(), "note": note }),
                     diagnostics: comp.diagnostics,
                 },
                 Err(e) => Report {
                     command: "run",
                     ok: false,
-                    results: json!({ "output": output, "trap": { "message": e.message, "word": e.word } }),
+                    results: json!({ "output": output, "trap": { "message": e.message, "word": e.word }, "optimised": opt && note.is_none(), "note": note }),
                     diagnostics: comp.diagnostics,
                 },
             };
@@ -330,7 +421,7 @@ fn exec(cli: Cli) -> (Report, bool) {
                     )
                 }
             };
-            let comp = match load(&common, true) {
+            let comp = match load(&common, true, false) {
                 Ok(c) => c,
                 Err(d) => return (failed("test", vec![d]), json),
             };
@@ -376,7 +467,7 @@ fn exec(cli: Cli) -> (Report, bool) {
         }
         Cmd::Unresolved(c) => {
             let json = c.json;
-            let r = match load(&c, false) {
+            let r = match load(&c, false, false) {
                 Err(d) => failed("unresolved", vec![d]),
                 Ok(comp) => {
                     let list: Vec<J> = comp
@@ -404,7 +495,7 @@ fn exec(cli: Cli) -> (Report, bool) {
         }
         Cmd::Dead(c) => {
             let json = c.json;
-            let r = match load(&c, false) {
+            let r = match load(&c, false, false) {
                 Err(d) => failed("dead", vec![d]),
                 Ok(comp) => {
                     let dead = comp.dead().map(|ws| {
@@ -430,7 +521,7 @@ fn exec(cli: Cli) -> (Report, bool) {
         }
         Cmd::Words(c) => {
             let json = c.json;
-            let r = match load(&c, false) {
+            let r = match load(&c, false, false) {
                 Err(d) => failed("words", vec![d]),
                 Ok(comp) => Report {
                     command: "words",
@@ -563,7 +654,7 @@ fn graph_query(
     c: &Common,
     f: impl Fn(&Compilation) -> J,
 ) -> Report {
-    match load(c, false) {
+    match load(c, false, false) {
         Err(d) => failed(command, vec![d]),
         Ok(comp) => {
             if comp.word(word).is_none() {
@@ -621,12 +712,20 @@ fn render(report: &J) -> (String, String) {
             }
             out.push('\n');
         }
-        "build" if ok => out.push_str(&format!(
-            "wrote {} ({} bytes)\n",
-            s(&r["output"]),
-            r["bytes"]
-        )),
+        "build" if ok => {
+            out.push_str(&format!(
+                "wrote {} ({} bytes)\n",
+                s(&r["output"]),
+                r["bytes"]
+            ));
+            if let Some(n) = r["note"].as_str() {
+                err.push_str(&format!("note: {n}\n"));
+            }
+        }
         "run" => {
+            if let Some(n) = r["note"].as_str() {
+                err.push_str(&format!("note: {n}\n"));
+            }
             // In text mode the program wrote straight to stdout; `output`
             // is only filled when the console was captured.
             out.push_str(&s(&r["output"]));

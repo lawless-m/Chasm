@@ -6,6 +6,7 @@ fn ok(src: &str) -> chasm_core::Compilation {
         &Options {
             prelude: true,
             test_exports: true,
+            export: false,
         },
     );
     for d in &c.diagnostics {
@@ -300,4 +301,58 @@ test only-tested : only-tested -> 3
         .map(|w| w.name.as_str())
         .collect();
     assert_eq!(dead, ["c"]);
+}
+
+fn export(src: &str) -> chasm_core::Compilation {
+    compile(
+        &[Source::new("t.chasm", src)],
+        &Options {
+            prelude: true,
+            test_exports: false,
+            export: true,
+        },
+    )
+}
+
+fn functions(wasm: &[u8]) -> Vec<String> {
+    let mut names = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm) {
+        if let Ok(wasmparser::Payload::CustomSection(c)) = payload {
+            if let wasmparser::KnownCustom::Name(reader) = c.as_known() {
+                for sub in reader.into_iter().flatten() {
+                    if let wasmparser::Name::Function(map) = sub {
+                        names.extend(map.into_iter().flatten().map(|n| n.name.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    names
+}
+
+#[test]
+fn export_refuses_reachable_unresolved_words() {
+    let c = export("declare later ( -- i32 )\n: main ( -- ) later drop ;");
+    assert!(!c.ok());
+    let d = &c.diagnostics[0];
+    assert_eq!(d.code, "E_UNRESOLVED");
+    assert_eq!(d.dependants, Some(vec!["main".to_string()]));
+    let c = export("declare never ( -- i32 )\n: main ( -- ) ;");
+    assert!(c.ok(), "an unreachable stub is dropped, not refused");
+    let c = export("declare stub ( -- i32 )\n: lib ( -- i32 ) stub ;");
+    assert!(c.ok(), "with no root nothing is refused");
+}
+
+#[test]
+fn export_leaves_out_dead_words() {
+    let src = ": helper ( -- i32 ) 1 ;\n: unused ( -- i32 ) 2 ;\n: ticked ( -- i32 ) 4 ;\n: main ( -- ) helper drop 'ticked call drop ;";
+    let full = ok(src);
+    let trimmed = export(src);
+    assert!(trimmed.ok());
+    let names = functions(trimmed.wasm.as_ref().unwrap());
+    for live in ["helper", "ticked", "main"] {
+        assert!(names.iter().any(|n| n == live), "{live} kept: {names:?}");
+    }
+    assert!(!names.iter().any(|n| n == "unused"), "{names:?}");
+    assert!(trimmed.wasm.unwrap().len() < full.wasm.unwrap().len());
 }

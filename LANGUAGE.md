@@ -1,6 +1,6 @@
 # Chasm: Language Specification
 
-Status: draft v0.10 (M1 to M4 decisions recorded; see sections 12 to 15). Chasm source files use the `.chasm` extension. Companion to `ARCHITECTURE.md`. Sections marked **TBD** are not yet decided.
+Status: draft v0.11 (M1 to M5 decisions recorded; see sections 12 to 16). Chasm source files use the `.chasm` extension. Companion to `ARCHITECTURE.md`. Sections marked **TBD** are not yet decided.
 
 ## 1. Types
 
@@ -266,3 +266,6 @@ Recorded here so the spec matches the compiler. `docs/reference.md` is the user-
 8. **Linear arrays are unchanged.** `array i32`, `array str` and the like stay `( addr count )` in linear memory.
 9. **No null test.** Programs never see a null value. An optional link is an `array` of length 0 or 1 (`struct node  v: i32  next: array node`), tested with `array.len`.
 
+## 16. Decisions taken in M5
+
+1. **A built program has no reachable stubs.** `build` and `run` refuse a declared word without a body that `main` or an `export` word reaches (`E_UNRESOLVED`); `check` and `test` still accept it, so contract-first work goes on as before. Words no root reaches are left out of the module.

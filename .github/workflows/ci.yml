@@ -21,6 +21,12 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
+      - name: Binaryen
+        run: |
+          curl -sSL -o binaryen.tar.gz https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-linux.tar.gz
+          echo "2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489  binaryen.tar.gz" | sha256sum -c
+          tar xzf binaryen.tar.gz
+          echo "$PWD/binaryen-version_133/bin" >> "$GITHUB_PATH"
       - name: Test
         run: cargo test
       - name: Core builds for wasm32

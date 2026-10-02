@@ -19,7 +19,7 @@ Rust workspace. Read `docs/reference.md` before writing `.chasm` code;
 ```
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test
+cargo test                                    # needs Binaryen's wasm-opt 121+ on the path
 cargo build -p chasm-core --target wasm32-unknown-unknown
 sh web/build.sh
 node web/test/compiler.mjs && node web/test/ring.mjs && node web/test/node-repl.mjs
