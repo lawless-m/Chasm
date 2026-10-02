@@ -1,0 +1,29 @@
+# n closed doors; pass p toggles every p-th door, for p from 1 to n.
+# Which are open at the end? (The squares.)
+# Rosetta Code: 100_doors. Exercises: an array i32 of flags, while inside
+# times, filter.
+
+: ints>str ( array i32 -- str )
+  :> a
+  "" :> out!
+  a array.len [ :> i
+    i 0 i32.ne [ out " " str.concat out! ] when
+    out a i array.at i32.to-str str.concat out!
+  ] times
+  out ;
+
+: open-doors ( i32 -- array i32 )
+  :> n
+  n 1 i32.add array.new ( array i32 ) :> door     # door 1 to n; 1 means open
+  n [ 1 i32.add :> step
+      step :> d!
+      [ d n i32.le_u ] [ door d  door d array.at i32.eqz  array.at!  d step i32.add d! ] while
+  ] times
+  n 1 i32.add array.new ( array i32 ) :> all
+  all array.len [ :> i  all i i array.at! ] times
+  all [ :> k  door k array.at ] filter ;
+test open-doors : 100 open-doors ints>str -> "1 4 9 16 25 36 49 64 81 100"
+test open-doors : 10 open-doors ints>str -> "1 4 9"
+test open-doors : 1 open-doors ints>str -> "1"
+
+: main ( -- )  "open: " print 100 open-doors ints>str println ;

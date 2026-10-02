@@ -1,0 +1,36 @@
+# Shift ASCII letters by k (0 to 25), keeping case; other bytes unchanged.
+# Rosetta Code: Caesar_cipher. Exercises: byte arithmetic, building a str
+# in fresh memory with mem.alloc, i32.store8 and str.from-raw.
+
+: shift-byte ( i32 i32 -- i32 )
+  :> k :> b
+  b 65 i32.ge_u  b 90 i32.le_u  i32.and
+  [ b 65 i32.sub k i32.add 26 i32.rem_u 65 i32.add ]
+  [ b 97 i32.ge_u  b 122 i32.le_u  i32.and
+    [ b 97 i32.sub k i32.add 26 i32.rem_u 97 i32.add ]
+    [ b ]
+    if ]
+  if ;
+test shift-byte : 65 3 shift-byte -> 68     # A -> D
+test shift-byte : 122 1 shift-byte -> 97    # z -> a
+test shift-byte : 33 3 shift-byte -> 33     # ! unchanged
+
+: caesar ( str i32 -- str )
+  :> k :> s
+  s str.len :> n
+  n mem.alloc :> buf
+  n [ :> i  buf i i32.add  s i str.byte-at k shift-byte  i32.store8 ] times
+  buf n str.from-raw ;
+
+: decode ( str i32 -- str )  26 swap i32.sub caesar ;
+
+test caesar : "Hello, World!" 3 caesar -> "Khoor, Zruog!"
+test caesar : "xyz XYZ" 3 caesar -> "abc ABC"
+test caesar : "héllo" 1 caesar -> "iémmp"    # multi-byte é passes through intact
+test decode : "Khoor, Zruog!" 3 decode -> "Hello, World!"
+
+: main ( -- )
+  "The quick brown fox jumps over the lazy dog" :> plain
+  plain 13 caesar :> secret
+  secret println
+  secret 13 decode println ;

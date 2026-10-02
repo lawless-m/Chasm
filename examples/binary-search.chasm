@@ -1,0 +1,30 @@
+# The index of a value in a sorted array i32, or -1, iteratively.
+# Rosetta Code: Binary_search. Exercises: while with leave, bounds.
+
+: digits ( str -- array i32 )
+  :> s
+  s str.len array.new ( array i32 ) :> a
+  s str.len [ :> i  a i  s i str.byte-at 48 i32.sub  array.at! ] times
+  a ;
+
+: binary-search ( array i32 i32 -- i32 )
+  :> x :> a
+  0 :> lo!
+  a array.len 1 i32.sub :> hi!
+  -1 :> found!
+  [ lo hi i32.le_s ]
+  [ hi lo i32.sub 1 i32.shr_s lo i32.add :> mid   # lo + (hi - lo) / 2
+    a mid array.at :> v
+    v x i32.eq [ mid found! leave ] when
+    v x i32.lt_s [ mid 1 i32.add lo! ] [ mid 1 i32.sub hi! ] if ]
+  while
+  found ;
+test binary-search : "13579" digits 1 binary-search -> 0
+test binary-search : "13579" digits 7 binary-search -> 3
+test binary-search : "13579" digits 9 binary-search -> 4
+test binary-search : "13579" digits 4 binary-search -> -1
+test binary-search : "13579" digits 0 binary-search -> -1
+test binary-search : "" digits 4 binary-search -> -1
+
+: main ( -- )
+  "0123456789" digits 6 binary-search i32.to-str println ;

@@ -1,0 +1,39 @@
+# The Mandelbrot set as text: 78 columns by 40 rows over -2 to 1, -1.2 to 1.2.
+# Rosetta Code: Mandelbrot_set. Exercises: f64 arithmetic, a while with a
+# compound condition, f64.convert_i32_s, a str used as a lookup table.
+
+# Iterations of z := z^2 + c before |z| > 2, capped at max.
+: escape ( f64 f64 i32 -- i32 )
+  :> max :> cy :> cx
+  0.0 :> x!  0.0 :> y!  0 :> k!
+  [ k max i32.lt_s  x x f64.mul y y f64.mul f64.add 4.0 f64.le  i32.and ]
+  [ x x f64.mul y y f64.mul f64.sub cx f64.add :> nx
+    2.0 x f64.mul y f64.mul cy f64.add y!
+    nx x!
+    k 1 i32.add k! ]
+  while
+  k ;
+test escape : 0.0 0.0 50 escape -> 50       # the origin is in the set
+test escape : -1.0 0.0 50 escape -> 50      # a 2-cycle, in the set
+test escape : 1.0 0.0 50 escape -> 3        # 0, 1, 2, 5: escapes
+test escape : 2.0 2.0 50 escape -> 1
+
+# One character for an iteration count: blank far out, # in the set.
+: shade ( i32 i32 -- str )
+  :> max :> k
+  " .:-=+*%@#" k 9 i32.mul max i32.div_u 1 str.slice ;
+test shade : 50 50 shade -> "#"
+test shade : 0 50 shade -> " "
+
+: row ( i32 -- str )
+  :> r
+  1.2 r f64.convert_i32_s 2.4 f64.mul 39.0 f64.div f64.sub :> cy
+  "" :> out!
+  78 [ :> c
+    -2.0 c f64.convert_i32_s 3.0 f64.mul 77.0 f64.div f64.add :> cx
+    out cx cy 50 escape 50 shade str.concat out!
+  ] times
+  out ;
+test row : 0 row str.len -> 78
+
+: main ( -- )  40 [ row println ] times ;

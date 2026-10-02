@@ -1,0 +1,24 @@
+# Validate a digit string with the Luhn checksum.
+# Rosetta Code: Luhn_test_of_credit_card_numbers. Exercises: walking a str
+# from the right, digit arithmetic, a boolean result.
+
+: luhn? ( str -- i32 )
+  :> s
+  s str.len :> n
+  0 :> sum!
+  n [ :> i                                     # i counts from the right
+    s n 1 i32.sub i i32.sub str.byte-at 48 i32.sub :> d
+    i 1 i32.and
+    [ d 2 i32.mul :> dd  dd 9 i32.gt_u [ dd 9 i32.sub ] [ dd ] if ]
+    [ d ]
+    if
+    sum i32.add sum!
+  ] times
+  sum 10 i32.rem_u i32.eqz ;
+test luhn? : "49927398716" luhn? -> 1
+test luhn? : "49927398717" luhn? -> 0
+test luhn? : "1234567812345678" luhn? -> 0
+test luhn? : "1234567812345670" luhn? -> 1
+
+: main ( -- )
+  "49927398716" luhn? [ "valid" ] [ "invalid" ] if println ;

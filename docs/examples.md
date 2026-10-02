@@ -157,6 +157,8 @@ Append as they happen. Each entry: task, what was missing, workaround used, and 
 | Task | Missing | Workaround | Note |
 |---|---|---|---|
 | Temperature conversion | `f64.to-str` (no float formatting in the library) | `hundredths`: scale by 100, `f64.nearest`, format the `i64` | Small; a candidate for the prelude rather than `FUTURE.md` |
+| Sieve, insertion sort, binary search, 100 doors | Array literals (tests take literals only) | `digits ( str -- array i32 )` builds a test array from `"31415926"`; `ints>str` turns a result into a comparable `str` | Each file repeats these helpers: a shared test-helper library would need module structure (`ARCHITECTURE.md` open question 3) |
+| Luhn test | Index alongside `fold` | `times` with the index counted from the right | Minor; an indexed fold could be a library word |
 
 ## Growth
 

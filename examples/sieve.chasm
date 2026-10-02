@@ -1,0 +1,34 @@
+# All primes up to n, by striking out multiples in a flag array.
+# Rosetta Code: Sieve_of_Eratosthenes. Exercises: array.new, array.at!,
+# nested while loops, filter with a local in scope.
+
+: ints>str ( array i32 -- str )
+  :> a
+  "" :> out!
+  a array.len [ :> i
+    i 0 i32.ne [ out " " str.concat out! ] when
+    out a i array.at i32.to-str str.concat out!
+  ] times
+  out ;
+
+: primes ( i32 -- array i32 )
+  :> n
+  n 1 i32.add array.new ( array i32 ) :> composite
+  2 :> p!
+  [ p p i32.mul n i32.le_u ]
+  [ composite p array.at i32.eqz
+    [ p p i32.mul :> m!
+      [ m n i32.le_u ] [ composite m 1 array.at!  m p i32.add m! ] while
+    ] when
+    p 1 i32.add p! ]
+  while
+  n 1 i32.add array.new ( array i32 ) :> all
+  all array.len [ :> i  all i i array.at! ] times
+  all [ :> k  k 2 i32.ge_u  composite k array.at i32.eqz  i32.and ] filter ;
+test primes : 30 primes ints>str -> "2 3 5 7 11 13 17 19 23 29"
+test primes : 2 primes ints>str -> "2"
+test primes : 1 primes array.len -> 0
+test primes : 100 primes array.len -> 25
+test primes : 10000 primes array.len -> 1229
+
+: main ( -- )  100 primes ints>str println ;

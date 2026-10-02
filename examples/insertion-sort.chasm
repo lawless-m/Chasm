@@ -1,0 +1,37 @@
+# Sort an array i32 in place, ascending, by insertion.
+# Rosetta Code: Sorting_algorithms/Insertion_sort. Exercises: in-place
+# array mutation, a while loop inside times, a short-circuit condition.
+
+: digits ( str -- array i32 )
+  :> s
+  s str.len array.new ( array i32 ) :> a
+  s str.len [ :> i  a i  s i str.byte-at 48 i32.sub  array.at! ] times
+  a ;
+
+: ints>str ( array i32 -- str )
+  :> a
+  "" :> out!
+  a array.len [ :> i
+    i 0 i32.ne [ out " " str.concat out! ] when
+    out a i array.at i32.to-str str.concat out!
+  ] times
+  out ;
+
+: insertion-sort ( array i32 -- )
+  :> a
+  a array.len [ :> i
+    a i array.at :> x
+    i :> j!
+    [ j 0 i32.gt_s [ a j 1 i32.sub array.at x i32.gt_s ] [ 0 ] if ]
+    [ a j  a j 1 i32.sub array.at  array.at!  j 1 i32.sub j! ]
+    while
+    a j x array.at!
+  ] times ;
+test insertion-sort : "31415926" digits dup insertion-sort ints>str -> "1 1 2 3 4 5 6 9"
+test insertion-sort : "987654321" digits dup insertion-sort ints>str -> "1 2 3 4 5 6 7 8 9"
+test insertion-sort : "7" digits dup insertion-sort ints>str -> "7"
+test insertion-sort : "" digits dup insertion-sort ints>str -> ""
+
+: main ( -- )
+  "271828182845" digits :> a
+  a insertion-sort  a ints>str println ;

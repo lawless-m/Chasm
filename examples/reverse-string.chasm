@@ -1,0 +1,24 @@
+# Reverse a string by codepoint, so the result is still valid UTF-8.
+# Rosetta Code: Reverse_a_string. Exercises: str.cp-at walked forward,
+# memory.copy into a fresh buffer filled from the end.
+
+: reverse ( str -- str )
+  :> s
+  s str.len :> n
+  n mem.alloc :> buf
+  0 :> i!
+  [ i n i32.lt_u ]
+  [ s i str.cp-at :> len drop
+    buf n i32.add i i32.sub len i32.sub   # destination: mirrored offset
+    s str.addr i i32.add                  # source
+    len memory.copy
+    i len i32.add i! ]
+  while
+  buf n str.from-raw ;
+test reverse : "asdf" reverse -> "fdsa"
+test reverse : "héllo" reverse -> "olléh"
+test reverse : "a😀b" reverse -> "b😀a"
+test reverse : "" reverse -> ""
+test reverse : "héllo" reverse str.len -> 6
+
+: main ( -- )  "naïve café" reverse println ;
