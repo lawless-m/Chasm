@@ -169,3 +169,50 @@ fn struct_values_cross_steps() {
     let step = ok(&mut s, "array.len");
     assert_eq!(step.line.as_ref().unwrap().stack_after, vec![Ty::I32]);
 }
+
+#[test]
+fn forget_refuses_while_used() {
+    let mut s = session();
+    ok(&mut s, ": sq ( i32 -- i32 ) dup i32.mul ;");
+    ok(&mut s, ": quad ( i32 -- i32 ) sq sq ;");
+    ok(
+        &mut s,
+        ": maybe ( i32 -- i32 ) dup 0 i32.gt_s [ sq ] [ ] if ;",
+    );
+    ok(&mut s, ": one ( -- i32 ) 1 ;");
+    ok(&mut s, "test one : one sq -> 1");
+    ok(&mut s, "3 sq");
+    let step = s.step(")forget sq", 0x20_0000);
+    assert_eq!(step.diagnostics[0].code, "E_FORGET");
+    assert_eq!(
+        step.diagnostics[0].dependants,
+        Some(vec!["maybe".into(), "quad".into(), "test one".into()])
+    );
+    assert!(step.forgotten.is_empty());
+    for w in ["quad", "maybe", "one", "sq"] {
+        assert_eq!(ok(&mut s, &format!(")forget {w}")).forgotten, vec![w]);
+    }
+    assert_eq!(code(&mut s, "sq"), "E_UNDEFINED");
+}
+
+#[test]
+fn forget_frees_the_name_and_drops_tests() {
+    let mut s = session();
+    ok(&mut s, ": sq ( i32 -- i32 ) dup i32.mul ;");
+    assert_eq!(ok(&mut s, "test sq : 3 sq -> 9").tests.len(), 1);
+    ok(&mut s, ")forget sq");
+    let step = ok(&mut s, ": sq ( f64 -- f64 ) dup f64.mul ;");
+    assert!(step.tests.is_empty(), "the old test must not run again");
+    assert!(ok(&mut s, "1.5 sq").line.is_some());
+}
+
+#[test]
+fn forget_refuses_primitives_prelude_and_struct_words() {
+    let mut s = session();
+    ok(&mut s, "struct point  x: i32  y: f64");
+    for w in ["dup", "i64", "point.x", "point.new"] {
+        assert_eq!(code(&mut s, &format!(")forget {w}")), "E_FORGET", "{w}");
+    }
+    assert_eq!(code(&mut s, ")forget nothing"), "E_UNDEFINED");
+    assert_eq!(code(&mut s, ")frob"), "E_SYNTAX");
+}

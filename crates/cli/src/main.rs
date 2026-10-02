@@ -77,6 +77,8 @@ enum Cmd {
     },
     /// List declared words that have no body yet: the to-do list.
     Unresolved(Common),
+    /// List words that `main` and the `export` words never reach.
+    Dead(Common),
     /// List every word with its effect.
     Words(Common),
     /// What a word calls.
@@ -400,6 +402,32 @@ fn exec(cli: Cli) -> (Report, bool) {
             };
             (r, json)
         }
+        Cmd::Dead(c) => {
+            let json = c.json;
+            let r = match load(&c, false) {
+                Err(d) => failed("dead", vec![d]),
+                Ok(comp) => {
+                    let dead = comp.dead().map(|ws| {
+                        ws.iter()
+                            .map(|w| {
+                                json!({
+                                    "word": w.name,
+                                    "effect": w.effect,
+                                    "location": w.location,
+                                })
+                            })
+                            .collect::<Vec<J>>()
+                    });
+                    Report {
+                        command: "dead",
+                        ok: comp.ok(),
+                        results: json!({ "has_roots": dead.is_some(), "dead": dead.unwrap_or_default() }),
+                        diagnostics: comp.diagnostics,
+                    }
+                }
+            };
+            (r, json)
+        }
         Cmd::Words(c) => {
             let json = c.json;
             let r = match load(&c, false) {
@@ -445,6 +473,7 @@ fn repl_report(o: Outcome, output: Vec<u8>) -> Report {
         "defined": o.defined.iter().map(|d| json!({
             "name": d.name, "effect": d.effect, "declared": d.declared,
         })).collect::<Vec<_>>(),
+        "forgotten": o.forgotten,
         "tests": o.tests.iter().map(|t| json!({
             "word": t.word,
             "status": t.status.as_str(),
@@ -667,6 +696,21 @@ fn render(report: &J) -> (String, String) {
                 out.push('\n');
             }
         }
+        "dead" => {
+            let list = r["dead"].as_array().cloned().unwrap_or_default();
+            if r["has_roots"] == J::Bool(false) {
+                if ok {
+                    out.push_str(
+                        "no roots: dead words are counted from `main` and `export` words\n",
+                    );
+                }
+            } else if list.is_empty() && ok {
+                out.push_str("no dead words\n");
+            }
+            for w in list {
+                out.push_str(&format!("{} {}\n", s(&w["word"]), s(&w["effect"])));
+            }
+        }
         "words" => {
             for w in r["words"].as_array().into_iter().flatten() {
                 let mut flags = Vec::new();
@@ -699,6 +743,9 @@ fn render(report: &J) -> (String, String) {
                     s(&d["name"]),
                     s(&d["effect"])
                 ));
+            }
+            for w in strs(&r["forgotten"]) {
+                out.push_str(&format!("forgot: {w}\n"));
             }
             for t in r["tests"].as_array().into_iter().flatten() {
                 if s(&t["status"]) == "pass" {

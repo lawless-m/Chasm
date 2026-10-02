@@ -22,8 +22,10 @@ function render(r) {
     if (d.expected && d.actual) {
       print(`    expected: ( ${d.expected.join(" ")} )\n    actual:   ( ${d.actual.join(" ")} )\n`, "err");
     }
+    if (d.dependants?.length) print(`    dependants: ${d.dependants.join(", ")}\n`, "err");
   }
   for (const d of r.defined) print(`ok: ${d.name} ${d.effect}${d.declared ? " (declared)" : ""}\n`);
+  for (const w of r.forgotten) print(`forgot: ${w}\n`);
   for (const t of r.tests) {
     if (t.status === "pass") {
       print(`PASS     ${t.word}\n`);

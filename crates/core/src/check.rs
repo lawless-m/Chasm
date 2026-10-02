@@ -1467,7 +1467,13 @@ impl<'c> Walker<'c> {
         } else if self.ctx.all_names.contains(n) {
             format!("`{n}` is used before it is defined; add `declare {n} ( ... -- ... )` above this use")
         } else {
-            format!("unknown word `{n}`")
+            let dictionary = self
+                .ctx
+                .by_name
+                .keys()
+                .map(String::as_str)
+                .chain(self.locals.iter().map(|l| l.name.as_str()));
+            format!("unknown word `{n}`{}", crate::prims::suggest(n, dictionary))
         };
         self.err(codes::E_UNDEFINED, msg, loc)
     }

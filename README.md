@@ -29,7 +29,8 @@ each, redefine words live.
 - `web/README.md`: the REPL in the browser
 
 Status: milestones M0 (skeleton), M1 (declared effects to wasm, CLI, native
-host) and M2 (interactive REPL, native and in the browser) are implemented.
-M3 (dependency-graph tooling) is next.
+host), M2 (interactive REPL, native and in the browser), M3 (dependency-graph
+tooling: `deps`, `used-by`, `dead`, `)forget`) and M4 (structs as WasmGC
+structs) are implemented. M5 (hybrid export) is next.
 
 Licence: MIT.

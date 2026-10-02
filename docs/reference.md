@@ -19,6 +19,7 @@ chasm unresolved FILE...      # declared words with no body yet
 chasm words  FILE...          # every word and its effect
 chasm deps WORD FILE...       # what WORD calls (--all for transitive)
 chasm used-by WORD FILE...    # what calls WORD
+chasm dead   FILE...          # words `main` and `export` words never reach
 chasm build  FILE... -o out.wasm
 chasm repl                    # interactive; reads chunks from stdin
 ```
@@ -75,9 +76,16 @@ Codes are stable; messages may change. See section 15 for the list.
   dependants.
 - A line that traps prints `trap in `[line N]`: message` and leaves the
   stack as it was.
+- A line starting with `)` is a REPL command, not Chasm, so a file never
+  holds one. `)forget word` removes a word and its tests and frees the name,
+  which can then be defined with any effect. It is refused (`E_FORGET`, with
+  the `dependants`) while another word, a quotation in one, or another
+  word's test uses it: forget those first, top-down. Primitives, prelude
+  words and struct-generated words cannot be forgotten. A function value of
+  a forgotten word already on the stack still runs the old code.
 - `print` writes to the terminal and `read-line` reads from the same stdin
   as the REPL. With `--json` the program's output is captured into
-  `results.output`; each report also has `results.defined`,
+  `results.output`; each report also has `results.defined`, `results.forgotten`,
   `results.tests`, `results.trap`, `results.stack` and `results.timing`.
 
 ```
@@ -349,6 +357,11 @@ test parse-int : "1234" parse-int -> 1234
   no body is reported **pending**. Tests may also name primitives. Each test
   runs in a fresh instance with a captured console.
 - `chasm unresolved` is the to-do list: work through it one stub at a time.
+- `chasm dead` lists the user words that `main` and the `export` words never
+  reach, following calls, quotations and `'word`, over every file named.
+  Tests do not keep a word alive. Prelude and struct-generated words are not
+  listed, and a program with neither `main` nor an `export` word reports
+  no roots rather than calling everything dead.
 
 ## 14. I/O
 
@@ -392,7 +405,7 @@ Library words:
 | `E_LEX`, `E_SYNTAX` | malformed source |
 | `E_LITERAL_RANGE` | a literal does not fit its type |
 | `E_UNKNOWN_TYPE` | not a type name, or a struct used before its declaration |
-| `E_UNDEFINED` | unknown word, or used before it is defined or declared |
+| `E_UNDEFINED` | unknown word (the message suggests the nearest name, or the Chasm word for a common name from another language: `pop` → `drop`, `+` → `i32.add`), or used before it is defined or declared |
 | `E_STACK_UNDERFLOW` | not enough values; `expected` and `actual` are given |
 | `E_TYPE_MISMATCH` | wrong types on top of the stack |
 | `E_EFFECT_MISMATCH` | body does not leave the declared outputs |
@@ -411,6 +424,7 @@ Library words:
 | `E_NO_MAIN` | `run` without `main` |
 | `E_IO`, `E_USAGE` | CLI problems |
 | `E_INTERNAL` | compiler bug |
+| `E_FORGET` | `)forget` refused: the word is still used (lists `dependants`), or is a primitive, prelude or struct-generated word |
 
 ## 16. Worked examples
 

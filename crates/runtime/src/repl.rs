@@ -51,6 +51,7 @@ pub struct ReplTestResult {
 pub struct Outcome {
     pub diagnostics: Vec<Diagnostic>,
     pub defined: Vec<Defined>,
+    pub forgotten: Vec<String>,
     pub trap: Option<RunError>,
     pub tests: Vec<ReplTestResult>,
     pub stack: Vec<StackEntry>,
@@ -310,6 +311,7 @@ impl NativeRepl {
         Outcome {
             diagnostics,
             defined: step.defined,
+            forgotten: step.forgotten,
             trap,
             tests,
             stack: {

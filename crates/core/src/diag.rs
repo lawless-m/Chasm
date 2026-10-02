@@ -133,4 +133,5 @@ pub mod codes {
     pub const E_IO: &str = "E_IO";
     pub const E_USAGE: &str = "E_USAGE";
     pub const E_INTERNAL: &str = "E_INTERNAL";
+    pub const E_FORGET: &str = "E_FORGET";
 }

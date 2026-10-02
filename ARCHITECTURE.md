@@ -1,6 +1,6 @@
 # Chasm: Architecture and Milestones
 
-Status: draft v0.12 (M0 to M2 and M4 implemented; decisions in sections 13 to 16). **Chasm** (Chuck-Wasm, after Chuck Moore) is a typed, concatenative language that compiles to WebAssembly, with an interactive REPL, written in Rust. Source files use the `.chasm` extension; the CLI binary is `chasm`.
+Status: draft v0.13 (M0 to M4 implemented; decisions in sections 13 to 16). **Chasm** (Chuck-Wasm, after Chuck Moore) is a typed, concatenative language that compiles to WebAssembly, with an interactive REPL, written in Rust. Source files use the `.chasm` extension; the CLI binary is `chasm`.
 
 ## 1. Goals
 
@@ -303,6 +303,9 @@ Heavy native batch work (large test corpora, benchmarks, Binaryen runs over big 
    | `point.x!` | `( point i32 -- )` | `struct.set` |
 
    `!` means write, as for locals. Generated words are ordinary words: `words` lists them, they appear in the dependency graph. Strings and arrays stay in linear memory; a `str` or `array T` field is two `i32` fields. Exported modules (M5) require an engine with GC.
+
+2. **`)forget` is a REPL command, not language.** A line starting with `)` is handled by `Session` before parsing, so a file can never forget anything, including a file loaded into a session. It removes the word's name and its tests (the session records their indices so they never run again) and renames the word `[forgotten name]` with no edges. Its table slot is never reused, so a function value of it on the stack keeps calling the old code with the old type. It is refused with `E_FORGET` while a named word, a quotation inside one, or another word's test uses the word; REPL lines do not count. Primitives, prelude words and struct-generated words are refused.
+3. **Dead words** are computed over the whole program from its roots, `main` and the `export` words, along call and address-taken edges (`Compilation::dead`, `chasm dead`). Tests are not roots. A program with no root reports none rather than everything, so a library file stays quiet. Prelude and struct-generated words are never reported; `WordInfo.generated` marks the latter. Trimming dead words at export is M5.
 
 ## 16. Decisions taken in M4
 

@@ -120,6 +120,7 @@ export class Repl {
       ok: !diagnostics.some((d) => d.severity === "error") && !trap && tests.every((t) => t.status === "pass"),
       diagnostics,
       defined: s.defined,
+      forgotten: s.forgotten,
       tests,
       trap,
       stack: await this.readStack(this.stackTypes),

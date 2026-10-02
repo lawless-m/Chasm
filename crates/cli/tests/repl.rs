@@ -195,3 +195,17 @@ fn struct_echo_json() {
         serde_json::json!({"type": "point", "value": "point{x: 7, y: 2.5}"})
     );
 }
+
+#[test]
+fn forget_keeps_the_stack_and_old_function_values() {
+    let input = ": sq ( i32 -- i32 ) dup i32.mul ;\n: ticked ( -- [ i32 -- i32 ] ) 'sq ;\n3 ticked\n)forget sq\n)forget ticked\n)forget sq\n: sq ( i32 -- i32 ) 1 i32.add ;\ncall\n";
+    let (ok, out, err) = repl(&[], input);
+    assert!(!ok, "the refused forget is an error");
+    assert!(err.contains("E_FORGET"), "{err}");
+    assert!(err.contains("dependants: ticked"), "{err}");
+    assert!(
+        out.contains("forgot: ticked\n") && out.contains("forgot: sq\n"),
+        "{out}"
+    );
+    assert_eq!(last_line(&out), "( i32 ) 9", "the old `sq` still runs");
+}

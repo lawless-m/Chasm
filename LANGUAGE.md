@@ -251,6 +251,9 @@ Recorded here so the spec matches the compiler. `docs/reference.md` is the user-
 2. **What goes in the prelude.** A word joins the prelude when the example corpus has written it by hand more than once and any program might want it: `f64.fixed ( f64 i32 -- str )`, `array.to-str ( array i32 -- str )` and `str.from-byte ( i32 -- str )` came in this way. Prelude names are `type.verb`, because the dictionary is flat: a program may redefine a prelude word only with the same effect. Code that only some programs want (test helpers, for instance) is a question for library structure (`ARCHITECTURE.md` open question 3), not the prelude.
 3. **No include form.** A program is the files named on the command line, in order, compiled as one dictionary; the shell composes programs (`chasm test lib.chasm prog.chasm`, or `cat` into `/dev/stdin`). The core keeps no I/O and the language no mechanism for it. Files in `examples/` stay self-contained, so the examples gate can check each one alone.
 
+4. **REPL commands are outside the language.** `)forget word` and any later REPL command start with `)`, which no Chasm line can; `forget` is not a keyword, so no file can contain it.
+5. **Dead words** are those that `main` and the `export` words never reach; tests do not keep a word alive.
+
 ## 15. Decisions taken in M4
 
 1. **Source form and generated words.** `struct point  x: i32  y: f64`, no terminator; it generates `point.new`, `point.x` and `point.x!` per field as ordinary dictionary words.

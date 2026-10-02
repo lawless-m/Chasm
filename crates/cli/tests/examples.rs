@@ -71,6 +71,25 @@ fn unresolved_lists_contract_stubs() {
 }
 
 #[test]
+fn dead_lists_words_main_never_reaches() {
+    let (ok, out, _) = chasm(&["dead", "--json", "examples/basics.chasm"]);
+    assert!(ok);
+    let j: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(j["results"]["has_roots"], true);
+    let names: Vec<&str> = j["results"]["dead"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["word"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["abs", "hypot"]);
+    let (_, out, _) = chasm(&["dead", "examples/hello.chasm"]);
+    assert_eq!(out, "no dead words\n");
+    let (_, out, _) = chasm(&["dead", "examples/contract.chasm"]);
+    assert!(out.starts_with("no roots"), "{out}");
+}
+
+#[test]
 fn files_example_reads_a_mount() {
     let (ok, out, err) = chasm(&["run", "examples/files.chasm", "--mount", "ex=examples"]);
     assert!(ok, "{err}");

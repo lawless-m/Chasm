@@ -60,6 +60,13 @@ try {
     { type: "i64", value: "7 i64" },
   ]);
 
+  r = await repl.step(")forget sq");
+  assert.equal(r.diagnostics[0].code, "E_FORGET");
+  assert.deepEqual(r.diagnostics[0].dependants, ["twice"]);
+  r = await repl.step(")forget twice");
+  assert.deepEqual(r.forgotten, ["twice"]);
+  assert.equal(r.stack.length, 3);
+
   console.log("node-repl.mjs ok");
   await worker.terminate();
 } catch (e) {

@@ -277,3 +277,27 @@ fn struct_array_combinators() {
          : furthest ( array point -- point )  0 0.0 point.new [ :> p :> best  p point.x best point.x i32.gt_s [ p ] [ best ] if ] fold ;"
     ));
 }
+
+#[test]
+fn dead_words() {
+    let c = ok("struct point  x: i32  y: f64
+: helper ( -- i32 ) 1 ;
+: unused ( -- i32 ) 2 ;
+: only-tested ( -- i32 ) 3 ;
+test only-tested : only-tested -> 3
+: ticked ( -- i32 ) 4 ;
+: in-quote ( -- ) ;
+: main ( -- ) helper drop 'ticked drop 1 [ drop in-quote ] times ;");
+    let dead: Vec<&str> = c.dead().unwrap().iter().map(|w| w.name.as_str()).collect();
+    assert_eq!(dead, ["unused", "only-tested"]);
+    let lib = ok(": a ( -- i32 ) 1 ;");
+    assert!(lib.dead().is_none(), "no roots, nothing to report");
+    let exported = ok(": b ( -- i32 ) 1 ;\nexport : a ( -- i32 ) b ;\n: c ( -- ) ;");
+    let dead: Vec<&str> = exported
+        .dead()
+        .unwrap()
+        .iter()
+        .map(|w| w.name.as_str())
+        .collect();
+    assert_eq!(dead, ["c"]);
+}
