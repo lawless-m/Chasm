@@ -23,6 +23,11 @@ chasm build  FILE... -o out.wasm
 chasm repl                    # interactive; reads chunks from stdin
 ```
 
+A program is the files you name, in order; there is no include form. To use
+a library, name it first: `chasm test lib.chasm prog.chasm`. A pipeline
+works too, `cat lib.chasm prog.chasm | chasm test /dev/stdin`, but then error
+locations count lines in the concatenated text.
+
 Add `--json` to any command for a machine-readable report:
 
 ```json
@@ -209,6 +214,8 @@ match the other branch.
 | `str.cp-at` | `( str i32 -- i32 i32 )` | codepoint and its byte length at an offset |
 | `str.boundary?` | `( str i32 -- i32 )` | is the offset a codepoint boundary |
 | `i32.to-str` `i64.to-str` | `( iNN -- str )` | decimal |
+| `f64.fixed` | `( f64 i32 -- str )` | rounded to that many decimals (ties to even); traps beyond the `i64` range |
+| `str.from-byte` | `( i32 -- str )` | a one-byte string |
 | `str.addr` | `( str -- i32 )` | low level: the address |
 | `str.from-raw` | `( i32 i32 -- str )` | low level: unchecked addr and length |
 | `mem.alloc` | `( i32 -- i32 )` | low level: zeroed bytes, 8-aligned, never freed |
@@ -226,6 +233,7 @@ match the other branch.
 | `map` | `arr [ T -- U ] map` → `array U` |
 | `filter` | `arr [ T -- i32 ] filter` → `array T` |
 | `fold` | `arr init [ U T -- U ] fold` → `U` |
+| `array.to-str` | `( array i32 -- str )` elements in decimal, space-separated |
 
 ```
 : sum ( array i32 -- i32 )  0 [ i32.add ] fold ;

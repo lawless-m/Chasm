@@ -1,39 +1,29 @@
 # Temperature conversion: Kelvin to Celsius, Fahrenheit and Rankine.
 # Rosetta Code: Temperature_conversion. Exercises: f64 arithmetic, rounding,
-# formatting a number with two decimals.
-# Tests compare exactly, so they go through `hundredths`, which rounds.
+# formatting with f64.fixed.
 
 : kelvin>celsius    ( f64 -- f64 )  273.15 f64.sub ;
 : kelvin>rankine    ( f64 -- f64 )  1.8 f64.mul ;
 : kelvin>fahrenheit ( f64 -- f64 )  kelvin>rankine 459.67 f64.sub ;
 
-# Two digits, with a leading zero below 10.
-: two-digits ( i64 -- str )
-  dup 10 i64 i64.lt_s [ i64.to-str "0" swap str.concat ] [ i64.to-str ] if ;
-test two-digits : 5 i64 two-digits -> "05"
-test two-digits : 15 i64 two-digits -> "15"
+# Tests compare exactly, so results are compared as text rounded by the
+# prelude's f64.fixed.
+test f64.fixed : 2.5 2 f64.fixed -> "2.50"
+test f64.fixed : -0.125 2 f64.fixed -> "-0.12"   # f64.nearest: ties to even
+test f64.fixed : -0.001 2 f64.fixed -> "0.00"
+test f64.fixed : 7.0 0 f64.fixed -> "7"
 
-# An f64 rounded to two decimals, as text.
-: hundredths ( f64 -- str )
-  100.0 f64.mul f64.nearest i64.trunc_f64_s :> h
-  h 0 i64 i64.lt_s [ "-" ] [ "" ] if :> sign
-  h 0 i64 i64.lt_s [ 0 i64 h i64.sub ] [ h ] if :> a
-  sign  a 100 i64 i64.div_s i64.to-str str.concat
-  "." str.concat  a 100 i64 i64.rem_s two-digits str.concat ;
-test hundredths : 2.5 hundredths -> "2.50"
-test hundredths : -0.125 hundredths -> "-0.12"   # nearest rounds half to even
-
-test kelvin>celsius    : 0.0 kelvin>celsius hundredths -> "-273.15"
-test kelvin>celsius    : 373.15 kelvin>celsius hundredths -> "100.00"
-test kelvin>fahrenheit : 0.0 kelvin>fahrenheit hundredths -> "-459.67"
-test kelvin>fahrenheit : 21.0 kelvin>fahrenheit hundredths -> "-421.87"
-test kelvin>rankine    : 21.0 kelvin>rankine hundredths -> "37.80"
+test kelvin>celsius    : 0.0 kelvin>celsius 2 f64.fixed -> "-273.15"
+test kelvin>celsius    : 373.15 kelvin>celsius 2 f64.fixed -> "100.00"
+test kelvin>fahrenheit : 0.0 kelvin>fahrenheit 2 f64.fixed -> "-459.67"
+test kelvin>fahrenheit : 21.0 kelvin>fahrenheit 2 f64.fixed -> "-421.87"
+test kelvin>rankine    : 21.0 kelvin>rankine 2 f64.fixed -> "37.80"
 
 : report ( f64 -- )
   :> k
-  "K  " print k hundredths println
-  "C  " print k kelvin>celsius hundredths println
-  "F  " print k kelvin>fahrenheit hundredths println
-  "R  " print k kelvin>rankine hundredths println ;
+  "K  " print k 2 f64.fixed println
+  "C  " print k kelvin>celsius 2 f64.fixed println
+  "F  " print k kelvin>fahrenheit 2 f64.fixed println
+  "R  " print k kelvin>rankine 2 f64.fixed println ;
 
 : main ( -- )  21.0 report ;

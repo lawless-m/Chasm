@@ -86,23 +86,6 @@ test rpn : "5 1 2 + 4 * + 3 -" rpn -> 14.0
 test rpn : "2 -3 ^" rpn -> 0.125
 test rpn : "  2.5   4 * " rpn -> 10.0
 
-# x rounded to d decimals, as text.
-: fixed ( f64 i32 -- str )
-  :> d :> x
-  10.0 d f64.convert_i32_s pow :> scale
-  x scale f64.mul f64.nearest i64.trunc_f64_s :> v
-  v 0 i64 i64.lt_s [ 0 i64 v i64.sub ] [ v ] if :> a
-  scale i64.trunc_f64_s :> unit
-  a unit i64.rem_s i64.to-str :> frac!
-  [ frac str.len d i32.lt_s ] [ "0" frac str.concat frac! ] while
-  v 0 i64 i64.lt_s [ "-" ] [ "" ] if
-  a unit i64.div_s i64.to-str str.concat
-  d [ "." str.concat frac str.concat ] when ;
-test fixed : 3.0001220703125 13 fixed -> "3.0001220703125"
-test fixed : -2.5 2 fixed -> "-2.50"
-test fixed : 0.125 2 fixed -> "0.12"     # f64.nearest: ties to even
-test fixed : 7.0 0 fixed -> "7"
-
 : main ( -- )
   "3 4 2 * 1 5 - 2 3 ^ ^ / +" :> e
-  e print " = " print  e rpn 13 fixed println ;
+  e print " = " print  e rpn 13 f64.fixed println ;

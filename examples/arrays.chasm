@@ -11,6 +11,7 @@ test iota : 4 iota 3 array.at -> 3
 
 : sum ( array i32 -- i32 )  0 [ i32.add ] fold ;
 test sum : 10 iota sum -> 45
+test array.to-str : 4 iota array.to-str -> "0 1 2 3"
 
 : doubled ( array i32 -- array i32 )  [ 2 i32.mul ] map ;
 test doubled : 5 iota doubled sum -> 20

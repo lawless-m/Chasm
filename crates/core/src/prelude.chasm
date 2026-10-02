@@ -77,6 +77,13 @@
     acc n ]
   if ;
 
+# A one-byte string.
+: str.from-byte ( i32 -- str )
+  :> b
+  1 mem.alloc :> a
+  a b i32.store8
+  a 1 str.from-raw ;
+
 # ---------------------------------------------------------------- numbers
 
 : i64.to-str ( i64 -- str )
@@ -100,6 +107,32 @@
 : i64 ( i32 -- i64 )  i64.extend_i32_s ;
 
 : i32.to-str ( i32 -- str )  i64 i64.to-str ;
+
+# x rounded to d decimal places (f64.nearest: ties to even), as text.
+# Traps when x * 10^d is beyond the i64 range.
+: f64.fixed ( f64 i32 -- str )
+  :> d :> x
+  1 i64 :> unit!
+  d [ drop  unit 10 i64 i64.mul unit! ] times
+  x unit f64.convert_i64_s f64.mul f64.nearest i64.trunc_f64_s :> v
+  v 0 i64 i64.lt_s [ 0 i64 v i64.sub ] [ v ] if :> a
+  a unit i64.rem_s i64.to-str :> frac!
+  [ frac str.len d i32.lt_s ] [ "0" frac str.concat frac! ] while
+  v 0 i64 i64.lt_s [ "-" ] [ "" ] if
+  a unit i64.div_s i64.to-str str.concat
+  d [ "." str.concat frac str.concat ] when ;
+
+# ---------------------------------------------------------------- arrays
+
+# The elements in decimal, separated by single spaces.
+: array.to-str ( array i32 -- str )
+  :> a
+  "" :> out!
+  a array.len [ :> i
+    i [ out " " str.concat out! ] when
+    out a i array.at i32.to-str str.concat out!
+  ] times
+  out ;
 
 # ---------------------------------------------------------------- I/O
 

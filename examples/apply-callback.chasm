@@ -25,19 +25,10 @@
   s str.len [ :> i  a i  s i str.byte-at 48 i32.sub  array.at! ] times
   a ;
 
-: ints>str ( array i32 -- str )
-  :> a
-  "" :> out!
-  a array.len [ :> i
-    i 0 i32.ne [ out " " str.concat out! ] when
-    out a i array.at i32.to-str str.concat out!
-  ] times
-  out ;
-
-test apply-each : "1234" digits 'square apply-each ints>str -> "1 4 9 16"
-test apply-each : "1234" digits 'negate apply-each ints>str -> "-1 -2 -3 -4"
-test apply! : "123" digits dup 'square apply! ints>str -> "1 4 9"
-test pick : "12" digits 0 pick apply-each ints>str -> "-1 -2"
+test apply-each : "1234" digits 'square apply-each array.to-str -> "1 4 9 16"
+test apply-each : "1234" digits 'negate apply-each array.to-str -> "-1 -2 -3 -4"
+test apply! : "123" digits dup 'square apply! array.to-str -> "1 4 9"
+test pick : "12" digits 0 pick apply-each array.to-str -> "-1 -2"
 
 : main ( -- )
-  "123456789" digits 'square apply-each ints>str println ;
+  "123456789" digits 'square apply-each array.to-str println ;

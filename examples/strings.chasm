@@ -7,6 +7,7 @@ test str.eq : "abc" "abc" str.eq -> 1
 test str.eq : "abc" "abd" str.eq -> 0
 test str.cp-at : "é" 0 str.cp-at -> 233 2
 test i32.to-str : -1234 i32.to-str -> "-1234"
+test str.from-byte : 65 str.from-byte -> "A"
 test i64.to-str : -9223372036854775808 i64 i64.to-str -> "-9223372036854775808"
 
 # Count codepoints by walking byte offsets.

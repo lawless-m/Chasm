@@ -8,15 +8,6 @@
   s str.len [ :> i  a i  s i str.byte-at 48 i32.sub  array.at! ] times
   a ;
 
-: ints>str ( array i32 -- str )
-  :> a
-  "" :> out!
-  a array.len [ :> i
-    i 0 i32.ne [ out " " str.concat out! ] when
-    out a i array.at i32.to-str str.concat out!
-  ] times
-  out ;
-
 : insertion-sort ( array i32 -- )
   :> a
   a array.len [ :> i
@@ -27,11 +18,11 @@
     while
     a j x array.at!
   ] times ;
-test insertion-sort : "31415926" digits dup insertion-sort ints>str -> "1 1 2 3 4 5 6 9"
-test insertion-sort : "987654321" digits dup insertion-sort ints>str -> "1 2 3 4 5 6 7 8 9"
-test insertion-sort : "7" digits dup insertion-sort ints>str -> "7"
-test insertion-sort : "" digits dup insertion-sort ints>str -> ""
+test insertion-sort : "31415926" digits dup insertion-sort array.to-str -> "1 1 2 3 4 5 6 9"
+test insertion-sort : "987654321" digits dup insertion-sort array.to-str -> "1 2 3 4 5 6 7 8 9"
+test insertion-sort : "7" digits dup insertion-sort array.to-str -> "7"
+test insertion-sort : "" digits dup insertion-sort array.to-str -> ""
 
 : main ( -- )
   "271828182845" digits :> a
-  a insertion-sort  a ints>str println ;
+  a insertion-sort  a array.to-str println ;

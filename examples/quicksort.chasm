@@ -29,21 +29,12 @@
     a p 1 i32.add  a array.len p i32.sub 1 i32.sub  array.slice quicksort ]
   when ;
 
-# Test helpers: an array from a digit string, and back to text.
+# Test helper: an array from a digit string.
 : digits ( str -- array i32 )
   :> s
   s str.len array.new ( array i32 ) :> a
   s str.len [ :> i  a i  s i str.byte-at 48 i32.sub  array.at! ] times
   a ;
-
-: ints>str ( array i32 -- str )
-  :> a
-  "" :> out!
-  a array.len [ :> i
-    i 0 i32.ne [ out " " str.concat out! ] when
-    out a i array.at i32.to-str str.concat out!
-  ] times
-  out ;
 
 # n values from a linear congruential generator, 0 to 999.
 : scrambled ( i32 -- array i32 )
@@ -64,15 +55,15 @@
   ] times
   ok ;
 
-test quicksort : "31415926" digits dup quicksort ints>str -> "1 1 2 3 4 5 6 9"
-test quicksort : "123456789" digits dup quicksort ints>str -> "1 2 3 4 5 6 7 8 9"
-test quicksort : "5" digits dup quicksort ints>str -> "5"
-test quicksort : "" digits dup quicksort ints>str -> ""
+test quicksort : "31415926" digits dup quicksort array.to-str -> "1 1 2 3 4 5 6 9"
+test quicksort : "123456789" digits dup quicksort array.to-str -> "1 2 3 4 5 6 7 8 9"
+test quicksort : "5" digits dup quicksort array.to-str -> "5"
+test quicksort : "" digits dup quicksort array.to-str -> ""
 test quicksort : 2000 scrambled dup quicksort sorted? -> 1
 test sorted? : 2000 scrambled sorted? -> 0
 
 : main ( -- )
   20 scrambled :> a
-  a ints>str println
+  a array.to-str println
   a quicksort
-  a ints>str println ;
+  a array.to-str println ;

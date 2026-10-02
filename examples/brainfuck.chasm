@@ -25,12 +25,6 @@
   sp [ "unmatched [" trap ] when
   jump ;
 
-: byte>str ( i32 -- str )
-  :> b
-  1 mem.alloc :> a
-  a b i32.store8
-  a 1 str.from-raw ;
-
 : bf ( str str -- str )
   :> in :> p
   p jumps :> jump
@@ -44,7 +38,7 @@
     c 60 i32.eq [ ptr 1 i32.sub ptr! ] when                                  # <
     c 43 i32.eq [ tape ptr  v 1 i32.add 255 i32.and  array.at! ] when        # +
     c 45 i32.eq [ tape ptr  v 1 i32.sub 255 i32.and  array.at! ] when        # -
-    c 46 i32.eq [ out v byte>str str.concat out! ] when                      # .
+    c 46 i32.eq [ out v str.from-byte str.concat out! ] when                      # .
     c 44 i32.eq                                                              # , (0 at end)
     [ tape ptr  pos in str.len i32.lt_u [ in pos str.byte-at ] [ 0 ] if  array.at!
       pos 1 i32.add pos! ]
