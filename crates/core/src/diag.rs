@@ -135,4 +135,5 @@ pub mod codes {
     pub const E_INTERNAL: &str = "E_INTERNAL";
     pub const E_FORGET: &str = "E_FORGET";
     pub const E_FORCE: &str = "E_FORCE";
+    pub const E_NEEDS_EFFECT: &str = "E_NEEDS_EFFECT";
 }

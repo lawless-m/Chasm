@@ -21,7 +21,7 @@ Tasks are taken from Rosetta Code **task descriptions** only. Every solution is 
 - `test` compares the stack exactly and does not look at console output. Test words that return values; keep `main` as the thin printing wrapper.
 - Idiomatic over clever. These are the programs the model will imitate.
 
-The files already in `examples/` (`hello`, `basics`, `strings`, `arrays`, `contract`, `files`, `http`, `ninep`, `wasi`) are the core teaching set and stay alongside the tasks below.
+The files already in `examples/` (`hello`, `basics`, `strings`, `arrays`, `contract`, `files`, `http`, `ninep`, `wasi`, `generics`, `inferred`) are the core teaching set and stay alongside the tasks below.
 
 ## Task list
 
@@ -67,7 +67,7 @@ Everything below can be written with the compiler as it stands: numerics, contro
 | Word frequency | tokenising, structs, a binary search tree of optional links as a map |
 | Tokenizer | state machine over bytes, `struct token`, arrays of structs |
 | Apply a callback to an array | `'word`, quotation values, `call`, quotation types in effects |
-| Sort with a custom comparator | insertion sort taking `[ i32 i32 -- i32 ]` |
+| Sort with a custom comparator | insertion sort generic over `T`, taking `[ T T -- i32 ]` |
 | Function composition (wall) | quotation values; expected to want closures |
 
 ## Task statements

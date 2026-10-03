@@ -267,6 +267,13 @@ impl<'a> Parser<'a> {
         {
             return Err(self.err(format!("`{n}` cannot be a struct name"), self.loc(name)));
         }
+        if n.starts_with(|c: char| c.is_ascii_uppercase()) {
+            let lower = n.to_ascii_lowercase();
+            return Err(self.err(
+                format!("`{n}` cannot be a struct name: a name starting with an uppercase letter is a type variable; write `{lower}`"),
+                self.loc(name),
+            ));
+        }
         let mut fields: Vec<(String, Ty, Location)> = Vec::new();
         while let Some(label) = self.peek().filter(|t| field_label(t).is_some()) {
             self.pos += 1;
@@ -359,13 +366,16 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// A type. Built-in types and struct names are lowercase, so a name
+    /// starting with an uppercase ASCII letter is always a type variable
+    /// (`T`, `Elem`), in every type position; it is never read as a struct.
     fn ty(&mut self) -> Result<Ty, Diagnostic> {
         let t = self.next("a type")?;
         let unknown = |p: &Self| {
             Diagnostic::error(
                 codes::E_UNKNOWN_TYPE,
                 format!(
-                    "unknown type `{}` (types are i32 i64 f32 f64 str, `array T`, `[ effect ]` or a declared struct name)",
+                    "unknown type `{}` (types are i32 i64 f32 f64 str, `array T`, `[ effect ]`, a declared struct name, or a type variable such as `T`)",
                     t.text
                 ),
                 p.loc(t),
@@ -403,6 +413,9 @@ impl<'a> Parser<'a> {
                 let outputs = self.types(&["]"])?;
                 self.next("`]`")?;
                 Ty::Quot(Box::new(Effect::new(inputs, outputs)))
+            }
+            s if s.starts_with(|c: char| c.is_ascii_uppercase()) && !s.ends_with(':') => {
+                Ty::Param(s.to_string())
             }
             s if !is_punct(s) && !s.ends_with(':') => Ty::Struct(s.to_string()),
             _ => return Err(unknown(self)),
@@ -539,6 +552,37 @@ mod tests {
 
     fn perr(src: &str) -> Diagnostic {
         parse("t", &lex("t", src).unwrap()).unwrap_err()
+    }
+
+    #[test]
+    fn type_params() {
+        let Item::Def {
+            effect: Some(e), ..
+        } = &p(": f ( T -- T T ) dup ;")[0]
+        else {
+            panic!()
+        };
+        assert_eq!(e.inputs, [Ty::Param("T".into())]);
+        let Item::Def {
+            effect: Some(e), ..
+        } = &p(": g ( array T [ T -- U ] -- U ) drop drop ;")[0]
+        else {
+            panic!()
+        };
+        assert_eq!(e.to_string(), "( array T [ T -- U ] -- U )");
+        assert_eq!(e.params(), ["T", "U"]);
+        let Item::Def { body, .. } = &p(": h ( -- ) ( a b ) ;")[0] else {
+            panic!()
+        };
+        assert!(
+            matches!(&body[0].kind, NodeKind::Assert(tys) if tys == &[Ty::Struct("a".into()), Ty::Struct("b".into())]),
+            "{body:?}"
+        );
+        assert_eq!(perr("struct Point  x: i32").code, codes::E_SYNTAX);
+        let Item::Struct { fields, .. } = &p("struct p  next: array T")[0] else {
+            panic!()
+        };
+        assert_eq!(fields[0].1, Ty::Array(Box::new(Ty::Param("T".into()))));
     }
 
     #[test]

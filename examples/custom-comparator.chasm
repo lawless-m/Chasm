@@ -1,9 +1,10 @@
 # Insertion sort taking the ordering as a function value.
 # Rosetta Code: Sort_using_a_custom_comparator. Exercises: a comparator of
-# type [ i32 i32 -- i32 ] (negative, zero or positive, as in C), call inside
-# a loop condition, a stable sort.
+# type [ T T -- i32 ] (negative, zero or positive, as in C), call inside a
+# loop condition, a stable sort. The sort is generic over the element type
+# and is instantiated per use (`sort-by<i32>`, `sort-by<f64>`).
 
-: sort-by ( array i32 [ i32 i32 -- i32 ] -- )
+: sort-by ( array T [ T T -- i32 ] -- )
   :> cmp :> a
   a array.len [ :> i
     a i array.at :> x
@@ -34,6 +35,13 @@ test sort-by : "31415926" digits dup 'ascending sort-by array.to-str -> "1 1 2 3
 test sort-by : "31415926" digits dup 'descending sort-by array.to-str -> "9 6 5 4 3 2 1 1"
 test sort-by : "31415926" digits dup 'evens-first sort-by array.to-str -> "2 4 6 1 1 3 5 9"
 test sort-by : "" digits dup 'ascending sort-by array.to-str -> ""
+
+: descending-f64 ( f64 f64 -- i32 )  :> b :> a  a b f64.lt  a b f64.gt  i32.sub ;
+: halves ( -- array f64 )
+  3 array.new ( array f64 ) :> h
+  h 0 0.5 array.at!  h 1 2.5 array.at!  h 2 1.5 array.at!
+  h ;
+test sort-by : halves dup 'descending-f64 sort-by 0 array.at -> 2.5
 
 : main ( -- )
   "271828182845904523536" digits :> a

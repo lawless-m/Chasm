@@ -210,6 +210,7 @@ fn json_report_shape_for_every_command() {
             &["unresolved", "--json", "examples/contract.chasm"],
         ),
         ("dead", &["dead", "--json", "examples/basics.chasm"]),
+        ("infer", &["infer", "--json", "examples/basics.chasm"]),
         ("words", &["words", "--json", "examples/basics.chasm"]),
         (
             "deps",
@@ -271,4 +272,142 @@ fn build_wasi() {
     assert_eq!(j["results"]["wasi"], true);
     assert!(root().join(&out).exists());
     let _ = std::fs::remove_file(root().join(&out));
+}
+
+#[test]
+fn generic_words_run_and_test() {
+    let src = scratch("generic.chasm");
+    std::fs::write(
+        &src,
+        ": twice ( T -- T T ) dup ;\n: main ( -- ) 3 twice i32.add i32.to-str println ;\ntest twice : 3 twice -> 3 3\ntest twice : \"a\" twice str.concat -> \"aa\"\n",
+    )
+    .unwrap();
+    let p = src.to_str().unwrap();
+    let (ok, out, err) = chasm(&["test", p]);
+    assert!(ok, "{out}{err}");
+    assert!(out.contains("2 passed"), "{out}");
+    let (ok, out, err) = chasm(&["run", p]);
+    assert!(ok, "{out}{err}");
+    assert_eq!(out, "6\n");
+    let _ = std::fs::remove_file(src);
+}
+
+#[test]
+fn dead_and_build_with_generics() {
+    let src = scratch("generic-dead.chasm");
+    std::fs::write(
+        &src,
+        ": twice ( T -- T T ) dup ;\n: main ( -- ) 4 twice i32.mul i32.to-str println ;\n",
+    )
+    .unwrap();
+    let p = src.to_str().unwrap();
+    let (_, out, _) = chasm(&["dead", p]);
+    assert!(!out.contains("twice"), "{out}");
+    let wasm = scratch("generic-dead.wasm");
+    let (ok, out, err) = chasm(&["build", "--no-opt", p, "-o", wasm.to_str().unwrap()]);
+    assert!(ok, "{out}{err}");
+    let (ok, out, _) = chasm(&["run", p]);
+    assert!(ok);
+    assert_eq!(out, "16\n");
+    let _ = std::fs::remove_file(src);
+    let _ = std::fs::remove_file(wasm);
+}
+
+#[test]
+fn the_last_definition_of_a_generic_wins() {
+    let src = scratch("generic-redef.chasm");
+    std::fs::write(
+        &src,
+        ": pick2 ( T T -- T ) drop ;\n: f ( i32 i32 -- i32 ) pick2 ;\n: pick2 ( T T -- T ) nip ;\ntest f : 1 2 f -> 2\n",
+    )
+    .unwrap();
+    let (ok, out, err) = chasm(&["test", src.to_str().unwrap()]);
+    assert!(ok, "{out}{err}");
+    let _ = std::fs::remove_file(src);
+}
+
+#[test]
+fn words_flags_inferred_and_generic() {
+    let src = scratch("words-flags.chasm");
+    std::fs::write(
+        &src,
+        ": sq dup i32.mul ;\n: twice ( T -- T T ) dup ;\n: a ( i32 -- i32 i32 ) twice ;\n",
+    )
+    .unwrap();
+    let p = src.to_str().unwrap();
+    let (_, out, _) = chasm(&["words", "--json", p]);
+    let j: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let word = |n: &str| {
+        j["results"]["words"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|w| w["name"] == n)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(word("sq")["inferred"], true);
+    assert_eq!(word("twice")["generic"], true);
+    assert_eq!(word("twice<i32>")["instance_of"], "twice");
+    let (_, out, _) = chasm(&["words", p]);
+    assert!(out.contains("sq ( i32 -- i32 )  [inferred]"), "{out}");
+    assert!(out.contains("twice ( T -- T T )  [generic]"), "{out}");
+    let _ = std::fs::remove_file(src);
+}
+
+#[test]
+fn infer_lists_unannotated_words() {
+    let src = scratch("infer.chasm");
+    std::fs::write(
+        &src,
+        ": sq dup i32.mul ;\n: twice dup ;\n: main ( -- ) 3 sq twice i32.add i32.to-str println ;\n",
+    )
+    .unwrap();
+    let p = src.to_str().unwrap();
+    let (ok, out, err) = chasm(&["infer", "--json", p]);
+    assert!(ok, "{out}{err}");
+    let j: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let words = j["results"]["words"].as_array().unwrap();
+    assert_eq!(words.len(), 2, "{out}");
+    assert_eq!(
+        (words[0]["name"].as_str(), words[0]["effect"].as_str()),
+        (Some("sq"), Some("( i32 -- i32 )"))
+    );
+    assert_eq!(words[0]["location"]["line"], 1);
+    assert_eq!(
+        (words[1]["name"].as_str(), words[1]["effect"].as_str()),
+        (Some("twice"), Some("( T -- T T )"))
+    );
+    let (_, out, _) = chasm(&["infer", p]);
+    assert!(
+        out.contains("sq ( i32 -- i32 )") && out.contains("twice ( T -- T T )"),
+        "{out}"
+    );
+    std::fs::write(&src, ": bad 1 \"x\" i32.add ;\n").unwrap();
+    let (ok, out, _) = chasm(&["infer", "--json", p]);
+    assert!(!ok);
+    let j: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(j["diagnostics"][0]["code"], "E_TYPE_MISMATCH");
+    let _ = std::fs::remove_file(src);
+}
+
+#[test]
+fn infer_write_inserts_effects() {
+    let src = scratch("infer-write.chasm");
+    let before = "# header\n: sq dup i32.mul ;\n: twice dup ;\n:  spaced   ( i32 -- i32 ) 1 i32.add ;\n: main ( -- ) 3 sq twice i32.add i32.to-str println ;\n";
+    std::fs::write(&src, before).unwrap();
+    let p = src.to_str().unwrap();
+    let (ok, out, err) = chasm(&["infer", "--write", p]);
+    assert!(ok, "{out}{err}");
+    let after = std::fs::read_to_string(&src).unwrap();
+    assert_eq!(
+        after,
+        before
+            .replace(": sq dup", ": sq ( i32 -- i32 ) dup")
+            .replace(": twice dup", ": twice ( T -- T T ) dup")
+    );
+    assert!(chasm(&["check", p]).0);
+    let (_, out, _) = chasm(&["infer", p]);
+    assert_eq!(out, "no un-annotated words\n");
+    let _ = std::fs::remove_file(src);
 }

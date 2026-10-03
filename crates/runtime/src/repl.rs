@@ -391,7 +391,7 @@ fn struct_value(
     let mut w = 0;
     for (f, t) in fields {
         let v = match t {
-            Ty::I32 | Ty::Var(_) => Value::I32(int(get(scope, w))),
+            Ty::I32 | Ty::Var(_) | Ty::Param(_) => Value::I32(int(get(scope, w))),
             Ty::I64 => Value::I64(get(scope, w).and_then(|v| v.i64()).unwrap_or(0)),
             Ty::F32 => Value::F32(get(scope, w).and_then(|v| v.f32()).unwrap_or(0.0)),
             Ty::F64 => Value::F64(get(scope, w).and_then(|v| v.f64()).unwrap_or(0.0)),

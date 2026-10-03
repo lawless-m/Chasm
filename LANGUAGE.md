@@ -1,6 +1,6 @@
 # Chasm: Language Specification
 
-Status: draft v0.12 (M1 to M6 decisions recorded; see sections 12 to 17). Chasm source files use the `.chasm` extension. Companion to `ARCHITECTURE.md`. Sections marked **TBD** are not yet decided.
+Status: draft v0.13 (M1 to M7 decisions recorded; see sections 12 to 18). Chasm source files use the `.chasm` extension. Companion to `ARCHITECTURE.md`. Sections marked **TBD** are not yet decided.
 
 ## 1. Types
 
@@ -111,7 +111,7 @@ Rules: a struct can be named only after its declaration; redeclaring with the sa
 
 ## 5. Shuffle primitives
 
-The only polymorphic words in the language. Effects use type variables, resolved at each use against the concrete stack (see `ARCHITECTURE.md` 5b).
+Built-in polymorphic words. Their effects use type variables, resolved at each use against the stack (see `ARCHITECTURE.md` 5b). User words may be polymorphic too: their effects may name type variables, and each concrete use is compiled as its own instance (section 18).
 
 | Word | Effect |
 |---|---|
@@ -165,7 +165,7 @@ A word's address is its index in the shared function table, an `i32`, typed in t
 | `[ body ]` not under a combinator | `( -- [ effect ] )` | An anonymous word; its effect is derived by forward checking from an empty stack, so the body must be self-contained. |
 | `call` | `( ..inputs [ inputs -- outputs ] -- ..outputs )` | `call_indirect` with the matching wasm type. |
 
-Quotation types may appear in word effects, so user words can take and return functions. User words remain monomorphic: `( array i32 [ i32 -- i32 ] -- array i32 )` is a concrete type.
+Quotation types may appear in word effects, so user words can take and return functions. A quotation type may contain type variables inside a generic effect: `( T [ T -- T ] -- T )`. `'word` on a generic word needs a context that fixes its instantiation, such as a stack assertion or a declared effect.
 
 Quotation values do **not** capture locals. A quotation value that names a local of the enclosing word is an error. Closures are not v1 (`FUTURE.md`).
 
@@ -188,7 +188,7 @@ test square : 3 square -> 9
 test parse-header : "abc" parse-header -> 3 0
 ```
 
-- `: name ( effect ) body ;` defines a word. The effect is mandatory and immediately follows the name.
+- `: name ( effect ) body ;` defines a word; the effect immediately follows the name. The effect may be omitted, `: name body ;`, and is then inferred (section 18). Recursive and mutually recursive words, `export` words and `main` must write it.
 - `export : name ( effect ) body ;` additionally exports the word from the built module and makes it a reachability root. `main ( -- )` is the entry point for `run`.
 - `declare name ( effect )` creates a stub (see `ARCHITECTURE.md` 6).
 - `test word : body -> expected` runs `body` on an empty stack and compares the resulting stack against `expected`, which must be literals, type by type. A test on a declared-but-undefined word is reported as pending. Naming the word lets tooling find a word's tests and lets `forget` remove them.
@@ -196,7 +196,7 @@ test parse-header : "abc" parse-header -> 3 0
 ## 9. Effects, stack assertions, comments
 
 - **Effect**: `( inputs -- outputs )`, types separated by whitespace, top of stack rightmost. Distinguished by the `--` token.
-- **Stack assertion**: parentheses **without** `--`, listing the full stack as types, top rightmost. The checker verifies it at that point in the body. A Forth-style `( a b )` with names is an error ("unknown type `a`").
+- **Stack assertion**: parentheses **without** `--`, listing the full stack as types, top rightmost. The checker verifies it at that point in the body. A Forth-style `( a b )` with names is an error ("unknown type `a`"). A name starting with an uppercase letter is a type variable (`T`, `U`, `Elem`), allowed in effects and, within a generic word, in assertions.
 - **Comment**: `#` to end of line. Parentheses are never comments.
 
 ```
@@ -232,7 +232,7 @@ Recorded here so the spec matches the compiler. `docs/reference.md` is the user-
 5. **Divergence.** `leave` and `trap` end the quotation they appear in; code after them is `E_UNREACHABLE`. A branch that diverges need not match the other branch, and a `when` body that diverges is accepted.
 6. **`until`** runs its body, then its condition, and repeats until the condition is non-zero.
 7. **Tests.** The expected part of `test word : body -> expected` is the maximal run of literal tokens after `->`. Tests are processed in file order, so a test must come after its word is defined or declared. Tests may name primitives. Each test runs in a fresh module instance with a captured console.
-8. **Type variables** arise only from `array.new` and the element types of the array words. They are resolved by plain unification against later uses (assertions, locals, calls, the word's effect); if one is never fixed the error is `E_AMBIGUOUS_TYPE`. User effects never contain them.
+8. **Type variables** arise only from `array.new` and the element types of the array words. They are resolved by plain unification against later uses (assertions, locals, calls, the word's effect); if one is never fixed the error is `E_AMBIGUOUS_TYPE`. User effects may contain them too, written as uppercase-initial names (section 18).
 9. **Quotation values** take no inputs, as specified in 7a: their effect is `( -- outputs )`. Functions with inputs are passed as `'word`.
 10. **Redefinition in files.** Top-level forms are processed in order. A redefinition with the same effect replaces the body for every caller; the last one wins. A word may call itself.
 11. **Names.** Primitive names cannot be defined, declared, or used as locals. Locals shadow user words.
@@ -275,3 +275,12 @@ Recorded here so the spec matches the compiler. `docs/reference.md` is the user-
 1. **`)force` is a REPL command outside the language**, like `)forget` (section 14.4); no file can contain it. It takes one or more definitions and optional `test` lines, ending at an empty line, and changes effects deliberately.
 2. **Refuse and list.** If any dependant of a changed word fails to check against the new effect, nothing changes and `E_FORCE` (a new stable code) lists the broken dependants. A forced word's own tests are dropped, so its new contract's tests go in the same chunk.
 3. **`/net/http/<host>[:port]/<path>`** (and `/net/https/...` for TLS) is an HTTP request. What is written to the handle is the rest of the request after its first line: `Name: value` header lines, an empty line, the body, so `"Accept: text/plain\n\n"` is one header and no body. The request is sent at the first read: nothing written is a GET, a header block with an empty body is a GET with those headers, and a non-empty body makes a POST. The read returns the response body only. Status 404 is `-1`, 401 and 403 are `-2`, any other status outside 200 to 299 or a failed connection is `-4`, and a malformed header block is `-6` (a new code). The browser host drops header names the Fetch standard forbids (`Host`, `Content-Length`, ...).
+
+## 18. Decisions taken in M7
+
+1. **Optional effects.** A definition may omit its effect. It is inferred as the smallest number of inputs for which the body checks, with any type left open generalised to a type variable, and the result is checked exactly as a written effect. Recursive and mutually recursive words, `export` words and `main` must write their effects (`E_NEEDS_EFFECT`, a new stable code).
+2. **Type variables** are identifiers starting with an uppercase ASCII letter (`T`, `U`, `Elem`), usable in effects, in `array T`, in quotation types `[ T -- T ]` and, inside a generic word, in stack assertions. Built-in types and struct names are lowercase; an uppercase struct name is `E_SYNTAX`, and struct fields cannot be type variables.
+3. **Generic words** are checked once with their type variables rigid: a `T` matches only `T`, so there are no constraints, and `i32.add` on a `T` is `E_TYPE_MISMATCH`. Each concrete use compiles an instance, named `twice<i32>` in `chasm words`, `chasm dead` and `chasm deps`. A test of a generic word runs on the instance its body uses. `export` words and `main` are concrete.
+4. **Redefinition** keeps the same-effect rule for inferred and generic effects alike, and a redefined generic word's instances are rebuilt.
+5. **`chasm infer`** lists the effects it inferred; `--write` writes them into the source.
+

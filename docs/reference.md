@@ -5,8 +5,9 @@ compiler in this repository accepts today. The design documents
 (`ARCHITECTURE.md`, `LANGUAGE.md`) say why; this says how.
 
 Chasm is a typed, concatenative language in the Forth and Factor family. A
-program is a sequence of **words**. Every word declares its **stack effect**,
-and the checker verifies each body against it before anything runs. Words
+program is a sequence of **words**. Every word has a **stack effect**, written
+or inferred, and the checker verifies each body against it before anything
+runs. Words
 compile to WebAssembly functions whose types are their effects.
 
 ## 1. Running things
@@ -20,6 +21,7 @@ chasm words  FILE...          # every word and its effect
 chasm deps WORD FILE...       # what WORD calls (--all for transitive)
 chasm used-by WORD FILE...    # what calls WORD
 chasm dead   FILE...          # words `main` and `export` words never reach
+chasm infer  FILE...          # inferred effects of un-annotated words (--write inserts them)
 chasm build  FILE... -o out.wasm  # optimised with Binaryen (--no-opt to skip; --wasi: WASI preview1 module)
 chasm repl                    # interactive; reads chunks from stdin
 chasm lsp                     # language server over stdio (docs/editors.md)
@@ -69,12 +71,17 @@ What `results` holds:
 | `test` | `tests` (each `test`, `word`, `status`, `expected`, `actual`, `trap`, `output`, `location`); `summary` (`pass`, `fail`, `pending`) |
 | `unresolved` | `unresolved` (each `word`, `declared_effect`, `dependants`, `pending_tests`, `location`) |
 | `dead` | `has_roots`; `dead` (each `word`, `effect`, `location`) |
-| `words` | `words` (each `name`, `effect`, `inputs`, `outputs`, `resolved`, `failed`, `export`, `library`, `generated`, `location`) |
+| `infer` | `words` (each `name`, `effect`, `location`); `written` (files changed by `--write`) |
+| `words` | `words` (each `name`, `effect`, `inputs`, `outputs`, `resolved`, `failed`, `export`, `library`, `generated`, `generic`, `inferred`, `instance_of`, `location`) |
 | `deps` | `word`; `words` (each `word` and `kind`: `call` or `address-taken`) |
 | `used-by` | `word`; `words` (names) |
 | `repl` | one report per chunk; see section 1a |
 
 `lsp` prints no report: it speaks JSON-RPC (`docs/editors.md`).
+
+`infer --write` inserts each inferred effect after the word's name,
+` ( effect )`, and leaves every other byte of the file unchanged; nothing is
+written when the program has errors.
 
 A command that cannot start (an unreadable file, a usage error) reports an
 empty `results` object with the error in `diagnostics`. The exit status is 0
@@ -124,7 +131,9 @@ TCP; native only), `--no-file` (hides the host filesystem) and `--no-net` (hides
   the `dependants`) while another word, a quotation in one, or another
   word's test uses it: forget those first, top-down. Primitives, prelude
   words and struct-generated words cannot be forgotten. A function value of
-  a forgotten word already on the stack still runs the old code.
+  a forgotten word already on the stack still runs the old code. Forgetting
+  a generic word removes its instances too.
+- A definition without an effect shows its inferred one: `ok: cube ( i32 -- i32 ) (inferred)`.
 - `)force` changes a word's effect deliberately. It is followed by one or
   more definitions, and optionally `test` lines; the chunk continues until
   an empty line. Every dependant of a changed word (a word calling it, a
@@ -137,12 +146,15 @@ TCP; native only), `--no-file` (hides the host filesystem) and `--no-net` (hides
   from their existing source. The word's own tests go, since they tested the
   old effect: write new ones in the chunk. A function value of the word
   taken before the force still runs the old code at the old type; `'word`
-  afterwards is the new one. Only existing user words can be forced, not
+  afterwards is the new one. A definition without an effect in a `)force`
+  chunk is inferred first, and a generic word's instances are retired with
+  it. Only existing user words can be forced, not
   primitives, prelude words or struct-generated words, and the chunk may not
   hold `declare` or `struct`.
 - `print` writes to the terminal and `read-line` reads from the same stdin
   as the REPL. With `--json` the program's output is captured into
-  `results.output`; each report also has `results.defined`, `results.forgotten`,
+  `results.output`; each report also has `results.defined` (each with
+  `inferred`), `results.forgotten`,
   `results.forced`, `results.rechecked`,
   `results.tests`, `results.trap`, `results.stack` and `results.timing`.
 
@@ -162,6 +174,9 @@ trap in `[line 4]`: wasm trap: integer divide by zero
 ok: twice ( i32 -- i32 )
 ( i32 ) 9
 > twice
+( i32 ) 6561
+> : cube dup dup i32.mul i32.mul ;
+ok: cube ( i32 -- i32 ) (inferred)
 ( i32 ) 6561
 ```
 
@@ -202,6 +217,7 @@ A file is a sequence of top-level forms, processed **in order**:
 
 ```
 : name ( inputs -- outputs )  body ;          # define
+: name  body ;                                # define, with the effect inferred
 export : name ( inputs -- outputs )  body ;   # define and export from the module
 declare name ( inputs -- outputs )            # stub: a contract without a body
 test name : body -> expected-literals         # a test of `name`
@@ -212,6 +228,10 @@ test name : body -> expected-literals         # a test of `name`
 - `#` starts a comment to end of line. Parentheses are never comments.
 - Tokens are separated by whitespace: `[ dup ]`, not `[dup]`.
 - The program's entry point is `: main ( -- ) ... ;`.
+- A definition may leave out its effect; it is inferred and then checked as
+  if written (`chasm infer` shows what was inferred). Words that call
+  themselves or each other, `export` words and `main` must write theirs
+  (`E_NEEDS_EFFECT`).
 
 ## 3. Types and effects
 
@@ -225,8 +245,21 @@ test name : body -> expected-literals         # a test of `name`
 
 An effect lists types bottom to top, rightmost on top:
 `( str i32 -- i32 i32 )` takes a `str` with an `i32` above it and leaves two
-`i32`s. Words are monomorphic; only the built-in shuffles and combinators are
-polymorphic.
+`i32`s.
+
+A name starting with an uppercase letter is a **type variable**: `T`, `U`,
+`Elem`, in effects, `array T`, `[ T -- T ]` and stack assertions. A word whose
+effect has one is **generic**:
+
+```
+: twice ( T -- T T )  dup ;
+: first ( array T -- T )  0 array.at ;
+```
+
+Each concrete use compiles its own instance, shown as `twice<i32>` by
+`words`, `dead` and `deps`. A `T` is any type but matches only itself, so
+there are no constraints: `i32.add` on a `T` is a type error. `export` words
+and `main` must be concrete; struct names are lowercase.
 
 ## 4. Literals
 
@@ -408,6 +441,9 @@ test twice : 5 'inc twice -> 7
   its effect is `( -- outputs )`, worked out from the body. It may not use
   locals of the enclosing word.
 - `call` calls the function value on top with the inputs below it.
+- `'name` on a generic word needs something that fixes its instantiation, a
+  stack assertion or a declared effect: `( [ i32 -- i32 i32 ] )`. Otherwise
+  it is `E_AMBIGUOUS_TYPE`.
 
 ## 12. Stack assertions
 
@@ -422,6 +458,7 @@ A parenthesised list of types without `--` inside a body asserts the
 ```
 
 `( )` asserts an empty stack. Assertions also fix unknown element types.
+Inside a generic word they may name its type variables: `( array T )`.
 
 ## 13. Contracts and tests
 
@@ -438,7 +475,9 @@ test parse-int : "1234" parse-int -> 1234
 - A later definition must match the declared effect exactly
   (`E_DECLARE_MISMATCH`). Redefining a word with the same effect replaces its
   body for every caller; changing an effect is rejected (`E_REDEFINE_EFFECT`)
-  and the error lists the dependants.
+  and the error lists the dependants. Inferred effects follow the same rules.
+- A test of a generic word runs on the instance its body uses.
+- `chasm words` flags `inferred`, `generic` and `instance of NAME`.
 - `test word : body -> expected` runs `body` on an empty stack and compares
   the result with the expected literals, type by type. The expected part is
   every literal after `->`, up to the next non-literal. A test of a word with
@@ -522,7 +561,7 @@ Library words:
 | `E_UNREACHABLE` | code after `leave` or `trap` |
 | `E_LOCAL` | local bound twice, assigned while immutable, or named like a primitive |
 | `E_CAPTURE` | a quotation value uses a local (no closures) |
-| `E_AMBIGUOUS_TYPE` | an element type is never fixed |
+| `E_AMBIGUOUS_TYPE` | an element type is never fixed, or a generic word's instantiation is not fixed |
 | `E_DECLARE_MISMATCH` | definition or redeclaration differs from the declaration |
 | `E_REDEFINE_EFFECT` | redefinition changes an effect, redefines a primitive, or changes a struct's fields; lists `dependants` |
 | `E_TEST_TYPE` | a test's expected literals do not match what its body leaves |
@@ -532,6 +571,7 @@ Library words:
 | `E_IO`, `E_USAGE` | CLI problems |
 | `E_INTERNAL` | compiler bug |
 | `E_FORGET` | `)forget` refused: the word is still used (lists `dependants`), or is a primitive, prelude or struct-generated word |
+| `E_NEEDS_EFFECT` | the effect must be written: the word is recursive or mutually recursive, exported, or `main`; or an exported word's effect has type variables |
 | `E_FORCE` | `)force` refused: a dependant no longer checks (lists `dependants`, then their errors), or the word is a primitive, prelude or struct-generated word |
 
 ## 16. Worked examples
@@ -539,5 +579,6 @@ Library words:
 See `examples/`: `hello`, `basics` (words, loops, tests), `strings`,
 `arrays` (combinators, functions as values), `contract` (declare first),
 `files` (the namespace), `http` (requests with headers), `ninep` (a 9p
-mount and directory records), `wasi` (a program for `build --wasi`), `structs` (structs, lists, arrays of structs). Any of them can also be typed or piped into
+mount and directory records), `wasi` (a program for `build --wasi`), `generics` (generic words),
+`inferred` (effects left out), `structs` (structs, lists, arrays of structs). Any of them can also be typed or piped into
 `chasm repl`, e.g. `chasm repl < examples/basics.chasm`.

@@ -56,6 +56,8 @@ pub struct Defined {
     pub effect: String,
     /// Declared without a body.
     pub declared: bool,
+    /// The effect was inferred, not written.
+    pub inferred: bool,
 }
 
 /// The result of one REPL step.
@@ -211,8 +213,9 @@ impl Session {
         let mut line = None;
         match lex(&file, text).and_then(|t| parse_repl(&file, &t)) {
             Err(d) => self.program.diagnostics.push(d),
-            Ok(ReplInput::Items(items)) => {
+            Ok(ReplInput::Items(mut items)) => {
                 register_names(&mut self.ctx, &items);
+                crate::infer::require_effects(&mut [&mut items], &mut self.program.diagnostics);
                 for item in items {
                     let named = matches!(
                         item,
@@ -229,12 +232,13 @@ impl Session {
                     }
                     for id in ids {
                         built.push(id);
-                        if named {
+                        if named && self.ctx.words[id].kind == WordKind::Named {
                             let w = &self.ctx.words[id];
                             defined.push(Defined {
                                 name: w.name.clone(),
                                 effect: w.effect.to_string(),
                                 declared: w.body.is_none(),
+                                inferred: w.inferred,
                             });
                         }
                     }
@@ -268,6 +272,9 @@ impl Session {
                             kind: WordKind::Line,
                             loc,
                             callees: out.callees,
+                            inferred: false,
+                            generic: None,
+                            instance_of: None,
                         });
                         line = Some(Line {
                             slot: id as u32,
@@ -348,23 +355,37 @@ impl Session {
     #[allow(clippy::type_complexity)]
     fn force_items(
         &mut self,
-        items: Vec<Item>,
+        mut items: Vec<Item>,
     ) -> Result<(Vec<WordId>, Vec<Defined>, Vec<Forced>, Vec<String>), Vec<Diagnostic>> {
+        let mut needs = Vec::new();
+        crate::infer::require_effects(&mut [&mut items], &mut needs);
+        if !needs.is_empty() {
+            return Err(needs);
+        }
         // Refusals, before anything changes.
         let mut changed: Vec<(String, WordId)> = Vec::new();
         let mut in_chunk: HashSet<WordId> = HashSet::new();
         for item in &items {
             match item {
                 Item::Def {
-                    name, effect, loc, ..
+                    name,
+                    effect,
+                    body,
+                    loc,
+                    ..
                 } => {
                     let id = self
                         .changeable(name, loc, codes::E_FORCE, "forced")
                         .map_err(|d| vec![d])?;
                     in_chunk.insert(id);
-                    if effect
-                        .as_ref()
-                        .is_some_and(|e| *e != self.ctx.words[id].effect)
+                    // An un-annotated definition is inferred first, to see
+                    // whether the chunk changes the word's effect.
+                    let effect = match effect {
+                        Some(e) => e.clone(),
+                        None => crate::infer::infer_effect(&mut self.ctx, name, body, loc)
+                            .map_err(|d| vec![d.with_word(name)])?,
+                    };
+                    if effect != self.ctx.words[id].effect
                         && !changed.iter().any(|(n, _)| n == name)
                     {
                         changed.push((name.clone(), id));
@@ -425,12 +446,14 @@ impl Session {
             }
             for id in ids {
                 built.push(id);
-                if matches!(source, Item::Def { .. }) {
+                if matches!(source, Item::Def { .. }) && self.ctx.words[id].kind == WordKind::Named
+                {
                     let w = &self.ctx.words[id];
                     defined.push(Defined {
                         name: w.name.clone(),
                         effect: w.effect.to_string(),
                         declared: w.body.is_none(),
+                        inferred: w.inferred,
                     });
                 }
             }
@@ -604,8 +627,23 @@ impl Session {
     }
 
     /// Detach word `id` from its name: it keeps its slot and code, loses its
-    /// edges, and its tests never run again.
+    /// edges, and its tests never run again. A generic word's instances go
+    /// with it (they keep their slots too), so later uses instantiate afresh.
     fn retire(&mut self, id: WordId, name: &str, how: &str) {
+        let mut instances: Vec<((WordId, Vec<Ty>), WordId)> = self
+            .ctx
+            .instances
+            .iter()
+            .filter(|((t, _), _)| *t == id)
+            .map(|(k, &v)| (k.clone(), v))
+            .collect();
+        instances.sort_by_key(|(_, v)| *v);
+        for (key, inst) in instances {
+            self.ctx.instances.remove(&key);
+            let w = &mut self.ctx.words[inst];
+            w.name = format!("[{how} {}]", w.name);
+            w.callees.clear();
+        }
         let w = &mut self.ctx.words[id];
         w.name = format!("[{how} {name}]");
         w.callees.clear();
@@ -653,7 +691,7 @@ impl Session {
                 }
                 match w.kind {
                     WordKind::Named => words.push(caller),
-                    WordKind::Quote => todo.push(caller),
+                    WordKind::Quote | WordKind::Instance => todo.push(caller),
                     WordKind::Test => tests.extend(test_of.get(&caller)),
                     WordKind::Line => {}
                 }
@@ -840,7 +878,7 @@ pub fn read_stack(
                 }
             }
             Ty::Quot(_) => Value::Opaque(format!("#{}", lo(a))),
-            Ty::I32 | Ty::Var(_) => Value::I32(lo(a) as i32),
+            Ty::I32 | Ty::Var(_) | Ty::Param(_) => Value::I32(lo(a) as i32),
         };
         i += t.width();
         out.push(StackEntry {

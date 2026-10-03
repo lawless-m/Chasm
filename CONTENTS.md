@@ -6,8 +6,8 @@ Chasm (Chuck-Wasm) is a typed, concatenative, Forth-and-Factor-flavoured languag
 
 1. **README.md**: what it is and how to run it.
 2. **docs/reference.md**: the working language reference, i.e. what the compiler accepts today.
-3. **ARCHITECTURE.md**: goals, crate layout, pipeline, runtime, milestones M0 to M7, and (sections 13 to 18) the decisions taken while building M0 to M6.
-4. **LANGUAGE.md**: the v1 language spec; sections 12 to 17 record the decisions taken in M1 to M6.
+3. **ARCHITECTURE.md**: goals, crate layout, pipeline, runtime, milestones M0 to M7, and (sections 13 to 19) the decisions taken while building M0 to M7.
+4. **LANGUAGE.md**: the v1 language spec; sections 12 to 18 record the decisions taken in M1 to M7.
 5. **FUTURE.md**: explicitly *not* v1. Read it so v1 decisions do not close these off, but build none of it.
 6. **CLAUDE.md**: how to work in the repository.
 7. **examples/**: worked programs with tests; `docs/examples.md` is the plan for growing them into a corpus and benchmark.
@@ -17,7 +17,7 @@ Chasm (Chuck-Wasm) is a typed, concatenative, Forth-and-Factor-flavoured languag
 
 ## Working conventions
 
-- Every word has a declared effect; the checker is the single source of truth.
+- Every word has a declared or inferred effect; the checker is the single source of truth.
 - Contract first: `declare` a word's effect and tests, then fill in the body. `chasm unresolved` is the to-do list.
 - All CLI commands produce text and JSON; text is rendered from the JSON.
 - Metric units in docs and messages. Rust for everything; `wasm-encoder` and `wasmparser` for wasm, `wasmtime` for the native host.

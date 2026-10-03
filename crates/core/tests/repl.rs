@@ -314,3 +314,108 @@ fn force_refusals() {
         "E_FORCE"
     );
 }
+
+#[test]
+fn recursive_words_must_declare_at_the_repl() {
+    let mut s = session();
+    let step = s.step(
+        ": fact dup 1 i32.gt_s [ dup 1 i32.sub fact i32.mul ] when ;",
+        0x20_0000,
+    );
+    assert_eq!(step.diagnostics[0].code, "E_NEEDS_EFFECT");
+    assert!(step.defined.is_empty());
+}
+
+#[test]
+fn inferred_definition_at_the_repl() {
+    let mut s = session();
+    let step = ok(&mut s, ": sq dup i32.mul ;");
+    assert_eq!(step.defined[0].effect, "( i32 -- i32 )");
+    assert!(step.defined[0].inferred);
+}
+
+#[test]
+fn redefining_a_generic_reinstalls_its_instances() {
+    let mut s = session();
+    ok(&mut s, ": twice ( T -- T T ) dup ;");
+    ok(&mut s, ": a ( i32 -- i32 i32 ) twice ;");
+    ok(&mut s, "declare g ( str -- str )");
+    ok(&mut s, ": b ( str -- str str ) twice ;");
+    let step = ok(&mut s, ": twice ( T -- T T ) dup ;");
+    assert_eq!(step.installs.len(), 3, "{:?}", step.installs);
+    assert_eq!(step.defined.len(), 1);
+}
+
+#[test]
+fn lines_and_tests_install_generic_instances() {
+    let mut s = session();
+    let step = ok(&mut s, ": twice ( T -- T T ) dup ;");
+    assert_eq!(step.defined[0].effect, "( T -- T T )");
+    let step = ok(&mut s, "3 twice");
+    assert_eq!(
+        step.line.as_ref().unwrap().stack_after,
+        vec![Ty::I32, Ty::I32]
+    );
+    assert_eq!(
+        step.installs.len(),
+        2,
+        "the instance and the line: {:?}",
+        step.installs
+    );
+    s.stack = vec![Ty::I32, Ty::I32];
+    let step = ok(&mut s, "drop drop \"a\" twice");
+    assert_eq!(step.installs.len(), 2, "a second instance and the line");
+    assert_eq!(step.line.unwrap().stack_after, vec![Ty::Str, Ty::Str]);
+    assert_eq!(ok(&mut s, "test twice : 3 twice -> 3 3").tests.len(), 1);
+}
+
+fn generic_setup() -> Session {
+    let mut s = session();
+    ok(&mut s, ": twice ( T -- T T ) dup ;");
+    ok(&mut s, ": a ( i32 -- i32 i32 ) twice ;");
+    ok(&mut s, "test a : 1 a -> 1 1");
+    s
+}
+
+#[test]
+fn forget_a_generic_word() {
+    let mut s = generic_setup();
+    let step = s.step(")forget twice", 0x20_0000);
+    assert_eq!(step.diagnostics[0].code, "E_FORGET");
+    assert_eq!(step.diagnostics[0].dependants, Some(vec!["a".to_string()]));
+    assert_eq!(code(&mut s, ")forget twice<i32>"), "E_UNDEFINED");
+    ok(&mut s, ")forget a");
+    assert_eq!(ok(&mut s, ")forget twice").forgotten, vec!["twice"]);
+    let step = ok(&mut s, ": twice ( i32 -- i32 ) ;");
+    assert_eq!(step.defined[0].effect, "( i32 -- i32 )");
+}
+
+#[test]
+fn force_a_generic_word() {
+    let mut s = generic_setup();
+    let old = s.word_slot("twice").unwrap();
+    let step = s.step(")force : twice ( T -- T ) ;\n", 0x20_0000);
+    assert_eq!(step.diagnostics[0].code, "E_FORCE");
+    assert_eq!(step.diagnostics[0].dependants, Some(vec!["a".to_string()]));
+    let step = ok(
+        &mut s,
+        ")force : twice ( T -- T ) ;\n: a ( i32 -- i32 i32 ) twice dup ;\n",
+    );
+    assert_eq!(step.forced[0].to, "( T -- T )");
+    assert!(
+        step.rechecked.is_empty(),
+        "a was redefined in the chunk, not rechecked"
+    );
+    assert!(s.word_slot("twice").unwrap() > old);
+    let new_slots: Vec<u32> = step.installs.iter().map(|i| i.slot).collect();
+    assert!(
+        new_slots.len() >= 3,
+        "template, a and a fresh instance: {new_slots:?}"
+    );
+    let mut s = session();
+    ok(&mut s, ": f ( i32 -- i32 i32 ) dup ;");
+    assert_eq!(
+        ok(&mut s, ")force : f dup ;\n").forced[0].to,
+        "( T -- T T )"
+    );
+}

@@ -24,7 +24,10 @@ function render(r) {
     }
     if (d.dependants?.length) print(`    dependants: ${d.dependants.join(", ")}\n`, "err");
   }
-  for (const d of r.defined) print(`ok: ${d.name} ${d.effect}${d.declared ? " (declared)" : ""}\n`);
+  for (const d of r.defined) {
+    const note = d.declared ? " (declared)" : d.inferred ? " (inferred)" : "";
+    print(`ok: ${d.name} ${d.effect}${note}\n`);
+  }
   for (const w of r.forgotten) print(`forgot: ${w}\n`);
   for (const f of r.forced) print(`forced: ${f.name} ${f.from} -> ${f.to}\n`);
   if (r.rechecked.length) print(`rechecked: ${r.rechecked.join(", ")}\n`);

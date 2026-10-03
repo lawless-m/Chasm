@@ -1,0 +1,55 @@
+# Generic words: an effect may name type variables (`T`, `U`, any name
+# starting with an uppercase letter). Each concrete use compiles its own
+# instance, named like `twice<i32>` in `chasm words` and `chasm dead`.
+# Exercises: type variables in effects, `array T`, `[ T -- T ]`, a generic
+# calling a generic, function values at a generic type.
+
+: twice ( T -- T T )  dup ;
+test twice : 3 twice -> 3 3
+test twice : "a" twice -> "a" "a"
+
+: swap-pair ( T U -- U T )  swap ;
+test swap-pair : 1 "x" swap-pair -> "x" 1
+test swap-pair : 2.5 3 swap-pair -> 3 2.5
+
+: thrice ( T -- T T T )  twice twice ;
+test thrice : 1 thrice i32.add i32.add -> 3
+test thrice : "a" thrice str.concat str.concat -> "aaa"
+
+: first ( array T -- T )  0 array.at ;
+: last ( array T -- T )  dup array.len 1 i32.sub array.at ;
+
+# A new array with the elements in the opposite order. The assertion fixes
+# the new array's element type to the input's.
+: reverse ( array T -- array T )
+  :> a
+  a array.len :> n
+  n array.new ( array T ) :> out
+  n [ :> i  out i  a n i i32.sub 1 i32.sub array.at  array.at! ] times
+  out ;
+
+: nums ( -- array i32 )
+  3 array.new ( array i32 ) :> a
+  a 0 10 array.at!  a 1 20 array.at!  a 2 30 array.at!
+  a ;
+: halves ( -- array f64 )
+  2 array.new ( array f64 ) :> a
+  a 0 0.5 array.at!  a 1 2.5 array.at!
+  a ;
+test first : nums first -> 10
+test first : halves first -> 0.5
+test last : nums last -> 30
+test last : halves last -> 2.5
+test reverse : nums reverse array.to-str -> "30 20 10"
+test reverse : halves reverse first -> 2.5
+
+# Apply a function value twice, at whatever type it takes.
+: apply-twice ( T [ T -- T ] -- T )  :> f  f call f call ;
+: inc ( i32 -- i32 )  1 i32.add ;
+: shout ( str -- str )  "!" str.concat ;
+test apply-twice : 1 'inc apply-twice -> 3
+test apply-twice : "hi" 'shout apply-twice -> "hi!!"
+
+: main ( -- )
+  "x" twice str.concat print " " print
+  21 twice i32.add i32.to-str println ;

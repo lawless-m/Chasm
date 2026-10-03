@@ -209,3 +209,28 @@ fn definition_of_user_words() {
     );
     lsp.shutdown();
 }
+
+#[test]
+fn hover_shows_inferred_and_generic_words() {
+    let mut lsp = Lsp::start();
+    lsp.initialize();
+    let uri = "file:///tmp/g.chasm";
+    lsp.open(
+        uri,
+        ": sq dup i32.mul ;\n: twice ( T -- T T ) dup ;\n: a ( i32 -- i32 i32 ) twice ;\n",
+    );
+    lsp.diagnostics();
+    let h = lsp.at(30, "textDocument/hover", uri, 0, 2);
+    let v = h["contents"]["value"].as_str().unwrap();
+    assert!(
+        v.contains("sq ( i32 -- i32 )") && v.contains("inferred"),
+        "{h}"
+    );
+    let h = lsp.at(31, "textDocument/hover", uri, 2, 24);
+    let v = h["contents"]["value"].as_str().unwrap();
+    assert!(
+        v.contains("( T -- T T )") && v.contains("generic") && v.contains("instances: twice<i32>"),
+        "{h}"
+    );
+    lsp.shutdown();
+}

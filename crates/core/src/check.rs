@@ -41,6 +41,9 @@ pub enum WordKind {
     /// A REPL line: wasm type `( ) -> ( )`, its effect is carried on the
     /// memory data stack.
     Line,
+    /// A generic word compiled at concrete types (`twice<i32>`); never named
+    /// in source, so not in `by_name`.
+    Instance,
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +64,20 @@ pub struct Word {
     pub kind: WordKind,
     pub loc: Location,
     pub callees: Vec<(WordId, EdgeKind)>,
+    /// The effect was inferred, not written.
+    pub inferred: bool,
+    /// A generic word (its effect has type parameters): the template.
+    pub generic: Option<Generic>,
+    /// For an instance: its template and the type arguments, in the order
+    /// of the template's `Effect::params`.
+    pub instance_of: Option<(WordId, Vec<Ty>)>,
+}
+
+/// A generic word's template: its source body, checked once with the type
+/// parameters rigid; `None` while it is only declared.
+#[derive(Debug, Clone)]
+pub struct Generic {
+    pub body: Option<Body>,
 }
 
 impl Word {
@@ -89,6 +106,10 @@ pub struct Ctx {
     pub struct_types: StructTypes,
     pub structs: Vec<StructDef>,
     pub struct_by_name: HashMap<String, usize>,
+    /// Generic instances made so far: (template, type arguments) to word.
+    pub instances: HashMap<(WordId, Vec<Ty>), WordId>,
+    /// The type parameters in force while an instance's body is compiled.
+    pub type_params: HashMap<String, Ty>,
 }
 
 /// A declared struct: its fields in order and its wasm type index.
@@ -124,6 +145,8 @@ impl Default for Ctx {
             struct_types: StructTypes::new(),
             structs: Vec::new(),
             struct_by_name: HashMap::new(),
+            instances: HashMap::new(),
+            type_params: HashMap::new(),
         }
     }
 }
@@ -219,6 +242,10 @@ pub enum Mode<'a> {
     /// A REPL line: inputs are the types on the memory data stack; it loads
     /// them, runs, and stores its outputs back.
     Line(&'a [Ty]),
+    /// Inference: `n` inputs of fresh type variables, outputs whatever the
+    /// body leaves. Unresolved variables are allowed in the result; the
+    /// caller generalises them. Check-only (see `check_body`).
+    Infer(usize),
 }
 
 pub struct Output {
@@ -256,6 +283,102 @@ pub fn compile_body(
         compiled,
         callees,
     })
+}
+
+/// Check one body without emitting code or adding words: the first pass of
+/// `compile_body` only. Returns the body's effect.
+pub fn check_body(
+    ctx: &mut Ctx,
+    name: &str,
+    mode: Mode<'_>,
+    body: &Body,
+    loc: &Location,
+    outer_locals: &[String],
+) -> Result<Effect, Diagnostic> {
+    let words = ctx.words.len();
+    let mut walker = Walker::new(ctx, name, false, Subst::default(), outer_locals);
+    let effect = walker.run(&mode, body, loc);
+    debug_assert_eq!(ctx.words.len(), words, "a check-only pass added words");
+    effect
+}
+
+/// The instance of generic word `generic` at type arguments `args` (in
+/// `Effect::params` order): an existing one, or a new word compiled from the
+/// template's body at those types. The instance is registered before its
+/// body is compiled, so a generic word using itself at the same types finds
+/// it.
+pub fn instantiate(ctx: &mut Ctx, generic: WordId, args: &[Ty]) -> Result<WordId, Diagnostic> {
+    let key = (generic, args.to_vec());
+    if let Some(&id) = ctx.instances.get(&key) {
+        return Ok(id);
+    }
+    let t = &ctx.words[generic];
+    let map: HashMap<String, Ty> = t
+        .effect
+        .params()
+        .into_iter()
+        .zip(args.iter().cloned())
+        .collect();
+    let arg_names: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    let word = Word {
+        name: format!("{}<{}>", t.name, arg_names.join(",")),
+        effect: t.effect.substitute(&map),
+        body: None,
+        failed: false,
+        export: false,
+        origin: t.origin,
+        kind: WordKind::Instance,
+        loc: t.loc.clone(),
+        callees: vec![(generic, EdgeKind::Call)],
+        inferred: false,
+        generic: None,
+        instance_of: Some(key.clone()),
+    };
+    let id = ctx.add_word(word);
+    ctx.instances.insert(key, id);
+    compile_instance(ctx, id)?;
+    Ok(id)
+}
+
+/// (Re)compile an instance from its template's body at its type arguments,
+/// in place. A template with no body yet leaves the instance unresolved.
+pub fn compile_instance(ctx: &mut Ctx, id: WordId) -> Result<(), Diagnostic> {
+    let Some((generic, args)) = ctx.words[id].instance_of.clone() else {
+        return Ok(());
+    };
+    let Some(body) = ctx.words[generic]
+        .generic
+        .as_ref()
+        .and_then(|g| g.body.clone())
+    else {
+        return Ok(());
+    };
+    let map: HashMap<String, Ty> = ctx.words[generic]
+        .effect
+        .params()
+        .into_iter()
+        .zip(args)
+        .collect();
+    let name = ctx.words[id].name.clone();
+    let effect = ctx.words[id].effect.clone();
+    let loc = ctx.words[generic].loc.clone();
+    let saved = std::mem::replace(&mut ctx.type_params, map);
+    let out = compile_body(ctx, &name, Mode::Declared(&effect), &body, &loc, &[]);
+    ctx.type_params = saved;
+    let w = &mut ctx.words[id];
+    match out {
+        Ok(out) => {
+            w.body = Some(out.compiled);
+            w.callees = out.callees;
+            w.callees.push((generic, EdgeKind::Call));
+            w.failed = false;
+            Ok(())
+        }
+        Err(d) => {
+            w.failed = true;
+            Err(d)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -398,6 +521,11 @@ impl<'c> Walker<'c> {
             self.stack = inputs.to_vec();
             line_base = Some(self.line_prologue(inputs));
         }
+        let mut infer_inputs = Vec::new();
+        if let Mode::Infer(n) = mode {
+            infer_inputs = (0..*n).map(|_| self.subst.fresh()).collect();
+            self.stack = infer_inputs.clone();
+        }
         let flow = self.seq(body)?;
         match mode {
             Mode::Declared(e) => {
@@ -450,6 +578,14 @@ impl<'c> Walker<'c> {
                     self.line_epilogue(line_base.unwrap(), &outputs);
                 }
                 Ok(Effect::new(inputs.to_vec(), outputs))
+            }
+            Mode::Infer(_) => {
+                let outputs = if flow == Flow::Normal {
+                    self.resolved_stack()
+                } else {
+                    Vec::new()
+                };
+                Ok(Effect::new(self.subst.resolve_all(&infer_inputs), outputs))
             }
         }
     }
@@ -816,6 +952,16 @@ impl<'c> Walker<'c> {
                 let Some(&id) = self.ctx.by_name.get(n) else {
                     return Err(self.undefined(n, loc));
                 };
+                if self.ctx.words[id].generic.is_some() {
+                    let (e, vars) = self.fresh_instance(id);
+                    self.stack.push(Ty::Quot(Box::new(e)));
+                    if self.emit {
+                        let inst = self.instance(id, &format!("'{n}"), &vars, loc)?;
+                        self.callees.push((inst, EdgeKind::AddressTaken));
+                        self.op(I::I32Const(inst as i32));
+                    }
+                    return Ok(Flow::Normal);
+                }
                 let e = self.ctx.words[id].effect.clone();
                 self.callees.push((id, EdgeKind::AddressTaken));
                 self.op(I::I32Const(id as i32));
@@ -839,6 +985,9 @@ impl<'c> Walker<'c> {
                         kind: WordKind::Quote,
                         loc: loc.clone(),
                         callees: out.callees,
+                        inferred: false,
+                        generic: None,
+                        instance_of: None,
                     });
                     self.callees.push((id, EdgeKind::AddressTaken));
                     self.op(I::I32Const(id as i32));
@@ -849,6 +998,16 @@ impl<'c> Walker<'c> {
                 Ok(Flow::Normal)
             }
             NodeKind::Assert(tys) => {
+                let subst: Vec<Ty>;
+                let tys = if self.ctx.type_params.is_empty() {
+                    tys
+                } else {
+                    subst = tys
+                        .iter()
+                        .map(|t| t.substitute(&self.ctx.type_params))
+                        .collect();
+                    &subst
+                };
                 self.ctx.check_types(tys, loc, None)?;
                 if !self.unify_stack(tys) {
                     let actual = self.resolved_stack();
@@ -1479,6 +1638,43 @@ impl<'c> Walker<'c> {
         self.err(codes::E_UNDEFINED, msg, loc)
     }
 
+    /// A generic word's effect with a fresh variable for each type
+    /// parameter, and those variables in parameter order.
+    fn fresh_instance(&mut self, id: WordId) -> (Effect, Vec<Ty>) {
+        let effect = self.ctx.words[id].effect.clone();
+        let params = effect.params();
+        let vars: Vec<Ty> = params.iter().map(|_| self.subst.fresh()).collect();
+        let map: HashMap<String, Ty> = params.into_iter().zip(vars.iter().cloned()).collect();
+        (effect.substitute(&map), vars)
+    }
+
+    /// The instance of generic word `id` that `vars` now fix.
+    fn instance(
+        &mut self,
+        id: WordId,
+        n: &str,
+        vars: &[Ty],
+        loc: &Location,
+    ) -> Result<WordId, Diagnostic> {
+        let args = self.subst.resolve_all(vars);
+        if args.iter().any(Ty::has_var) {
+            let params = self.ctx.words[id].effect.params();
+            let open: Vec<String> = params
+                .iter()
+                .zip(&args)
+                .filter(|(_, a)| a.has_var())
+                .map(|(p, _)| format!("`{p}`"))
+                .collect();
+            let verb = if open.len() == 1 { "is" } else { "are" };
+            return Err(self.err(
+                codes::E_AMBIGUOUS_TYPE,
+                format!("the instantiation of `{n}` is not fixed here: {} {verb} unknown; add a stack assertion or declare the effect", open.join(", ")),
+                loc,
+            ));
+        }
+        instantiate(self.ctx, id, &args).map_err(|d| d.with_word(&self.name))
+    }
+
     fn name_ref(&mut self, n: &str, loc: &Location) -> Result<Flow, Diagnostic> {
         // Locals.
         if let Some(l) = self.locals.iter().find(|l| l.name == n) {
@@ -1743,8 +1939,21 @@ impl<'c> Walker<'c> {
         }
         // User and library words.
         if let Some(&id) = self.ctx.by_name.get(n) {
-            let e = self.ctx.words[id].effect.clone();
-            self.pop_expect(n, &e.inputs, loc)?;
+            let (e, id) = if self.ctx.words[id].generic.is_some() {
+                let (e, vars) = self.fresh_instance(id);
+                self.pop_expect(n, &e.inputs, loc)?;
+                if !self.emit {
+                    self.stack.extend(e.outputs);
+                    return Ok(Flow::Normal);
+                }
+                let inst = self.instance(id, n, &vars, loc)?;
+                // The instance's concrete effect: its wasm type is the call's.
+                (self.ctx.words[inst].effect.clone(), inst)
+            } else {
+                let e = self.ctx.words[id].effect.clone();
+                self.pop_expect(n, &e.inputs, loc)?;
+                (e, id)
+            };
             if !self.ctx.indirect_calls {
                 self.op(I::Call(Word::func_index(id)));
             } else if self.emit {
@@ -1799,6 +2008,9 @@ mod tests {
             kind: WordKind::Named,
             loc: Location::default(),
             callees: vec![],
+            inferred: false,
+            generic: None,
+            instance_of: None,
         });
         let body = vec![Node {
             kind: NodeKind::Name("f".into()),
@@ -1838,6 +2050,9 @@ mod tests {
             kind: WordKind::Named,
             loc: Location::default(),
             callees: vec![],
+            inferred: false,
+            generic: None,
+            instance_of: None,
         });
         let bytes = crate::module::assemble_step(&mut ctx, &[id], false);
         (ctx, bytes)
@@ -1865,6 +2080,37 @@ mod tests {
         crate::program::validate(&b).unwrap();
         let (_, b) = struct_step(|i| vec![ref_ty(i + 1), ValType::I32, ValType::I32]);
         crate::program::validate(&b).unwrap();
+    }
+
+    fn infer(src: &str, n: usize) -> Result<Effect, Diagnostic> {
+        let toks = crate::lexer::lex("t", &format!(": t ( -- ) {src} ;")).unwrap();
+        let items = crate::parser::parse("t", &toks).unwrap();
+        let crate::ast::Item::Def { body, .. } = &items[0] else {
+            panic!()
+        };
+        let mut ctx = Ctx::default();
+        let e = check_body(
+            &mut ctx,
+            "t",
+            Mode::Infer(n),
+            body,
+            &Location::default(),
+            &[],
+        );
+        assert!(ctx.words.is_empty());
+        e
+    }
+
+    #[test]
+    fn infer_mode() {
+        assert_eq!(infer("1 i32.add", 1).unwrap().to_string(), "( i32 -- i32 )");
+        assert_eq!(
+            infer("1 i32.add", 0).unwrap_err().code,
+            codes::E_STACK_UNDERFLOW
+        );
+        let e = infer("dup", 1).unwrap();
+        assert!(matches!(e.inputs[..], [Ty::Var(_)]));
+        assert_eq!(e.outputs, [e.inputs[0].clone(), e.inputs[0].clone()]);
     }
 
     fn line(src: &str, inputs: &[Ty]) -> Result<Output, Diagnostic> {

@@ -149,6 +149,9 @@ fn step_module_imports_memory_and_table() {
             kind: WordKind::Named,
             loc: Location::default(),
             callees: vec![],
+            inferred: false,
+            generic: None,
+            instance_of: None,
         });
         let out = compile_body(
             &mut ctx,
@@ -408,4 +411,196 @@ fn wasi_build_imports_preview1_and_exports_start() {
     let (imports, exports) = imports_and_exports(plain.wasm.as_ref().unwrap());
     assert_eq!(imports, ["chasm.ring_enter"]);
     assert!(!exports.iter().any(|e| e == "_start"));
+}
+
+#[test]
+fn declared_generic_words() {
+    let c = ok(": twice ( T -- T T ) dup ;");
+    let w = c.word("twice").unwrap();
+    assert!(w.generic && w.resolved);
+    ok(": swap-pair ( T U -- U T ) swap ;");
+    ok(": first ( array T -- T ) 0 array.at ;");
+    assert_eq!(err(": bad ( T T -- T ) i32.add ;"), "E_TYPE_MISMATCH");
+    assert_eq!(err(": bad2 ( T -- T ) ( U ) ;"), "E_ASSERTION");
+    assert_eq!(err("export : e ( T -- T ) ;"), "E_NEEDS_EFFECT");
+    assert_eq!(err("struct box  v: T"), "E_UNKNOWN_TYPE");
+    let c = compile(
+        &[Source::new("t.chasm", "declare g ( array T -- i32 )")],
+        &Options::default(),
+    );
+    let names: Vec<&str> = c.unresolved().iter().map(|w| w.name.as_str()).collect();
+    assert_eq!(names, ["g"]);
+}
+
+#[test]
+fn some_words_must_declare_their_effect() {
+    assert_eq!(
+        err(": fact dup 1 i32.gt_s [ dup 1 i32.sub fact i32.mul ] when ;"),
+        "E_NEEDS_EFFECT"
+    );
+    let c = compile(
+        &[Source::new(
+            "t.chasm",
+            "declare odd? ( i32 -- i32 )\n: even? dup i32.eqz [ drop 1 ] [ 1 i32.sub odd? ] if ;\n: odd? ( i32 -- i32 ) dup i32.eqz [ drop 0 ] [ 1 i32.sub even? ] if ;",
+        )],
+        &Options::default(),
+    );
+    let d = &c.diagnostics[0];
+    assert_eq!(d.code, "E_NEEDS_EFFECT");
+    assert!(
+        d.message.contains("`even?`") && d.message.contains("`odd?`"),
+        "{}",
+        d.message
+    );
+    assert_eq!(err("export : e 1 ;"), "E_NEEDS_EFFECT");
+    assert_eq!(err(": main \"x\" println ;"), "E_NEEDS_EFFECT");
+    let c = compile(
+        &[Source::new(
+            "t.chasm",
+            ": fact ( i32 -- i32 ) ;\n: f :> fact fact ;",
+        )],
+        &Options::default(),
+    );
+    assert!(
+        c.diagnostics.iter().all(|d| d.code != "E_NEEDS_EFFECT"),
+        "{:?}",
+        c.diagnostics
+    );
+}
+
+#[test]
+fn inferred_effects() {
+    let effect = |src: &str, word: &str| -> (String, bool, bool) {
+        let c = ok(src);
+        let w = c.word(word).unwrap();
+        (w.effect.clone(), w.inferred, w.generic)
+    };
+    assert_eq!(
+        effect(": sq dup i32.mul ;", "sq"),
+        ("( i32 -- i32 )".into(), true, false)
+    );
+    assert_eq!(
+        effect(": add3 i32.add i32.add ;", "add3").0,
+        "( i32 i32 i32 -- i32 )"
+    );
+    assert_eq!(
+        effect(": twice dup ;", "twice"),
+        ("( T -- T T )".into(), true, true)
+    );
+    assert_eq!(
+        effect(
+            ": countdown [ dup 0 i32.gt_s ] [ 1 i32.sub ] while drop ;",
+            "countdown"
+        )
+        .0,
+        "( i32 -- )"
+    );
+    assert_eq!(effect(": hello \"hi\" println ;", "hello").0, "( -- )");
+    assert_eq!(effect(": die \"x\" trap ;", "die").0, "( -- )");
+    assert_eq!(
+        effect(": mk 3 array.new ( array i32 ) ;", "mk").0,
+        "( -- array i32 )"
+    );
+    assert_eq!(err(": bad 1 \"x\" i32.add ;"), "E_TYPE_MISMATCH");
+    assert_eq!(err(": f 1 ;\n: f 2 i64 ;"), "E_REDEFINE_EFFECT");
+    assert_eq!(
+        err("declare g ( i32 -- i32 )\n: g 1 i64 ;"),
+        "E_DECLARE_MISMATCH"
+    );
+    assert_eq!(err(": g [ dup ] when ;"), "E_BRANCH_MISMATCH");
+    let c = ok(": sq dup i32.mul ;\n: main ( -- ) 3 sq i32.to-str println ;");
+    assert!(c.wasm.is_some());
+    assert!(!c.word("main").unwrap().inferred);
+}
+
+#[test]
+fn generic_instances() {
+    let c = ok(": twice ( T -- T T ) dup ;\n: a ( i32 -- i32 i32 ) twice ;\n: b ( str -- str str ) twice ;");
+    let inst = |name: &str| c.words.iter().find(|w| w.name == name).cloned();
+    assert_eq!(
+        inst("twice<i32>").unwrap().instance_of.as_deref(),
+        Some("twice")
+    );
+    assert_eq!(inst("twice<str>").unwrap().effect, "( str -- str str )");
+    let callees: Vec<String> = c
+        .graph
+        .callees("a")
+        .iter()
+        .map(|e| e.word.clone())
+        .collect();
+    assert_eq!(callees, ["twice<i32>"]);
+    assert_eq!(c.graph.callers("twice"), ["twice<i32>", "twice<str>"]);
+    ok(": first ( array T -- T ) 0 array.at ;\n: f ( array f64 -- f64 ) first ;");
+    let c = ok(": twice ( T -- T T ) dup ;\n: thrice ( T -- T T T ) twice twice ;\n: q ( i32 -- i32 i32 i32 ) thrice ;");
+    assert!(c.words.iter().any(|w| w.name == "thrice<i32>"));
+    assert!(c.words.iter().any(|w| w.name == "twice<i32>"));
+    ok(": twice ( T -- T T ) dup ;\n: amb ( -- i32 ) 1 twice drop ;");
+    assert_eq!(
+        err(": twice ( T -- T T ) dup ;\n: amb2 ( -- ) 0 array.new twice 2drop ;"),
+        "E_AMBIGUOUS_TYPE"
+    );
+    ok(": twice ( T -- T T ) dup ;\ntest twice : 3 twice -> 3 3");
+}
+
+#[test]
+fn whole_program_emits_only_reachable_instances() {
+    let src = ": twice ( T -- T T ) dup ;\n: unused ( str -- str str ) twice ;\n: main ( -- ) 3 twice i32.add drop ;";
+    let c = export(src);
+    assert!(c.ok(), "{:?}", c.diagnostics);
+    let names = functions(c.wasm.as_ref().unwrap());
+    assert!(names.iter().any(|n| n == "twice<i32>"), "{names:?}");
+    assert!(
+        !names.iter().any(|n| n == "twice" || n == "twice<str>"),
+        "{names:?}"
+    );
+    let dead: Vec<String> = c.dead().unwrap().iter().map(|w| w.name.clone()).collect();
+    assert!(
+        dead.contains(&"unused".to_string()) && dead.contains(&"twice<str>".to_string()),
+        "{dead:?}"
+    );
+    assert!(!dead.contains(&"twice".to_string()), "{dead:?}");
+    let c = export("declare g ( T -- T )\n: main ( -- ) 1 g drop ;");
+    let unresolved: Vec<&chasm_core::Diagnostic> = c
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == "E_UNRESOLVED")
+        .collect();
+    assert_eq!(unresolved.len(), 1, "{:?}", c.diagnostics);
+    assert_eq!(unresolved[0].word.as_deref(), Some("g"));
+}
+
+#[test]
+fn redefining_a_generic_rebuilds_instances() {
+    let c = ok(": twice ( T -- T T ) dup ;\n: a ( i32 -- i32 i32 ) twice ;\n: twice ( T -- T T ) dup drop dup ;");
+    assert_eq!(c.words.iter().filter(|w| w.name == "twice<i32>").count(), 1);
+}
+
+#[test]
+fn ticking_a_generic_word() {
+    use chasm_core::graph::EdgeKind;
+    let g = ": twice ( T -- T T ) dup ;\n";
+    let c = ok(&format!("{g}: t1 ( -- [ i32 -- i32 i32 ] ) 'twice ;"));
+    let callees: Vec<(String, EdgeKind)> = c
+        .graph
+        .callees("t1")
+        .iter()
+        .map(|e| (e.word.clone(), e.kind))
+        .collect();
+    assert_eq!(
+        callees,
+        [("twice<i32>".to_string(), EdgeKind::AddressTaken)]
+    );
+    ok(&format!(
+        "{g}: t2 ( -- ) 'twice ( [ str -- str str ] ) drop ;"
+    ));
+    ok(&format!(
+        "{g}: apply ( i32 [ i32 -- i32 i32 ] -- i32 i32 ) call ;\n: t3 ( -- i32 i32 ) 3 'twice apply ;"
+    ));
+    assert_eq!(
+        err(&format!("{g}: t4 ( -- ) 'twice drop ;")),
+        "E_AMBIGUOUS_TYPE"
+    );
+    ok(&format!(
+        "{g}: t5 ( -- [ -- i32 i32 ] ) [ 3 'twice call ] ;"
+    ));
 }

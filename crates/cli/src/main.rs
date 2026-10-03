@@ -93,6 +93,14 @@ enum Cmd {
     Unresolved(Common),
     /// List words that `main` and the `export` words never reach.
     Dead(Common),
+    /// List un-annotated words with their inferred effects.
+    Infer {
+        #[command(flatten)]
+        common: Common,
+        /// Insert the inferred effects into the source files in place.
+        #[arg(long)]
+        write: bool,
+    },
     /// List every word with its effect.
     Words(Common),
     /// What a word calls.
@@ -144,6 +152,53 @@ impl Report {
             "results": self.results,
         })
     }
+}
+
+/// Insert each inferred effect after its word's name in the source file,
+/// leaving every other byte as it was. Returns the files changed.
+#[allow(clippy::result_large_err)]
+fn write_effects(words: &[&chasm_core::WordInfo]) -> Result<Vec<String>, Diagnostic> {
+    let mut by_file: BTreeMap<&str, Vec<&chasm_core::WordInfo>> = BTreeMap::new();
+    for w in words {
+        by_file.entry(w.location.file.as_str()).or_default().push(w);
+    }
+    let io = |file: &str, e: std::io::Error| {
+        Diagnostic::error(
+            "E_IO",
+            format!("cannot rewrite `{file}`: {e}"),
+            Location::default(),
+        )
+    };
+    let mut written = Vec::new();
+    for (file, words) in by_file {
+        let mut text = std::fs::read_to_string(file).map_err(|e| io(file, e))?;
+        // (byte offset just after the name, text to insert), last first.
+        let mut edits: Vec<(usize, String)> = words
+            .iter()
+            .filter_map(|w| {
+                let l = &w.location;
+                let line_start: usize = text
+                    .split_inclusive('\n')
+                    .take(l.line.saturating_sub(1) as usize)
+                    .map(str::len)
+                    .sum();
+                let col = text[line_start..]
+                    .char_indices()
+                    .nth(l.column.saturating_sub(1) as usize)
+                    .map(|(i, _)| line_start + i)?;
+                text[col..]
+                    .starts_with(&l.token)
+                    .then(|| (col + l.token.len(), format!(" {}", w.effect)))
+            })
+            .collect();
+        edits.sort_by_key(|e| std::cmp::Reverse(e.0));
+        for (at, insert) in &edits {
+            text.insert_str(*at, insert);
+        }
+        std::fs::write(file, text).map_err(|e| io(file, e))?;
+        written.push(file.to_string());
+    }
+    Ok(written)
 }
 
 /// The wasm features Chasm emits; `wasm-opt` may use no others.
@@ -521,6 +576,48 @@ fn exec(cli: Cli) -> (Report, bool) {
             };
             (r, json)
         }
+        Cmd::Infer { common, write } => {
+            let json = common.json;
+            let r = match load(&common, false, false, false) {
+                Err(d) => failed("infer", vec![d]),
+                Ok(comp) => {
+                    let mut inferred: Vec<&chasm_core::WordInfo> = comp
+                        .words
+                        .iter()
+                        .filter(|w| {
+                            w.inferred && !w.library && !w.generated && w.instance_of.is_none()
+                        })
+                        .collect();
+                    inferred.sort_by(|a, b| {
+                        (&a.location.file, a.location.line, a.location.column).cmp(&(
+                            &b.location.file,
+                            b.location.line,
+                            b.location.column,
+                        ))
+                    });
+                    let words: Vec<J> = inferred
+                        .iter()
+                        .map(|w| json!({ "name": w.name, "effect": w.effect, "location": w.location }))
+                        .collect();
+                    let mut written = Vec::new();
+                    let mut diagnostics = comp.diagnostics.clone();
+                    if write && comp.ok() {
+                        match write_effects(&inferred) {
+                            Ok(files) => written = files,
+                            Err(d) => diagnostics.push(d),
+                        }
+                    }
+                    let ok = !diagnostics.iter().any(Diagnostic::is_error);
+                    Report {
+                        command: "infer",
+                        ok,
+                        results: json!({ "words": words, "written": written }),
+                        diagnostics,
+                    }
+                }
+            };
+            (r, json)
+        }
         Cmd::Dead(c) => {
             let json = c.json;
             let r = match load(&c, false, false, false) {
@@ -591,7 +688,7 @@ fn repl_report(o: Outcome, output: Vec<u8>) -> Report {
         |e: &chasm_runtime::native::RunError| json!({ "message": e.message, "word": e.word });
     let results = json!({
         "defined": o.defined.iter().map(|d| json!({
-            "name": d.name, "effect": d.effect, "declared": d.declared,
+            "name": d.name, "effect": d.effect, "declared": d.declared, "inferred": d.inferred,
         })).collect::<Vec<_>>(),
         "forgotten": o.forgotten,
         "forced": o.forced.iter().map(|f| json!({ "name": f.name, "from": f.from, "to": f.to })).collect::<Vec<_>>(),
@@ -826,6 +923,24 @@ fn render(report: &J) -> (String, String) {
                 out.push('\n');
             }
         }
+        "infer" => {
+            let list = r["words"].as_array().cloned().unwrap_or_default();
+            if list.is_empty() && ok {
+                out.push_str("no un-annotated words\n");
+            }
+            for w in list {
+                out.push_str(&format!(
+                    "{} {}  ({}:{})\n",
+                    s(&w["name"]),
+                    s(&w["effect"]),
+                    s(&w["location"]["file"]),
+                    w["location"]["line"]
+                ));
+            }
+            for f in strs(&r["written"]) {
+                out.push_str(&format!("wrote {f}\n"));
+            }
+        }
         "dead" => {
             let list = r["dead"].as_array().cloned().unwrap_or_default();
             if r["has_roots"] == J::Bool(false) {
@@ -845,13 +960,22 @@ fn render(report: &J) -> (String, String) {
             for w in r["words"].as_array().into_iter().flatten() {
                 let mut flags = Vec::new();
                 if w["library"].as_bool() == Some(true) {
-                    flags.push("library");
+                    flags.push("library".to_string());
                 }
                 if w["resolved"].as_bool() == Some(false) {
-                    flags.push("unresolved");
+                    flags.push("unresolved".to_string());
                 }
                 if w["export"].as_bool() == Some(true) {
-                    flags.push("export");
+                    flags.push("export".to_string());
+                }
+                if w["inferred"].as_bool() == Some(true) {
+                    flags.push("inferred".to_string());
+                }
+                if w["generic"].as_bool() == Some(true) {
+                    flags.push("generic".to_string());
+                }
+                if let Some(t) = w["instance_of"].as_str() {
+                    flags.push(format!("instance of {t}"));
                 }
                 let flags = if flags.is_empty() {
                     String::new()
@@ -865,6 +989,8 @@ fn render(report: &J) -> (String, String) {
             for d in r["defined"].as_array().into_iter().flatten() {
                 let declared = if d["declared"].as_bool() == Some(true) {
                     " (declared)"
+                } else if d["inferred"].as_bool() == Some(true) {
+                    " (inferred)"
                 } else {
                     ""
                 };
@@ -1001,6 +1127,7 @@ fn main() -> ExitCode {
                 Some("test") => "test",
                 Some("unresolved") => "unresolved",
                 Some("dead") => "dead",
+                Some("infer") => "infer",
                 Some("words") => "words",
                 Some("deps") => "deps",
                 Some("used-by") => "used-by",

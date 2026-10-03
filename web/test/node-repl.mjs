@@ -77,6 +77,22 @@ try {
   r = await repl.step("drop drop drop 3 sq");
   assert.deepEqual(r.stack, [{ type: "i64", value: "3 i64" }]);
 
+  r = await repl.step(": cube dup dup i32.mul i32.mul ;");
+  assert.ok(r.ok, JSON.stringify(r.diagnostics));
+  assert.equal(r.defined[0].effect, "( i32 -- i32 )");
+  assert.equal(r.defined[0].inferred, true);
+  r = await repl.step(": twice ( T -- T T ) dup ;");
+  assert.equal(r.defined[0].effect, "( T -- T T )");
+  r = await repl.step("drop 2 cube twice");
+  assert.deepEqual(r.stack, [
+    { type: "i32", value: "8" },
+    { type: "i32", value: "8" },
+  ]);
+  r = await repl.step('drop drop "ab" twice str.concat');
+  assert.deepEqual(r.stack, [{ type: "str", value: '"abab"' }]);
+  r = await repl.step("test twice : 1.5 twice f64.add -> 3.0");
+  assert.equal(r.tests[0].status, "pass");
+
   console.log("node-repl.mjs ok");
   await worker.terminate();
 } catch (e) {

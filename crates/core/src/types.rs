@@ -17,9 +17,12 @@ pub enum Ty {
     Quot(Box<Effect>),
     /// A declared struct, by name: a WasmGC reference.
     Struct(String),
-    /// A type variable. Only arises from polymorphic primitives
-    /// (`array.new`, element types); never written in user effects.
+    /// A type variable of the checker's own, from polymorphic primitives
+    /// (`array.new`, element types) and inference.
     Var(u32),
+    /// A type variable written by the user, an uppercase-initial name such
+    /// as `T`. Rigid: it unifies only with itself.
+    Param(String),
 }
 
 /// A stack effect. `row` is reserved for a "rest of stack" row variable
@@ -60,6 +63,28 @@ impl Effect {
     pub fn wasm_results(&self, structs: &StructTypes) -> Vec<ValType> {
         lower_all(&self.outputs, structs)
     }
+
+    /// Whether the effect has type parameters, making its word generic.
+    pub fn is_generic(&self) -> bool {
+        self.inputs.iter().chain(&self.outputs).any(Ty::has_param)
+    }
+
+    /// The distinct type parameters, in order of first appearance.
+    pub fn params(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for t in self.inputs.iter().chain(&self.outputs) {
+            t.collect_params(&mut out);
+        }
+        out
+    }
+
+    pub fn substitute(&self, map: &HashMap<String, Ty>) -> Effect {
+        Effect {
+            inputs: self.inputs.iter().map(|t| t.substitute(map)).collect(),
+            outputs: self.outputs.iter().map(|t| t.substitute(map)).collect(),
+            row: self.row,
+        }
+    }
 }
 
 impl Ty {
@@ -74,7 +99,7 @@ impl Ty {
                 .unwrap_or_else(|| panic!("struct `{name}` lowered before it was declared"))
         };
         match self {
-            Ty::I32 | Ty::Quot(_) | Ty::Var(_) => vec![ValType::I32],
+            Ty::I32 | Ty::Quot(_) | Ty::Var(_) | Ty::Param(_) => vec![ValType::I32],
             Ty::I64 => vec![ValType::I64],
             Ty::F32 => vec![ValType::F32],
             Ty::F64 => vec![ValType::F64],
@@ -101,7 +126,7 @@ impl Ty {
     /// Never used for structs: arrays of structs are GC arrays with no byte layout.
     pub fn elem_size(&self) -> u32 {
         match self {
-            Ty::I32 | Ty::F32 | Ty::Quot(_) | Ty::Var(_) | Ty::Struct(_) => 4,
+            Ty::I32 | Ty::F32 | Ty::Quot(_) | Ty::Var(_) | Ty::Param(_) | Ty::Struct(_) => 4,
             Ty::I64 | Ty::F64 | Ty::Str | Ty::Array(_) => 8,
         }
     }
@@ -112,6 +137,38 @@ impl Ty {
             Ty::Array(t) => t.has_var(),
             Ty::Quot(e) => e.inputs.iter().chain(&e.outputs).any(Ty::has_var),
             _ => false,
+        }
+    }
+
+    pub fn has_param(&self) -> bool {
+        match self {
+            Ty::Param(_) => true,
+            Ty::Array(t) => t.has_param(),
+            Ty::Quot(e) => e.is_generic(),
+            _ => false,
+        }
+    }
+
+    /// Replace type parameters by name; unmapped ones stay.
+    pub fn substitute(&self, map: &HashMap<String, Ty>) -> Ty {
+        match self {
+            Ty::Param(p) => map.get(p).cloned().unwrap_or_else(|| self.clone()),
+            Ty::Array(t) => Ty::Array(Box::new(t.substitute(map))),
+            Ty::Quot(e) => Ty::Quot(Box::new(e.substitute(map))),
+            _ => self.clone(),
+        }
+    }
+
+    fn collect_params(&self, out: &mut Vec<String>) {
+        match self {
+            Ty::Param(p) if !out.contains(p) => out.push(p.clone()),
+            Ty::Array(t) => t.collect_params(out),
+            Ty::Quot(e) => {
+                for t in e.inputs.iter().chain(&e.outputs) {
+                    t.collect_params(out);
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -146,6 +203,7 @@ impl fmt::Display for Ty {
             }
             Ty::Struct(name) => write!(f, "{name}"),
             Ty::Var(n) => write!(f, "?{n}"),
+            Ty::Param(p) => write!(f, "{p}"),
         }
     }
 }
@@ -300,5 +358,33 @@ mod tests {
         assert!(s.unify(&a, &Ty::Array(Box::new(Ty::F64))));
         assert_eq!(s.resolve(&v), Ty::F64);
         assert!(!s.unify(&v, &Ty::I32));
+    }
+
+    #[test]
+    fn params() {
+        let p = |n: &str| Ty::Param(n.into());
+        let e = Effect::new(vec![p("T")], vec![p("T"), p("T")]);
+        assert_eq!(e.to_string(), "( T -- T T )");
+        assert!(e.is_generic());
+        let q = Effect::new(
+            vec![
+                Ty::Array(Box::new(p("T"))),
+                Ty::Quot(Box::new(Effect::new(vec![p("T")], vec![p("U")]))),
+            ],
+            vec![p("U")],
+        );
+        assert_eq!(q.to_string(), "( array T [ T -- U ] -- U )");
+        let r = Effect::new(vec![p("U"), p("T")], vec![Ty::Array(Box::new(p("T")))]);
+        assert_eq!(r.params(), ["U", "T"]);
+        let mut s = Subst::default();
+        assert!(s.unify(&p("T"), &p("T")));
+        assert!(!s.unify(&p("T"), &p("U")));
+        assert!(!s.unify(&p("T"), &Ty::I32));
+        let v = s.fresh();
+        assert!(s.unify(&v, &p("T")));
+        assert_eq!(s.resolve(&v), p("T"));
+        let map: HashMap<String, Ty> = [("T".to_string(), Ty::I32)].into();
+        assert_eq!(e.substitute(&map).to_string(), "( i32 -- i32 i32 )");
+        assert!(!Effect::new(vec![Ty::I32], vec![]).is_generic());
     }
 }

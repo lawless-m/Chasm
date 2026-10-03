@@ -54,7 +54,7 @@ pub mod api {
             "ok": ok,
             "diagnostics": step.diagnostics,
             "defined": step.defined.iter().map(|d| json!({
-                "name": d.name, "effect": d.effect, "declared": d.declared,
+                "name": d.name, "effect": d.effect, "declared": d.declared, "inferred": d.inferred,
             })).collect::<Vec<_>>(),
             "forgotten": step.forgotten,
             "forced": step.forced.iter().map(|f| json!({
@@ -247,6 +247,9 @@ mod tests {
         assert!(!s.module.is_empty());
         let s = step(": sq ( i32 -- i32 ) dup i32.mul ;", hp);
         assert_eq!(j(&s)["installs"].as_array().unwrap().len(), 1);
+        assert_eq!(j(&s)["defined"][0]["inferred"], false);
+        let s = step(": cube dup dup i32.mul i32.mul ;", hp);
+        assert_eq!(j(&s)["defined"][0]["inferred"], true);
         let s = step("3 sq", hp);
         assert_eq!(j(&s)["line"]["stack_after"], serde_json::json!(["i32"]));
         line_done(true);

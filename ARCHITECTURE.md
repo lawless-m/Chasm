@@ -1,17 +1,17 @@
 # Chasm: Architecture and Milestones
 
-Status: draft v0.16 (M0 to M6 implemented; decisions in sections 13 to 18). **Chasm** (Chuck-Wasm, after Chuck Moore) is a typed, concatenative language that compiles to WebAssembly, with an interactive REPL, written in Rust. Source files use the `.chasm` extension; the CLI binary is `chasm`.
+Status: draft v0.17 (M0 to M7 implemented; decisions in sections 13 to 19). **Chasm** (Chuck-Wasm, after Chuck Moore) is a typed, concatenative language that compiles to WebAssembly, with an interactive REPL, written in Rust. Source files use the `.chasm` extension; the CLI binary is `chasm`.
 
 ## 1. Goals
 
 - A small Forth/Factor-like concatenative language whose words map almost one-to-one onto wasm.
-- Every word carries a **declared stack effect**. The checker is the single source of truth.
+- Every word has a **stack effect, declared or inferred**. The checker is the single source of truth.
 - An **interactive workflow**: type words, see them run, redefine them live.
 - **Contract first**: declare a word's effect (and optional tests) before writing its body.
 - The compiler core runs **both natively and as wasm in the browser** from the same source.
 - Designed so that **Claude Code can write and fix programs** from compiler feedback alone.
 
-Non-goals for v1: inference, closures, the Component Model, multi-threading. See `FUTURE.md` for how these would fit. Arrays and functions as values (without capture) **are** v1, and structs are milestone M4, as WasmGC structs (section 15).
+Non-goals for v1: closures, the Component Model, multi-threading. See `FUTURE.md` for how these would fit. Arrays and functions as values (without capture) **are** v1, and structs are milestone M4, as WasmGC structs (section 15).
 
 Licence: MIT.
 
@@ -37,13 +37,13 @@ Rule: anything the CLI, REPL and exporter all need lives in `core`.
 ## 4. Core pipeline
 
 1. **Lex**: whitespace-separated tokens, with comments and stack-trace annotations kept.
-2. **Parse**: word definitions, declarations, tests. Effect is an **optional field** in the AST from day one (v1 rejects its absence).
+2. **Parse**: word definitions, declarations, tests. The effect is an **optional field**: when it is missing, an elaboration pass infers it (`crates/core/src/infer.rs`) and the checker then re-verifies it as if it had been written.
 3. **Resolve**: names to word ids; edges recorded in the dependency graph here (not at parse time).
 4. **Check**: verify each body against its declared effect. Report expected versus actual stack at the failing token.
 5. **Emit**: one wasm function per word, typed from its effect.
 6. **Link/instantiate**: via the shared table and memory (REPL) or direct calls (export).
 
-Type representation: an effect is a list of input types and a list of output types, with **space reserved for a "rest of stack" row variable**. Not implemented in v1, but costly to retrofit, so the data structure allows it.
+Type representation: an effect is a list of input types and a list of output types, with **space reserved for a "rest of stack" row variable**. Row variables exist only inside the elaborator, which grows the inputs one slot at a time; they are never user syntax.
 
 ## 5. Runtime layer
 
@@ -75,11 +75,10 @@ v1 limits: locals are word-scoped and not captured by quotations (that would mea
 
 ## 5b. Polymorphism
 
-Wasm has no polymorphic instructions, and a word's effect is its wasm function type, so **user words are monomorphic**. The only polymorphism in the language is built into the shuffle primitives.
+Wasm has no polymorphic instructions, and a word's effect is its wasm function type, so polymorphism is resolved at compile time: the shuffle primitives at each use, and generic user words by monomorphisation.
 
-- **Shuffle primitives** (`dup`, `swap`, `drop`, `over`, `rot`, `nip`, `tuck`, `2dup`) and **collection combinators** (`each`, `map`, `filter`, `fold`) have effects written with type variables, for example `( a b -- b a )`. Checking is forward and every user word is concretely typed, so the stack is always concrete when the checker meets one of these. It instantiates the primitive at the types present and the emitter produces the matching code: `dup` on `i32` is `local.tee` into a compiler-only `i32` local, `swap` is two locals, and so on.
-- **No type variables in user effects.** A word that would need `( a b -- a b a b )` must instead be written once per type (`2dup-i32`, `2dup-f64`). Tedium is chosen over magic: every user word has a real wasm function type, a real table slot, and a single node in the dependency graph.
-- **Later, if wanted:** monomorphisation, where user effects may carry type variables and each call site gets its own specialised instance. That needs per-instance table slots and graph nodes, and shares machinery with M7 inference, so it is deferred to that point and may never be needed.
+- **Shuffle primitives** (`dup`, `swap`, `drop`, `over`, `rot`, `nip`, `tuck`, `2dup`) and **collection combinators** (`each`, `map`, `filter`, `fold`) have effects written with type variables, for example `( a b -- b a )`. Checking is forward, so the stack is concrete (or holds a generic word's own type variables) when the checker meets one of these. It instantiates the primitive at the types present and the emitter produces the matching code: `dup` on `i32` is `local.tee` into a compiler-only `i32` local, `swap` is two locals, and so on.
+- **Generic words.** A user effect may carry type variables, uppercase-initial names such as `T` and `U`: `: twice ( T -- T T ) dup ;`. The word is a template, checked once with its variables rigid (a `T` matches only `T`) and never emitted. Each concrete instantiation that a call or a `'word` fixes is an instance: its own wasm function, table slot and dependency-graph node, named `twice<i32>`, compiled by checking the template's body at those types. There are no constraints: `i32.add` on a `T` is a type error in a declared generic, and fixes `T = i32` under inference. `export` words and `main` are concrete.
 
 ## 5c. Control flow
 
@@ -162,7 +161,7 @@ One rule governs all three: **a word's declared effect is its interface and can 
 - `declare name ( effect )` creates a table slot with the right wasm function type. The body is a trap that reports `unresolved word <name>`. Callers type-check, compile and run until they hit it.
 - Defining a word fills the slot **only if the declared effect matches exactly**. Mismatch is an error.
 - Redefining a word with the **same effect** swaps the table entry. Existing callers pick up the new body.
-- Redefining with a **different effect is rejected** in v1. The error lists all dependants from the dependency graph.
+- Redefining with a **different effect is rejected**, whether the effect was written or inferred. The error lists all dependants from the dependency graph.
 - Declaring twice: identical is a no-op, conflicting is an error.
 - Optional **contract tests** (`test word : body -> expected`) can sit with a declaration. They stay pending until a body exists, then become its first check.
 - **Forward references require a declared stub.** No bare undeclared names in v1.
@@ -184,7 +183,7 @@ Uses:
 - Rejection errors that name affected dependants.
 - Safe `forget`: refuse, or list what would be orphaned.
 - Dead-word detection and trimming at export.
-- Cycle detection via strongly connected components. In v1 every word is declared, so this matters only for M7 inference, where recursive and mutually recursive words must keep declared effects.
+- Cycle detection via strongly connected components: recursive and mutually recursive words must declare their effects, since inference cannot (`E_NEEDS_EFFECT`).
 - Incremental checking after a body edit.
 - `deps`, `used-by` and `unresolved` commands with JSON output for tooling and Claude Code.
 
@@ -228,7 +227,7 @@ Principles; exact fields are settled in M1 and generated from the Rust types (`s
 
 **M6: Polish and tooling.** JSON output everywhere, editor integration (`chasm lsp`), expanded examples, force-redefine with cascade (`)force`), `/net/http` with request headers natively and in the browser, 9p mounts, WASI export mapping (`build --wasi`). An io_uring native backend was measured and not built (section 18).
 
-**M7: Inference (optional).** Elaboration pass in front of the checker producing annotations, with row variables. Soundness unaffected because the checker re-verifies. Start with straight-line words made only of primitives, then add unification.
+**M7: Inference and generic words.** An elaboration pass in front of the checker infers missing effects, which the checker re-verifies, so soundness is unaffected. User effects may carry type variables, monomorphised per concrete use. `chasm infer` lists inferred effects and `--write` puts them into the source.
 
 M1 to M3 can overlap; the graph and stub data structures are part of M1 so that M3 is tooling only.
 
@@ -240,7 +239,7 @@ Settled questions live in `LANGUAGE.md` (primitive set, numeric types, strings, 
 2. Module or namespace structure for libraries (`LANGUAGE.md` open item 2); a flat dictionary until it hurts.
 3. Integer overflow. The primitives are wasm's (`LANGUAGE.md` section 2), so integer arithmetic wraps silently: `21 fact` is a well-typed wrong answer (`examples/factorial.chasm`). Chasm's safety is memory and type safety, not arithmetic safety, and the effect checker tracks types, not ranges. If checked arithmetic is wanted, the candidate is library words in the prelude (e.g. a trapping `i64.mul?`) beside the unchanged primitives, keeping one primitive to one instruction. Open: whether to add them, their names, and whether examples should prefer them.
 
-Row variables in effects are an M7 matter, not a v1 question; the type representation leaves room for them (section 4).
+Row variables are not user syntax; inference uses them internally (section 4).
 
 ## 12. Hardware notes
 
@@ -336,4 +335,17 @@ Heavy native batch work (large test corpora, benchmarks, Binaryen runs over big 
 9. **9p mounts** use a plain 9P2000 client over TCP (`crates/runtime/src/ninep.rs`): version, attach, walk, open, create, read, write, clunk and stat, msize 8192, one request in flight. A mount connects on its first open, so an unreachable server costs nothing until used. A directory read maps the server's stat records onto Chasm's directory records. The in-memory test server (`crates/runtime/tests/common/ninep_server.rs`) is shared with the CLI's test by `#[path]`. 9p from the browser, over WebSocket, is deferred.
 10. **WASI export is a mapping of four words and a path table** (`crates/core/src/wasi.rs`), not an API translation. `build --wasi` imports five preview1 functions (`fd_write`, `fd_read`, `fd_close`, `path_open`, `clock_time_get`) in place of `chasm.ring_enter`, and the ring helper keeps its signature but dispatches over them, so compiled words are identical in both modes; the function index space shifts by the import count. `/dev/cons` is fds 0 and 1, `/dev/time` is `clock_time_get`, `/file/<path>` is `path_open` under preopen fd 3, anything else is not found, and directories are not readable. A trap writes its message to fd 2. It is verified by running built modules under `wasmtime-wasi` as a dev-dependency of the runtime, so no wasmtime CLI is needed.
 11. **No io_uring backend.** Measured (`docs/performance.md`, Ring servicing): a trip through the ring costs about 120 to 200 ns, against 400 to 700 ns for the system call it carries. io_uring's gain is batching and overlapping submissions, but a Chasm host word submits one entry and waits for its completion before going on (the language is synchronous by design, section 5d), so with one entry in flight io_uring would only put a kernel round trip in place of a direct system call. Revisit if a host word ever submits several entries at once.
+
+## 19. Decisions taken in M7
+
+1. **Effects are optional.** For a definition without one, `infer::infer_effect` checks the body with 0, 1, 2, ... fresh input variables (`Mode::Infer`, a check-only pass) until it stops underflowing, up to 32, and generalises any variable left open to a parameter named `T U V W X Y Z`, then `T1 T2 ...`, in order of first appearance. The result is then handled exactly as a written effect: the same checker, the same declare and redefinition rules, and `Word.inferred` set.
+2. **Some words must declare.** A pre-pass over each unit's items (`infer::require_effects`) refuses an un-annotated `export` word, `main`, and any word in a cycle of calls (Tarjan's strongly connected components over the unit, so cycles may span files), with `E_NEEDS_EFFECT`. Locals bound by `:>` shadow words when finding calls.
+3. **Type variables are uppercase-initial names** (`Ty::Param`), parsed in every type position; built-in types and struct names are lowercase, so an uppercase struct name is `E_SYNTAX`, and struct fields cannot be type variables. A `Ty::Param` unifies only with itself: a template is checked once with its variables rigid (`check::check_body`).
+4. **Instances.** `check::instantiate` makes `twice<i32>` (type arguments in `Effect::params` order, displayed comma-separated): a `WordKind::Instance` word with its own id and table slot, an edge to its template, and the template's body compiled at those types (the parameters substituted into stack assertions through `Ctx.type_params`). It is registered before its body is compiled, so a generic word using itself at the same types finds it. Instances are made only in the emitting pass, at the call or tick that fixes them; one not fixed there is `E_AMBIGUOUS_TYPE`. A call to an instance takes the instance's concrete wasm type.
+5. **Templates are never emitted.** A template keeps a placeholder body that traps (so "has a body" still means resolved); whole-program builds leave it out of the module, its slot null, and emit only reachable instances. A declared generic with no body is reported unresolved once, under its own name.
+6. **Redefinition rebuilds instances in place** (`check::compile_instance`): same ids and slots, so callers reach the new code through the table at the REPL.
+7. **The REPL.** `)forget` of a generic word removes the template and all its instances; instance names are not names in source, so `)forget twice<i32>` is an unknown word. `)force` gives the template a fresh id and retires its instances (old function values keep running the old code); dependants instantiate the new template afresh. An un-annotated definition in a `)force` chunk is inferred first, to decide whether the word changed.
+8. **`'word` on a generic word** needs a context that fixes its instantiation (an assertion, a declared effect, `call` at known types); otherwise `E_AMBIGUOUS_TYPE`.
+9. **`chasm infer`** lists un-annotated words with their inferred effects; `--write` inserts ` ( effect )` after each name and leaves every other byte of the file unchanged, and writes nothing when the program has errors.
+10. **Compatibility.** Programs that declare every effect and use no type variables compile byte-identically to M6. `inferred`, `generic` and `instance_of` are additive JSON fields.
 

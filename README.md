@@ -1,8 +1,9 @@
 # Chasm
 
 Chasm (Chuck-Wasm, after Chuck Moore) is a typed, concatenative language in
-the Forth and Factor family that compiles to WebAssembly. Every word declares
-its stack effect, and the checker verifies each body against it.
+the Forth and Factor family that compiles to WebAssembly. Every word has a
+stack effect, written or inferred, and the checker verifies each body against
+it.
 
 ```
 : square ( i32 -- i32 )  dup i32.mul ;
@@ -37,6 +38,8 @@ structs) and M5 (whole-program export: dead words left out, unresolved words
 refused, Binaryen) and M6 (polish and tooling: JSON output everywhere, the
 `chasm lsp` language server, `)force` in the REPL, `/net/http` with request
 headers natively and in the browser, 9p mounts, `chasm build --wasi`, and
-examples for each) are implemented. M7 (inference) is next.
+examples for each) and M7 (optional effects with inference, generic words
+with type variables monomorphised per use, `chasm infer --write`) are
+implemented: M0 to M7 implemented.
 
 Licence: MIT.

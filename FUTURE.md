@@ -16,7 +16,7 @@ Both moved into v1 (`LANGUAGE.md` 4a and 7a). Left for later: nested arrays (`ar
 - Indexing is O(1): element `i` is in chunk `31 - clz(i + 1)` at offset `i + 1 - 2^chunk` (one `i32.clz` and a shift).
 - Because nothing moves, every view into a chunk stays valid, so no separate owning-array and `slice` types are needed.
 - A view is still contiguous, so it cannot span two chunks; walking the whole array goes through `each`/`fold`-style words on the growable array itself.
-- With M4 structs it is library code, not a language feature, and needs no nested arrays: `struct chunk  items: array i32` and `struct vec-i32  chunks: array chunk  count: i32`. Without generics it is written once per element type (`vec-i32`, `vec-str`, `vec-point`).
+- With M4 structs it is library code, not a language feature, and needs no nested arrays: `struct chunk  items: array i32` and `struct vec-i32  chunks: array chunk  count: i32`. Struct fields cannot be type variables, so it is still written once per element type (`vec-i32`, `vec-str`, `vec-point`); generic words share only the code that touches no struct.
 
 ## 3. Closures
 
@@ -35,7 +35,7 @@ Moving `str` and numeric arrays to GC arrays (`array i8`, `array i32`, ...) woul
 
 ## 5. Inference
 
-Covered in `ARCHITECTURE.md` M7: an elaboration pass in front of the checker, row variables for the rest of the stack, and monomorphisation of type-variable effects. Shares machinery with first-class quotations.
+Implemented in M7 (`ARCHITECTURE.md` section 19): effects may be left out and are inferred, and generic words with type variables are monomorphised per use. Still out of scope: row variables or stack-polymorphic effects in user syntax, constraints or type classes, higher-rank types, and generic structs (struct fields cannot be type variables).
 
 ## 6. Namespaces and libraries
 
@@ -53,11 +53,11 @@ A Chasm compiler written in Chasm, reached in stages, each an ordinary example w
 
 1. **Lexer.** Grow `examples/tokenizer.chasm` into a lexer whose tokens match `crates/core/src/lexer.rs` on the same input.
 2. **Parser.** Items and bodies as structs. This is where the lack of sum types (section 7) bites: an AST node is a word, a literal or a quotation, and without sum types each becomes a tagged struct with fields used only sometimes, matched by `if` chains the checker cannot prove exhaustive.
-3. **Decide.** Measure what the first two stages cost, then choose whether sum types and some generic mechanism (`ARCHITECTURE.md` M7's row variables, or something smaller) come first.
+3. **Decide.** Measure what the first two stages cost, then choose whether sum types and generic structs (generic words exist since M7) come first.
 
 What a compiler needs that the language lacks today:
 
-- **Generic collections.** With no type variables in effects, token lists, symbol tables and worklists are written once per element type.
+- **Generic collections.** Generic words cover helpers over `array T`, but structs are not generic, so a growable array, a token list or a symbol table built from structs is still written once per element type.
 - **Growable arrays and maps.** The chunked growable list (section 2) and a hash map, again per type.
 - **Collected memory.** A compiler that runs and exits survives the bump allocator; one inside the REPL would want section 4's GC strings and arrays. An AST built from structs is collected already.
 

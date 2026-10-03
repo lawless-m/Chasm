@@ -250,3 +250,52 @@ fn force_json() {
     assert_eq!(forced["results"]["forced"][0]["to"], "( -- i64 )");
     assert_eq!(forced["results"]["rechecked"], serde_json::json!(["g"]));
 }
+
+#[test]
+fn generic_words_at_the_repl() {
+    let input = ": twice ( T -- T T ) dup ;\n3 twice\ndrop drop \"a\" twice str.concat\ntest twice : 1.5 twice f64.add -> 3.0\n: first ( array T -- T ) 0 array.at ;\n3 array.new ( str array i32 ) first\n";
+    let (ok, out, err) = repl(&[], input);
+    assert!(ok, "{out}{err}");
+    assert!(out.contains("ok: twice ( T -- T T )"), "{out}");
+    assert!(out.contains("( i32 i32 ) 3 3\n"), "{out}");
+    assert!(out.contains("( str ) \"aa\"\n"), "{out}");
+    assert!(out.contains("PASS     twice"), "{out}");
+    assert_eq!(last_line(&out), "( str i32 ) \"aa\" 0");
+}
+
+#[test]
+fn ticking_a_generic_at_the_repl() {
+    let input =
+        ": twice ( T -- T T ) dup ;\n'twice\n: t ( -- [ i32 -- i32 i32 ] ) 'twice ;\n5 t call\n";
+    let (ok, out, err) = repl(&[], input);
+    assert!(!ok, "the bare 'twice line fails");
+    assert!(err.contains("E_AMBIGUOUS_TYPE"), "{err}");
+    assert_eq!(last_line(&out), "( i32 i32 ) 5 5", "{out}");
+}
+
+#[test]
+fn forget_a_generic_at_the_repl() {
+    let input = ": twice ( T -- T T ) dup ;\n: a ( i32 -- i32 i32 ) twice ;\n)forget twice\n)forget a\n)forget twice\n: twice ( i32 -- i32 ) 2 i32.mul ;\n4 twice\n";
+    let (ok, out, err) = repl(&[], input);
+    assert!(!ok, "the first forget is refused");
+    assert!(
+        err.contains("E_FORGET") && err.contains("dependants: a"),
+        "{err}"
+    );
+    assert!(
+        out.contains("forgot: a\n") && out.contains("forgot: twice\n"),
+        "{out}"
+    );
+    assert_eq!(last_line(&out), "( i32 ) 8");
+}
+
+#[test]
+fn inferred_effects_are_shown() {
+    let (ok, out, err) = repl(&[], ": sq dup i32.mul ;\n3 sq\n");
+    assert!(ok, "{out}{err}");
+    assert!(out.contains("ok: sq ( i32 -- i32 ) (inferred)\n"), "{out}");
+    assert!(out.contains("( i32 ) 9"), "{out}");
+    let (_, out, _) = repl(&["--json"], ": sq dup i32.mul ;\n");
+    let first: serde_json::Value = serde_json::from_str(out.lines().next().unwrap()).unwrap();
+    assert_eq!(first["results"]["defined"][0]["inferred"], true);
+}
