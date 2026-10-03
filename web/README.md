@@ -37,8 +37,13 @@ its error and dropped.
 
 Two page commands, handled by `main.js` rather than the compiler:
 
-- `)program` lists the saved chunks, ready to copy into a `.chasm` file.
+- `)program` lists the saved chunks: the history, every redefinition and
+  `)forget` included.
 - `)clear` forgets them and reloads the page.
+
+`)words`, a compiler command, lists the program as it stands instead:
+the latest definition of each word still defined, ready to copy into a
+`.chasm` file (`docs/reference.md` section 1a). It is not saved.
 
 Up and Down in the input box step through the chunks you have entered,
 as in readline: Up from the first line of the box, Down from the last, so

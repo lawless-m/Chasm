@@ -11,7 +11,7 @@ use crate::diag::{codes, Diagnostic, Location};
 use crate::layout;
 use crate::lexer::lex;
 use crate::module::{assemble_step, export_name};
-use crate::parser::{parse_repl_with, parse_with, ReplInput};
+use crate::parser::{parse_repl_with, parse_with, parse_with_starts, ReplInput, Start};
 use crate::program::Value;
 use crate::program::{process_item, register_names, validate, Program, PRELUDE, PRELUDE_NAME};
 use crate::types::{names, width_all, Ty};
@@ -99,6 +99,8 @@ pub struct Step {
     /// Dependants a `)force` command re-checked from their stored source, in
     /// the `dependants` spelling (`quad`, `test one`), sorted.
     pub rechecked: Vec<String>,
+    /// The program as it stands, from a `)words` command.
+    pub listing: Option<String>,
 }
 
 /// The session state a `)force` restores when it is refused.
@@ -108,7 +110,42 @@ type Snapshot = (
     HashSet<usize>,
     HashMap<WordId, Item>,
     HashMap<usize, Item>,
+    Vec<Entry>,
 );
+
+/// The text of an item the session accepted, for `)words`.
+#[derive(Debug, Clone)]
+enum Entry {
+    Type(String, String),
+    Declare(WordId, String),
+    Def(WordId, String),
+    Test(usize, String),
+}
+
+/// The text of each item in `text`, from where it starts to where the next
+/// one does, trailing blanks removed.
+fn item_texts(text: &str, starts: &[Start]) -> Vec<String> {
+    let mut offsets = Vec::new();
+    let (mut line, mut col) = (1, 1);
+    let mut next = starts.iter().peekable();
+    for (i, c) in text.char_indices() {
+        if next.peek() == Some(&&(line, col)) {
+            offsets.push(i);
+            next.next();
+        }
+        if c == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    offsets.push(text.len());
+    offsets
+        .windows(2)
+        .map(|w| text[w[0]..w[1]].trim_end().to_string())
+        .collect()
+}
 
 /// A word whose effect `)force` changed, effects as written.
 #[derive(Debug, Clone, PartialEq)]
@@ -157,6 +194,8 @@ pub struct Session {
     sources: HashMap<WordId, Item>,
     /// The source item of each test, by test index.
     test_items: HashMap<usize, Item>,
+    /// Every item the session accepted, in order, as typed.
+    entries: Vec<Entry>,
 }
 
 impl Session {
@@ -254,6 +293,7 @@ impl Session {
             forgotten_tests: HashSet::new(),
             sources: HashMap::new(),
             test_items: HashMap::new(),
+            entries: Vec::new(),
         };
         let mut built = Vec::new();
         if prelude {
@@ -295,10 +335,10 @@ impl Session {
         let known = self.ctx.type_arities();
         match lex(&file, text).and_then(|t| parse_repl_with(&file, &t, &known)) {
             Err(d) => self.program.diagnostics.push(d),
-            Ok(ReplInput::Items(mut items)) => {
+            Ok(ReplInput::Items(mut items, starts)) => {
                 register_names(&mut self.ctx, &items);
                 crate::infer::require_effects(&mut [&mut items], &mut self.program.diagnostics);
-                for item in items {
+                for (item, text) in items.into_iter().zip(item_texts(text, &starts)) {
                     let named = matches!(
                         item,
                         Item::Def { .. }
@@ -308,7 +348,11 @@ impl Session {
                     );
                     let source = item.clone();
                     let tests = self.program.tests.len();
+                    let errs = self.errors();
                     let ids = process_item(&mut self.ctx, item, Origin::User, &mut self.program);
+                    if self.errors() == errs {
+                        self.record(&source, ids.first().copied(), tests, text);
+                    }
                     if let (Item::Def { .. }, Some(&id)) = (&source, ids.first()) {
                         self.sources.insert(id, source.clone());
                     }
@@ -390,15 +434,17 @@ impl Session {
             }
         }
         let mut forgotten = Vec::new();
+        let mut listing = None;
         match text.split_whitespace().collect::<Vec<_>>().as_slice() {
             ["forget", name] => match self.forget(name, &loc) {
                 Ok(()) => forgotten.push(name.to_string()),
                 Err(d) => self.program.diagnostics.push(d),
             },
+            ["words"] => listing = Some(self.listing()),
             _ => self.program.diagnostics.push(Diagnostic::error(
                 codes::E_SYNTAX,
                 format!(
-                    "unknown REPL command `){}`; the commands are `)forget word` and `)force` definitions",
+                    "unknown REPL command `){}`; the commands are `)forget word`, `)force` definitions and `)words`",
                     text.trim()
                 ),
                 loc,
@@ -408,6 +454,7 @@ impl Session {
         let tests_before = self.program.tests.len();
         let mut step = self.finish(heap_ptr, before, tests_before, Vec::new(), Vec::new(), None);
         step.forgotten = forgotten;
+        step.listing = listing;
         step
     }
 
@@ -420,10 +467,10 @@ impl Session {
         let before = self.ctx.words.len();
         let tests_before = self.program.tests.len();
         let known = self.ctx.type_arities();
-        let parsed = lex(&file, text).and_then(|t| parse_with(&file, &t, &known));
+        let parsed = lex(&file, text).and_then(|t| parse_with_starts(&file, &t, &known));
         let outcome = match parsed {
             Err(d) => Err(vec![d]),
-            Ok(items) => self.force_items(items),
+            Ok((items, starts)) => self.force_items(items, item_texts(text, &starts)),
         };
         match outcome {
             Ok((built, defined, forced, rechecked)) => {
@@ -443,6 +490,7 @@ impl Session {
     fn force_items(
         &mut self,
         mut items: Vec<Item>,
+        texts: Vec<String>,
     ) -> Result<(Vec<WordId>, Vec<Defined>, Vec<Forced>, Vec<String>), Vec<Diagnostic>> {
         let mut needs = Vec::new();
         crate::infer::require_effects(&mut [&mut items], &mut needs);
@@ -511,6 +559,7 @@ impl Session {
             self.forgotten_tests.clone(),
             self.sources.clone(),
             self.test_items.clone(),
+            self.entries.clone(),
         );
         let errors = |p: &Program| p.diagnostics.iter().filter(|d| d.is_error()).count();
 
@@ -521,10 +570,14 @@ impl Session {
         }
         let mut built = Vec::new();
         let mut defined = Vec::new();
-        for item in items {
+        for (item, text) in items.into_iter().zip(texts) {
             let source = item.clone();
             let tests = self.program.tests.len();
+            let errs = errors(&self.program);
             let ids = process_item(&mut self.ctx, item, Origin::User, &mut self.program);
+            if errors(&self.program) == errs {
+                self.record(&source, ids.first().copied(), tests, text);
+            }
             if let (Item::Def { .. }, Some(&id)) = (&source, ids.first()) {
                 self.sources.insert(id, source.clone());
             }
@@ -576,6 +629,14 @@ impl Session {
             );
             if self.program.tests.len() > tests {
                 self.test_items.insert(tests, source);
+                // The test is listed where it was, under its new index.
+                for e in &mut self.entries {
+                    if let Entry::Test(i, _) = e {
+                        if *i == index {
+                            *i = tests;
+                        }
+                    }
+                }
             }
             if errors(&self.program) > errs {
                 broken.push(label.clone());
@@ -628,12 +689,104 @@ impl Session {
         Ok((built, defined, forced, rechecked))
     }
 
-    fn restore(&mut self, (ctx, program, forgotten, sources, tests): Snapshot) {
+    fn restore(&mut self, (ctx, program, forgotten, sources, tests, entries): Snapshot) {
         self.ctx = ctx;
         self.program = program;
         self.forgotten_tests = forgotten;
         self.sources = sources;
         self.test_items = tests;
+        self.entries = entries;
+    }
+
+    fn errors(&self) -> usize {
+        self.program
+            .diagnostics
+            .iter()
+            .filter(|d| d.is_error())
+            .count()
+    }
+
+    /// Keep the text of an item that was accepted: `id` is the word a
+    /// definition or declaration made, `test` the index a test took.
+    fn record(&mut self, item: &Item, id: Option<WordId>, test: usize, text: String) {
+        let entry = match (item, id) {
+            (Item::Struct { name, .. } | Item::Union { name, .. }, _) => {
+                Entry::Type(name.clone(), text)
+            }
+            (Item::Declare { name, .. }, _) => match self.ctx.by_name.get(name) {
+                Some(&id) => Entry::Declare(id, text),
+                None => return,
+            },
+            (Item::Def { .. }, Some(id)) => Entry::Def(id, text),
+            (Item::Test { .. }, _) if self.program.tests.len() > test => Entry::Test(test, text),
+            _ => return,
+        };
+        self.entries.push(entry);
+    }
+
+    /// The program as it stands: each type, each declaration and the latest
+    /// definition of each word still defined, every word after the words it
+    /// uses, then the tests still in force. It reads as a file.
+    fn listing(&self) -> String {
+        let live = |id: WordId| self.ctx.by_name.get(&self.ctx.words[id].name) == Some(&id);
+        let mut types: Vec<&str> = Vec::new();
+        let mut type_names = HashSet::new();
+        let mut declares: Vec<&str> = Vec::new();
+        let mut defs: HashMap<WordId, &str> = HashMap::new();
+        let mut order: Vec<WordId> = Vec::new();
+        let mut tests: Vec<&str> = Vec::new();
+        for e in &self.entries {
+            match e {
+                Entry::Type(name, text) => {
+                    if type_names.insert(name) {
+                        types.push(text);
+                    }
+                }
+                Entry::Declare(id, text) if live(*id) => declares.push(text),
+                Entry::Def(id, text) if live(*id) => {
+                    if defs.insert(*id, text).is_none() {
+                        order.push(*id);
+                    }
+                }
+                Entry::Test(index, text) if !self.forgotten_tests.contains(index) => {
+                    tests.push(text)
+                }
+                _ => {}
+            }
+        }
+        // Callees first, so the text checks as a file.
+        fn visit<'a>(
+            s: &Session,
+            id: WordId,
+            defs: &HashMap<WordId, &'a str>,
+            seen: &mut HashSet<WordId>,
+            out: &mut Vec<&'a str>,
+        ) {
+            if !seen.insert(id) {
+                return;
+            }
+            for &(callee, _) in &s.ctx.words[id].callees {
+                let callee = s.ctx.words[callee]
+                    .instance_of
+                    .as_ref()
+                    .map_or(callee, |(g, _)| *g);
+                if defs.contains_key(&callee) {
+                    visit(s, callee, defs, seen, out);
+                }
+            }
+            out.push(defs[&id]);
+        }
+        let mut words = Vec::new();
+        let mut seen = HashSet::new();
+        for id in order {
+            visit(self, id, &defs, &mut seen, &mut words);
+        }
+        [types, declares, words, tests]
+            .iter()
+            .filter(|g| !g.is_empty())
+            .map(|g| g.join("\n") + "\n")
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn internal(&mut self, snapshot: Snapshot, what: &str) -> Vec<Diagnostic> {
@@ -844,6 +997,7 @@ impl Session {
             forgotten: Vec::new(),
             forced: Vec::new(),
             rechecked: Vec::new(),
+            listing: None,
         }
     }
 

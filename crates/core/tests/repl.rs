@@ -470,3 +470,52 @@ fn vec_at_the_repl() {
     let step = ok(&mut s, "vec.make ( vec i32 ) dup 3 vec.push vec.len");
     assert_eq!(step.line.as_ref().unwrap().stack_after, vec![Ty::I32]);
 }
+
+#[test]
+fn words_lists_the_program_as_it_stands() {
+    let mut s = session();
+    ok(&mut s, ": L 100 i32.add ;");
+    ok(&mut s, ")forget L");
+    ok(&mut s, ": L ( i32 i32 -- i32 ) i32.sub ;  # turn left");
+    ok(&mut s, ": P1 ( -- i32 ) 50 68 L ;");
+    ok(&mut s, ": L ( i32 i32 -- i32 ) i32.sub 100 i32.rem_u ;");
+    ok(&mut s, "struct point  x: i32  y: i32");
+    ok(&mut s, "declare later ( -- i32 )");
+    ok(&mut s, "test P1 : P1 -> 82\ntest later : later -> 1");
+    ok(&mut s, "1 2 L");
+    assert!(s.step(": bad ( -- i32 ) nope ;", 0x20_0000).diagnostics[0].is_error());
+    let listing = ok(&mut s, ")words").listing.unwrap();
+    assert_eq!(
+        listing,
+        "struct point  x: i32  y: i32\n\
+         \n\
+         declare later ( -- i32 )\n\
+         \n\
+         : L ( i32 i32 -- i32 ) i32.sub 100 i32.rem_u ;\n\
+         : P1 ( -- i32 ) 50 68 L ;\n\
+         \n\
+         test P1 : P1 -> 82\n\
+         test later : later -> 1\n"
+    );
+    // It reads back as one chunk.
+    ok(&mut session(), &listing);
+}
+
+#[test]
+fn words_follows_force() {
+    let mut s = force_setup();
+    ok(
+        &mut s,
+        ")force : f ( -- i64 ) 1 i64 ;\n: h ( -- i32 ) f i32.wrap_i64 ;\n",
+    );
+    let listing = ok(&mut s, ")words").listing.unwrap();
+    assert_eq!(
+        listing,
+        ": f ( -- i64 ) 1 i64 ;\n\
+         : g ( -- ) f drop ;\n\
+         : h ( -- i32 ) f i32.wrap_i64 ;\n\
+         \n\
+         test h : h -> 1\n"
+    );
+    ok(&mut session(), &listing);
+}

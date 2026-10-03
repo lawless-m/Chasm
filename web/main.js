@@ -31,6 +31,7 @@ function render(r) {
   for (const w of r.forgotten) print(`forgot: ${w}\n`);
   for (const f of r.forced) print(`forced: ${f.name} ${f.from} -> ${f.to}\n`);
   if (r.rechecked.length) print(`rechecked: ${r.rechecked.join(", ")}\n`);
+  if (r.listing != null) print(r.listing || "(no words)\n");
   for (const t of r.tests) {
     if (t.status === "pass") {
       print(`PASS     ${t.word}\n`);
@@ -173,7 +174,7 @@ async function main() {
     try {
       const r = await repl.step(text);
       render(r);
-      if (!r.line && !r.diagnostics.some((d) => d.severity === "error")) {
+      if (!r.line && r.listing == null && !r.diagnostics.some((d) => d.severity === "error")) {
         program.push(text);
         save(program);
       }

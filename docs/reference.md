@@ -130,13 +130,18 @@ TCP; native only), `--no-file` (hides the host filesystem) and `--no-net` (hides
 - A line that traps prints `trap in `[line N]`: message` and leaves the
   stack as it was.
 - A line starting with `)` is a REPL command, not Chasm, so a file never
-  holds one: `)forget word` and `)force`. `)forget word` removes a word and its tests and frees the name,
+  holds one: `)forget word`, `)force` and `)words`. `)forget word` removes a word and its tests and frees the name,
   which can then be defined with any effect. It is refused (`E_FORGET`, with
   the `dependants`) while another word, a quotation in one, or another
   word's test uses it: forget those first, top-down. Primitives, prelude
   words and words a `struct` or `union` generated cannot be forgotten. A function value of
   a forgotten word already on the stack still runs the old code. Forgetting
   a generic word removes its instances too.
+- `)words` prints the program as it stands, ready to save as a file: each
+  `struct` and `union`, each `declare` of a word still defined, the latest
+  definition of each word (forgotten and replaced ones left out, every word
+  after the words it uses), then the tests still in force, each as typed.
+  Text after an item, up to the next one in the same chunk, goes with it.
 - A definition without an effect shows its inferred one: `ok: cube ( i32 -- i32 ) (inferred)`.
 - `)force` changes a word's effect deliberately. It is followed by one or
   more definitions, and optionally `test` lines; the chunk continues until
@@ -159,7 +164,7 @@ TCP; native only), `--no-file` (hides the host filesystem) and `--no-net` (hides
   as the REPL. With `--json` the program's output is captured into
   `results.output`; each report also has `results.defined` (each with
   `inferred`), `results.forgotten`,
-  `results.forced`, `results.rechecked`,
+  `results.forced`, `results.rechecked`, `results.listing` (`)words`; otherwise null),
   `results.tests`, `results.trap`, `results.stack` and `results.timing`.
 
 ```

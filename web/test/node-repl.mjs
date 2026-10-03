@@ -93,6 +93,14 @@ try {
   r = await repl.step("test twice : 1.5 twice f64.add -> 3.0");
   assert.equal(r.tests[0].status, "pass");
 
+  r = await repl.step(")words");
+  assert.equal(
+    r.listing,
+    ": sq ( i32 -- i64 ) i64 ;\n: tick ( -- [ i32 -- i64 ] ) 'sq ;\n" +
+      ": cube dup dup i32.mul i32.mul ;\n: twice ( T -- T T ) dup ;\n" +
+      "\ntest twice : 1.5 twice f64.add -> 3.0\n",
+  );
+
   console.log("node-repl.mjs ok");
   await worker.terminate();
 } catch (e) {

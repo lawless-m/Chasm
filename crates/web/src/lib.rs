@@ -73,6 +73,7 @@ pub mod api {
                 "name": f.name, "from": f.from, "to": f.to,
             })).collect::<Vec<_>>(),
             "rechecked": step.rechecked,
+            "listing": step.listing,
             "installs": step.installs.iter().map(|i| json!({
                 "export": i.export, "slot": i.slot,
             })).collect::<Vec<_>>(),

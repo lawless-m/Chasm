@@ -592,7 +592,7 @@ impl Ctx {
             .map_err(internal)?
         {
             crate::parser::ReplInput::Body(b) => b,
-            crate::parser::ReplInput::Items(_) => unreachable!("a generated body has no items"),
+            crate::parser::ReplInput::Items(..) => unreachable!("a generated body has no items"),
         };
         let out = compile_body(self, &name, Mode::Declared(&effect), &body, loc, &[])
             .map_err(internal)?;

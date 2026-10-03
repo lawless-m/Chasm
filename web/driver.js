@@ -124,6 +124,7 @@ export class Repl {
       forgotten: s.forgotten,
       forced: s.forced,
       rechecked: s.rechecked,
+      listing: s.listing,
       tests,
       trap,
       stack: await this.readStack(this.stackTypes),

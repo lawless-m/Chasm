@@ -54,6 +54,8 @@ pub struct Outcome {
     pub forgotten: Vec<String>,
     pub forced: Vec<chasm_core::repl::Forced>,
     pub rechecked: Vec<String>,
+    /// The program as it stands, from `)words`.
+    pub listing: Option<String>,
     pub trap: Option<RunError>,
     pub tests: Vec<ReplTestResult>,
     pub stack: Vec<StackEntry>,
@@ -316,6 +318,7 @@ impl NativeRepl {
             forgotten: step.forgotten,
             forced: step.forced,
             rechecked: step.rechecked,
+            listing: step.listing,
             trap,
             tests,
             stack: {

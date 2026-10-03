@@ -693,6 +693,7 @@ fn repl_report(o: Outcome, output: Vec<u8>) -> Report {
         "forgotten": o.forgotten,
         "forced": o.forced.iter().map(|f| json!({ "name": f.name, "from": f.from, "to": f.to })).collect::<Vec<_>>(),
         "rechecked": o.rechecked,
+        "listing": o.listing,
         "tests": o.tests.iter().map(|t| json!({
             "word": t.word,
             "status": t.status.as_str(),
@@ -1014,6 +1015,13 @@ fn render(report: &J) -> (String, String) {
             let rechecked = strs(&r["rechecked"]);
             if !rechecked.is_empty() {
                 out.push_str(&format!("rechecked: {}\n", rechecked.join(", ")));
+            }
+            if let Some(listing) = r["listing"].as_str() {
+                out.push_str(if listing.is_empty() {
+                    "(no words)\n"
+                } else {
+                    listing
+                });
             }
             for t in r["tests"].as_array().into_iter().flatten() {
                 if s(&t["status"]) == "pass" {

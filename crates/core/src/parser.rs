@@ -18,6 +18,18 @@ pub fn parse_with(
     toks: &[Token],
     known: &HashMap<String, usize>,
 ) -> Result<Vec<Item>, Diagnostic> {
+    Ok(parse_with_starts(file, toks, known)?.0)
+}
+
+/// Where an item starts: its first token's line and column.
+pub type Start = (u32, u32);
+
+/// `parse_with`, also giving where each item starts.
+pub fn parse_with_starts(
+    file: &str,
+    toks: &[Token],
+    known: &HashMap<String, usize>,
+) -> Result<(Vec<Item>, Vec<Start>), Diagnostic> {
     let mut p = Parser {
         file,
         toks,
@@ -25,16 +37,19 @@ pub fn parse_with(
         known: known.clone(),
     };
     let mut items = Vec::new();
+    let mut starts = Vec::new();
     while p.pos < toks.len() {
+        starts.push((toks[p.pos].line, toks[p.pos].column));
         items.push(p.item()?);
     }
-    Ok(items)
+    Ok((items, starts))
 }
 
 /// A REPL chunk: top-level forms as in a file, or one bare body (a line).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ReplInput {
-    Items(Vec<Item>),
+    /// The items, and the line and column where each one starts.
+    Items(Vec<Item>, Vec<Start>),
     Body(Body),
 }
 
@@ -57,7 +72,8 @@ pub fn parse_repl_with(
                 .iter()
                 .any(|k| t.is(k)) =>
         {
-            Ok(ReplInput::Items(parse_with(file, toks, known)?))
+            let (items, starts) = parse_with_starts(file, toks, known)?;
+            Ok(ReplInput::Items(items, starts))
         }
         Some(_) => {
             let mut p = Parser {
@@ -832,7 +848,7 @@ mod tests {
         assert_eq!(p("union s | a\n: f ( s -- s ) ;").len(), 2);
         assert!(matches!(
             parse_repl("t", &lex("t", "union s | a").unwrap()),
-            Ok(ReplInput::Items(_))
+            Ok(ReplInput::Items(..))
         ));
         assert!(!crate::repl::needs_more("union s | a"));
     }
@@ -909,7 +925,7 @@ mod tests {
         }
         assert!(matches!(
             parse_repl("t", &lex("t", "struct p  x: i32").unwrap()).unwrap(),
-            ReplInput::Items(_)
+            ReplInput::Items(..)
         ));
         let items = p(": f ( i32 -- i32 ) ( a b ) ;");
         let Item::Def { body, .. } = &items[0] else {
@@ -962,7 +978,7 @@ mod tests {
     #[test]
     fn repl_chunks() {
         assert!(matches!(repl("3 sq").unwrap(), ReplInput::Body(b) if b.len() == 2));
-        assert!(matches!(repl(": f ( -- ) ;").unwrap(), ReplInput::Items(i) if i.len() == 1));
+        assert!(matches!(repl(": f ( -- ) ;").unwrap(), ReplInput::Items(i, _) if i.len() == 1));
         match repl("1 [ 1 ] [ 2 ] if").unwrap() {
             ReplInput::Body(b) => assert!(matches!(b.last().unwrap().kind, NodeKind::If(..))),
             other => panic!("{other:?}"),
