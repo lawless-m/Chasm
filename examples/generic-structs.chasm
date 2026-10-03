@@ -1,0 +1,52 @@
+# Generic structs: type parameters after the name, applied by position
+# (`pair i32 str`). Each instantiation is its own struct type, made on first
+# use, and the generated words are generic like any word with `T`.
+# Exercises: struct with parameters, constructor inference, a generic word
+# over a generic struct, field writes, applied types in effects, assertions
+# and arrays, a generic struct holding the prelude's `option T`.
+
+struct pair T U  first: T  second: U
+
+# `3 "x" pair.new` is a `pair i32 str`: the arguments fix T and U.
+: example ( -- pair i32 str )  3 "x" pair.new ;
+test pair.second : example pair.second -> "x"
+
+: swap-pair ( pair T U -- pair U T )  :> p  p pair.second p pair.first pair.new ;
+test swap-pair : 3 "x" pair.new swap-pair pair.first -> "x"
+test swap-pair : 1.5 7 pair.new swap-pair pair.second -> 1.5
+
+# A field write.
+: bump ( pair i32 str -- pair i32 str )  dup dup pair.first 1 i32.add pair.first! ;
+test bump : example bump pair.first -> 4
+
+# An applied type in an assertion.
+: label ( i32 -- str )  "#" pair.new ( pair i32 str ) pair.second ;
+test label : 9 label -> "#"
+
+# An array of pairs, summed through a field.
+: weights ( i32 -- array pair i32 f64 )
+  :> n
+  n array.new ( array pair i32 f64 ) :> a
+  n [ :> i  a i  i  i f64.convert_i32_s 0.5 f64.mul  pair.new  array.at! ] times
+  a ;
+
+: total ( array pair i32 f64 -- f64 )  0.0 [ pair.second f64.add ] fold ;
+test total : 4 weights total -> 3.0
+
+# A generic struct holding an option.
+struct named T  name: str  value: option T
+
+: describe ( named i32 -- str )
+  :> n
+  n named.name ": " str.concat
+  n named.value
+  none: [ "unset" ]
+  some: [ i32.to-str ]
+  match
+  str.concat ;
+test describe : "size" 3 option.some named.new describe -> "size: 3"
+test describe : "size" option.none ( str option i32 ) named.new describe -> "size: unset"
+
+: main ( -- )
+  example swap-pair pair.first println
+  "total of 5 weights: " print 5 weights total 1 f64.fixed println ;

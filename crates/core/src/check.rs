@@ -7,9 +7,9 @@
 
 use std::collections::HashMap;
 
-use wasm_encoder::{BlockType, Instruction as I, MemArg, ValType};
+use wasm_encoder::{BlockType, HeapType, Instruction as I, MemArg, ValType};
 
-use crate::ast::{Body, Lit, Node, NodeKind};
+use crate::ast::{Arm, Body, Lit, Node, NodeKind};
 use crate::diag::{codes, Diagnostic, Location};
 use crate::graph::EdgeKind;
 use crate::layout;
@@ -71,6 +71,8 @@ pub struct Word {
     /// For an instance: its template and the type arguments, in the order
     /// of the template's `Effect::params`.
     pub instance_of: Option<(WordId, Vec<Ty>)>,
+    /// For a word a `struct` or `union` declaration generated: that type.
+    pub generated: Option<String>,
 }
 
 /// A generic word's template: its source body, checked once with the type
@@ -106,6 +108,16 @@ pub struct Ctx {
     pub struct_types: StructTypes,
     pub structs: Vec<StructDef>,
     pub struct_by_name: HashMap<String, usize>,
+    pub unions: Vec<UnionDef>,
+    pub union_by_name: HashMap<String, usize>,
+    /// Words of the prelude's generic types not made yet, by name: made on
+    /// first use (`lookup`) or at the end of the program, so a program that
+    /// never uses them keeps its word numbering.
+    pub lazy_words: HashMap<String, LazyWord>,
+    /// Every registered struct or union type, by display name.
+    pub registered: HashMap<String, Ty>,
+    /// Defer the words of the prelude's generic types (whole programs).
+    pub defer_library_generics: bool,
     /// Generic instances made so far: (template, type arguments) to word.
     pub instances: HashMap<(WordId, Vec<Ty>), WordId>,
     /// The type parameters in force while an instance's body is compiled.
@@ -116,7 +128,32 @@ pub struct Ctx {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructDef {
     pub name: String,
+    /// Type parameters, `struct pair T U`.
+    pub params: Vec<String>,
     pub fields: Vec<(String, Ty)>,
+    pub type_index: u32,
+    pub loc: Location,
+}
+
+/// A generated template word waiting to be made: its type, the words made
+/// with it (in order), its effect, origin and location.
+#[derive(Debug, Clone)]
+pub struct LazyWord {
+    pub ty: String,
+    pub group: Vec<String>,
+    pub effect: Effect,
+    pub origin: Origin,
+    pub loc: Location,
+}
+
+/// A declared union: its variants with their fields, in order, and the wasm
+/// index of its supertype (variant k is at `type_index + 1 + k`, the GC array
+/// of its elements after the last variant).
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnionDef {
+    pub name: String,
+    pub params: Vec<String>,
+    pub variants: Vec<(String, Vec<(String, Ty)>)>,
     pub type_index: u32,
     pub loc: Location,
 }
@@ -126,8 +163,23 @@ pub struct StructDef {
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeDef {
     Func(Vec<ValType>, Vec<ValType>),
-    Struct(Vec<ValType>),
-    StructArray,
+    /// A rec group, at the index of its first member.
+    Rec(Vec<Member>),
+    /// A further member of the rec group before it.
+    Slot,
+}
+
+/// A member of a rec group.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Member {
+    /// A struct type, every field mutable.
+    Struct {
+        fields: Vec<ValType>,
+        is_final: bool,
+        supertype: Option<u32>,
+    },
+    /// `array (mut (ref null i))`.
+    Array(u32),
 }
 
 impl Default for Ctx {
@@ -145,6 +197,11 @@ impl Default for Ctx {
             struct_types: StructTypes::new(),
             structs: Vec::new(),
             struct_by_name: HashMap::new(),
+            unions: Vec::new(),
+            union_by_name: HashMap::new(),
+            lazy_words: HashMap::new(),
+            registered: HashMap::new(),
+            defer_library_generics: false,
             instances: HashMap::new(),
             type_params: HashMap::new(),
         }
@@ -173,16 +230,29 @@ impl Ctx {
     ) -> Result<(), Diagnostic> {
         for t in tys {
             match t {
-                Ty::Struct(n)
-                    if !self.struct_by_name.contains_key(n) && allow != Some(n.as_str()) =>
-                {
+                Ty::Struct(n, _) if !self.is_type_name(n) && allow != Some(n.as_str()) => {
                     return Err(Diagnostic::error(
                         codes::E_UNKNOWN_TYPE,
-                        format!("unknown type `{n}`; a struct can only be used after its `struct {n} ...` declaration, and only structs declared above it (or itself) may appear in its fields"),
+                        format!("unknown type `{n}`; a struct or union can only be used after its declaration, and only types declared above it (or itself) may appear in its fields"),
                         loc.clone(),
                     ));
                 }
                 Ty::Array(e) => self.check_types(std::slice::from_ref(e), loc, allow)?,
+                Ty::Struct(n, args) => {
+                    let arity = self.type_arities().get(n).copied();
+                    if let Some(k) = arity.filter(|&k| k != args.len()) {
+                        return Err(Diagnostic::error(
+                            codes::E_UNKNOWN_TYPE,
+                            format!(
+                                "`{n}` takes {k} type argument{} but `{t}` gives {}",
+                                if k == 1 { "" } else { "s" },
+                                args.len()
+                            ),
+                            loc.clone(),
+                        ));
+                    }
+                    self.check_types(args, loc, allow)?
+                }
                 Ty::Quot(e) => {
                     self.check_types(&e.inputs, loc, allow)?;
                     self.check_types(&e.outputs, loc, allow)?;
@@ -196,11 +266,249 @@ impl Ctx {
     /// Add a struct type with these (already lowered, all mutable) fields and,
     /// at the next index, the GC array type of that struct. Returns the
     /// struct's index.
+    /// Add a rec group; returns the index of its first member.
+    pub fn register_rec(&mut self, members: Vec<Member>) -> u32 {
+        let i = self.types.len() as u32;
+        let n = members.len();
+        self.types.push(TypeDef::Rec(members));
+        for _ in 1..n {
+            self.types.push(TypeDef::Slot);
+        }
+        i
+    }
+
+    /// The number of type parameters of each declared struct or union, for
+    /// the parser to read applied types such as `pair i32 str`.
+    pub fn type_arities(&self) -> HashMap<String, usize> {
+        self.structs
+            .iter()
+            .map(|s| (s.name.clone(), s.params.len()))
+            .chain(self.unions.iter().map(|u| (u.name.clone(), u.params.len())))
+            .collect()
+    }
+
+    /// Whether `name` is a declared struct or union.
+    pub fn is_type_name(&self, name: &str) -> bool {
+        self.struct_by_name.contains_key(name) || self.union_by_name.contains_key(name)
+    }
+
+    /// Whether any struct or union type is registered (step modules then
+    /// import `chasm.refs`).
+    pub fn has_ref_types(&self) -> bool {
+        self.types.iter().any(|t| matches!(t, TypeDef::Rec(_)))
+    }
+
+    /// The field types of a declared struct (one list) or union (one list
+    /// per variant) at type arguments `args`.
+    fn type_fields(&self, name: &str, args: &[Ty]) -> Option<(bool, Vec<Vec<Ty>>)> {
+        let (params, lists, union): (&[String], Vec<Vec<Ty>>, bool) =
+            if let Some(&k) = self.struct_by_name.get(name) {
+                let s = &self.structs[k];
+                (
+                    &s.params,
+                    vec![s.fields.iter().map(|(_, t)| t.clone()).collect()],
+                    false,
+                )
+            } else {
+                let u = &self.unions[*self.union_by_name.get(name)?];
+                let lists = u
+                    .variants
+                    .iter()
+                    .map(|(_, f)| f.iter().map(|(_, t)| t.clone()).collect())
+                    .collect();
+                (&u.params, lists, true)
+            };
+        let map: HashMap<String, Ty> = params.iter().cloned().zip(args.iter().cloned()).collect();
+        let lists = lists
+            .into_iter()
+            .map(|l| l.iter().map(|t| t.substitute(&map)).collect())
+            .collect();
+        Some((union, lists))
+    }
+
+    /// The unregistered concrete struct and union types the fields of `t`
+    /// mention directly.
+    fn type_deps(&self, t: &Ty) -> Vec<Ty> {
+        let Ty::Struct(name, args) = t else {
+            return Vec::new();
+        };
+        let Some((_, lists)) = self.type_fields(name, args) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for f in lists.iter().flatten() {
+            crate::types::applied_types(f, &mut out);
+        }
+        out.retain(|d| {
+            !self.struct_types.contains_key(&d.to_string()) && !d.has_var() && !d.has_param()
+        });
+        out
+    }
+
+    /// Register a concrete struct or union type (a declared one, or a
+    /// generic one at type arguments) if it is not yet, and return its
+    /// index. Types its fields need are registered first, each in its own
+    /// rec group, except those that refer back to `t`: they share `t`'s
+    /// group. `None` for a type that is not concrete or not declared.
+    pub fn register_type(&mut self, t: &Ty) -> Option<u32> {
+        let Ty::Struct(name, _) = t else {
+            return None;
+        };
+        if let Some(&(i, _)) = self.struct_types.get(&t.to_string()) {
+            return Some(i);
+        }
+        if t.has_var() || t.has_param() || !self.is_type_name(name) {
+            return None;
+        }
+        // Every unregistered type reachable from `t`, and its direct deps.
+        let mut reach: Vec<Ty> = vec![t.clone()];
+        let mut deps: Vec<Vec<Ty>> = Vec::new();
+        let mut k = 0;
+        while k < reach.len() {
+            let d = self.type_deps(&reach[k]);
+            for x in &d {
+                if !reach.contains(x) {
+                    reach.push(x.clone());
+                }
+            }
+            deps.push(d);
+            k += 1;
+        }
+        let reaches_t = |from: usize| -> bool {
+            let mut seen = vec![from];
+            let mut i = 0;
+            while i < seen.len() {
+                for d in &deps[seen[i]] {
+                    let j = reach.iter().position(|r| r == d).unwrap();
+                    if j == 0 {
+                        return true;
+                    }
+                    if !seen.contains(&j) {
+                        seen.push(j);
+                    }
+                }
+                i += 1;
+            }
+            false
+        };
+        let in_group: Vec<bool> = (0..reach.len()).map(|i| i == 0 || reaches_t(i)).collect();
+        for (i, r) in reach.iter().enumerate() {
+            if !in_group[i] {
+                self.register_type(r);
+            }
+        }
+        let group: Vec<Ty> = reach
+            .iter()
+            .zip(&in_group)
+            .filter(|(_, &g)| g)
+            .map(|(r, _)| r.clone())
+            .collect();
+        // Indices first, so fields inside the group resolve.
+        let mut next = self.types.len() as u32;
+        let mut layouts = Vec::new();
+        for g in &group {
+            let Ty::Struct(n, args) = g else {
+                unreachable!()
+            };
+            let (union, lists) = self.type_fields(n, args).unwrap();
+            let size = if union { lists.len() as u32 + 2 } else { 2 };
+            self.struct_types
+                .insert(g.to_string(), (next, next + size - 1));
+            self.registered.insert(g.to_string(), g.clone());
+            layouts.push((next, union, lists));
+            next += size;
+        }
+        let mut members = Vec::new();
+        for (base, union, lists) in layouts {
+            let lower = |l: &[Ty]| -> Vec<ValType> { lower_all(l, &self.struct_types) };
+            if union {
+                members.push(Member::Struct {
+                    fields: Vec::new(),
+                    is_final: false,
+                    supertype: None,
+                });
+                for l in &lists {
+                    members.push(Member::Struct {
+                        fields: lower(l),
+                        is_final: true,
+                        supertype: Some(base),
+                    });
+                }
+            } else {
+                members.push(Member::Struct {
+                    fields: lower(&lists[0]),
+                    is_final: true,
+                    supertype: None,
+                });
+            }
+            members.push(Member::Array(base));
+        }
+        self.register_rec(members);
+        // A value of a generic type's instance can always be rendered: its
+        // readers (and a union's `tag`) exist at these arguments.
+        for g in &group {
+            let Ty::Struct(n, args) = g else {
+                unreachable!()
+            };
+            let (params, names) = if let Some(&k) = self.union_by_name.get(n) {
+                let u = &self.unions[k];
+                let mut names = vec![format!("{n}.tag")];
+                for (v, fields) in &u.variants {
+                    names.extend(fields.iter().map(|(f, _)| format!("{n}.{v}.{f}")));
+                }
+                (u.params.clone(), names)
+            } else {
+                let s = &self.structs[self.struct_by_name[n]];
+                let names: Vec<String> = s.fields.iter().map(|(f, _)| format!("{n}.{f}")).collect();
+                (s.params.clone(), names)
+            };
+            if params.is_empty() {
+                continue;
+            }
+            let map: HashMap<String, Ty> =
+                params.iter().cloned().zip(args.iter().cloned()).collect();
+            for w in names {
+                let Some(id) = self.lookup(&w) else {
+                    continue;
+                };
+                let a: Vec<Ty> = self.words[id]
+                    .effect
+                    .params()
+                    .iter()
+                    .map(|p| map[p].clone())
+                    .collect();
+                let _ = instantiate(self, id, &a);
+            }
+        }
+        self.struct_types.get(&t.to_string()).map(|&(i, _)| i)
+    }
+
+    /// Register every concrete struct or union type `tys` mention.
+    pub fn register_types(&mut self, tys: &[Ty]) {
+        let mut found = Vec::new();
+        for t in tys {
+            crate::types::applied_types(t, &mut found);
+        }
+        for t in found {
+            self.register_type(&t);
+        }
+    }
+
+    pub fn register_effect(&mut self, e: &Effect) {
+        self.register_types(&e.inputs);
+        self.register_types(&e.outputs);
+    }
+
     pub fn register_struct_type(&mut self, fields: Vec<ValType>) -> u32 {
         let i = self.types.len() as u32;
-        self.types.push(TypeDef::Struct(fields));
-        self.types.push(TypeDef::StructArray);
-        i
+        self.register_rec(vec![
+            Member::Struct {
+                fields,
+                is_final: true,
+                supertype: None,
+            },
+            Member::Array(i),
+        ])
     }
 
     /// Place a string literal in read-only data; returns (addr, len).
@@ -222,6 +530,53 @@ impl Ctx {
         self.literals.clear();
         self.lit_map.clear();
         self.literal_base = base;
+    }
+
+    /// The word named `n`, making it first if it is a pending prelude
+    /// template (with the rest of its type's words).
+    pub fn lookup(&mut self, n: &str) -> Option<WordId> {
+        if let Some(&id) = self.by_name.get(n) {
+            return Some(id);
+        }
+        let group = self.lazy_words.get(n)?.group.clone();
+        for w in group {
+            let l = self.lazy_words.remove(&w).unwrap();
+            let mut word = Word {
+                name: w.clone(),
+                effect: l.effect,
+                body: None,
+                failed: false,
+                export: false,
+                origin: l.origin,
+                kind: WordKind::Named,
+                loc: l.loc,
+                callees: Vec::new(),
+                inferred: false,
+                generic: Some(Generic { body: None }),
+                instance_of: None,
+                generated: Some(l.ty),
+            };
+            // Never emitted by `assemble`; no literal is interned for it.
+            word.body = Some(Compiled {
+                locals: Vec::new(),
+                code: vec![I::Unreachable],
+            });
+            self.add_word(word);
+        }
+        self.by_name.get(n).copied()
+    }
+
+    /// Make every pending prelude template.
+    pub fn make_lazy_words(&mut self) {
+        let mut names: Vec<(String, String)> = self
+            .lazy_words
+            .iter()
+            .map(|(n, l)| (l.ty.clone(), n.clone()))
+            .collect();
+        names.sort();
+        for (_, n) in names {
+            self.lookup(&n);
+        }
     }
 
     pub fn add_word(&mut self, w: Word) -> WordId {
@@ -298,7 +653,10 @@ pub fn check_body(
     let words = ctx.words.len();
     let mut walker = Walker::new(ctx, name, false, Subst::default(), outer_locals);
     let effect = walker.run(&mode, body, loc);
-    debug_assert_eq!(ctx.words.len(), words, "a check-only pass added words");
+    debug_assert!(
+        ctx.words[words..].iter().all(|w| w.generic.is_some()),
+        "a check-only pass added words other than pending templates"
+    );
     effect
 }
 
@@ -333,11 +691,72 @@ pub fn instantiate(ctx: &mut Ctx, generic: WordId, args: &[Ty]) -> Result<WordId
         inferred: false,
         generic: None,
         instance_of: Some(key.clone()),
+        generated: t.generated.clone(),
     };
     let id = ctx.add_word(word);
     ctx.instances.insert(key, id);
+    let effect = ctx.words[id].effect.clone();
+    ctx.register_effect(&effect);
+    if ctx.words[generic].generated.is_some() {
+        generate_instance(ctx, id, &map);
+        return Ok(id);
+    }
     compile_instance(ctx, id)?;
     Ok(id)
+}
+
+/// The code of an instance of a word a generic struct or union generated:
+/// the type at the instance's type arguments is registered and the word's
+/// code generated for it.
+fn generate_instance(ctx: &mut Ctx, id: WordId, map: &HashMap<String, Ty>) {
+    let (generic, _) = ctx.words[id].instance_of.clone().unwrap();
+    let ty = ctx.words[generic].generated.clone().unwrap();
+    let params = match ctx.struct_by_name.get(&ty) {
+        Some(&k) => ctx.structs[k].params.clone(),
+        None => ctx.unions[ctx.union_by_name[&ty]].params.clone(),
+    };
+    let args: Vec<Ty> = params
+        .iter()
+        .map(|p| map.get(p).cloned().unwrap_or(Ty::I32))
+        .collect();
+    let idx = ctx
+        .register_type(&Ty::Struct(ty.clone(), args.clone()))
+        .expect("a concrete instantiation registers");
+    let pmap: HashMap<String, Ty> = params.iter().cloned().zip(args).collect();
+    let subst = |fields: &[(String, Ty)]| -> Vec<(String, Ty)> {
+        fields
+            .iter()
+            .map(|(n, t)| (n.clone(), t.substitute(&pmap)))
+            .collect()
+    };
+    let words = match ctx.struct_by_name.get(&ty) {
+        Some(&k) => {
+            let fields = subst(&ctx.structs[k].fields);
+            crate::program::struct_words(&ty, &[], &fields, idx)
+        }
+        None => {
+            let mut def = ctx.unions[ctx.union_by_name[&ty]].clone();
+            def.variants = def
+                .variants
+                .iter()
+                .map(|(v, f)| (v.clone(), subst(f)))
+                .collect();
+            def.params = Vec::new();
+            crate::program::union_words(ctx, &def, idx, true)
+        }
+    };
+    let template = ctx.words[generic].name.clone();
+    let code = words
+        .into_iter()
+        .find(|(w, _, _)| *w == template)
+        .map(|(_, _, c)| c)
+        .unwrap();
+    let w = &mut ctx.words[id];
+    w.body = Some(Compiled {
+        locals: vec![],
+        code,
+    });
+    w.failed = false;
 }
 
 /// (Re)compile an instance from its template's body at its type arguments,
@@ -510,6 +929,9 @@ impl<'c> Walker<'c> {
     fn run(&mut self, mode: &Mode<'_>, body: &Body, loc: &Location) -> Result<Effect, Diagnostic> {
         if let Mode::Declared(e) = mode {
             self.stack = e.inputs.clone();
+            if self.emit {
+                self.ctx.register_effect(e);
+            }
             let params = e.wasm_params(&self.ctx.struct_types);
             self.nparams = params.len() as u32;
             for i in 0..self.nparams {
@@ -683,12 +1105,22 @@ impl<'c> Walker<'c> {
         self.subst.unify_all(&stack, want)
     }
 
-    fn lower(&self, t: &Ty) -> Vec<ValType> {
-        self.subst.resolve(t).lower(&self.ctx.struct_types)
+    /// In the emitting pass, a concrete generic type is registered on first
+    /// use; the checking pass registers nothing (placeholders stand in).
+    fn lower(&mut self, t: &Ty) -> Vec<ValType> {
+        let t = self.subst.resolve(t);
+        if self.emit {
+            self.ctx.register_types(std::slice::from_ref(&t));
+        }
+        t.lower(&self.ctx.struct_types)
     }
 
-    fn lower_all(&self, tys: &[Ty]) -> Vec<ValType> {
-        lower_all(&self.subst.resolve_all(tys), &self.ctx.struct_types)
+    fn lower_all(&mut self, tys: &[Ty]) -> Vec<ValType> {
+        let tys = self.subst.resolve_all(tys);
+        if self.emit {
+            self.ctx.register_types(&tys);
+        }
+        lower_all(&tys, &self.ctx.struct_types)
     }
 
     fn block_type(&mut self, params: &[Ty], results: &[Ty]) -> BlockType {
@@ -837,9 +1269,14 @@ impl<'c> Walker<'c> {
     /// The GC array type index when `elem` is a struct: an `array S` is then a
     /// view `( ref start len )` over a WasmGC array. `None` for linear arrays
     /// (and for unresolved elements in the checking pass, whose code is discarded).
-    fn gc_array(&self, elem: &Ty) -> Option<u32> {
+    fn gc_array(&mut self, elem: &Ty) -> Option<u32> {
         match self.subst.resolve(elem) {
-            Ty::Struct(name) => self.ctx.struct_types.get(&name).map(|i| i + 1),
+            t @ Ty::Struct(..) => {
+                if self.emit {
+                    self.ctx.register_type(&t);
+                }
+                self.ctx.struct_types.get(&t.to_string()).map(|&(_, a)| a)
+            }
             _ => None,
         }
     }
@@ -864,6 +1301,214 @@ impl<'c> Walker<'c> {
             ));
         }
         Ok(t)
+    }
+
+    /// `value v1: [ ... ] v2: [ ... ] else: [ ... ] match`: an if/else chain
+    /// of `ref.test` on the variants named, in the order written; `else:`
+    /// (or `unreachable` when every variant is named) is the last `else`.
+    fn match_(&mut self, arms: &[Arm], loc: &Location) -> Result<Flow, Diagnostic> {
+        let top = self.pop_any("match", 1, loc)?.remove(0);
+        let ut = self.subst.resolve(&top);
+        let (u, args) = match &ut {
+            Ty::Struct(n, args) if self.ctx.union_by_name.contains_key(n) => {
+                (n.clone(), args.clone())
+            }
+            Ty::Var(_) => {
+                return Err(self.err(
+                    codes::E_AMBIGUOUS_TYPE,
+                    "the value matched is not known; write the effect or add a stack assertion",
+                    loc,
+                ))
+            }
+            t => {
+                return Err(self
+                    .err(
+                        codes::E_TYPE_MISMATCH,
+                        format!(
+                            "`match` needs a union value on top of the stack but found ( {t} )"
+                        ),
+                        loc,
+                    )
+                    .with_stacks(vec!["union".into()], vec![t.to_string()]))
+            }
+        };
+        let def = self.ctx.unions[self.ctx.union_by_name[&u]].clone();
+        let all: Vec<&str> = def.variants.iter().map(|(v, _)| v.as_str()).collect();
+        let listed = format!(
+            "`{u}` has {}",
+            all.iter()
+                .map(|v| format!("`{v}:`"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        let mut seen: Vec<&str> = Vec::new();
+        for a in arms {
+            let l = a.label.as_str();
+            if l != "else" && !all.contains(&l) {
+                return Err(self.err(
+                    codes::E_MATCH_ARM,
+                    format!("`{l}:` is not a variant of `{u}`; {listed}"),
+                    &a.loc,
+                ));
+            }
+            if seen.contains(&l) {
+                return Err(self.err(
+                    codes::E_MATCH_ARM,
+                    format!("`{l}:` appears twice in this `match`; {listed}"),
+                    &a.loc,
+                ));
+            }
+            seen.push(l);
+        }
+        let has_else = seen.contains(&"else");
+        let missing: Vec<String> = all
+            .iter()
+            .filter(|v| !seen.contains(v))
+            .map(|v| v.to_string())
+            .collect();
+        if has_else && missing.is_empty() {
+            let at = &arms.iter().find(|a| a.label == "else").unwrap().loc;
+            return Err(self.err(
+                codes::E_MATCH_ARM,
+                format!("`else:` can never run: every variant of `{u}` is named"),
+                at,
+            ));
+        }
+        if !has_else && !missing.is_empty() {
+            return Err(self
+                .err(
+                    codes::E_MATCH_MISSING,
+                    format!(
+                        "this `match` on `{u}` has no arm for {}; add {} or `else:`",
+                        missing
+                            .iter()
+                            .map(|v| format!("`{v}`"))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        missing
+                            .iter()
+                            .map(|v| format!("`{v}: [ ... ]`"))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    ),
+                    loc,
+                )
+                .with_stacks(missing, arms.iter().map(|a| a.label.clone()).collect()));
+        }
+        let map: HashMap<String, Ty> = def
+            .params
+            .iter()
+            .cloned()
+            .zip(args.iter().cloned())
+            .collect();
+        let s = self.stack.clone();
+        if self.emit {
+            self.ctx.register_type(&ut);
+        }
+        let base = self.ctx.struct_types.get(&ut.to_string()).map(|&(i, _)| i);
+        let v = match (self.emit, base) {
+            (true, Some(i)) => self.new_local(ref_ty(i)),
+            _ => self.new_local(ValType::I32),
+        };
+        self.op(I::LocalSet(v));
+        self.op(I::LocalGet(v));
+        self.op(I::RefAsNonNull);
+        self.op(I::Drop);
+        // Walk each arm in order, variants first then `else:`.
+        let mut order: Vec<&Arm> = arms.iter().filter(|a| a.label != "else").collect();
+        order.extend(arms.iter().filter(|a| a.label == "else"));
+        let mut walked: Vec<(Flow, Vec<Ty>, Vec<I<'static>>, &Arm)> = Vec::new();
+        let named = order.len() - has_else as usize;
+        for (i, a) in order.iter().enumerate() {
+            self.stack = s.clone();
+            let mut pre: Vec<I<'static>> = Vec::new();
+            if a.label == "else" {
+                self.stack.push(ut.clone());
+                pre.push(I::LocalGet(v));
+            } else {
+                let k = all.iter().position(|x| *x == a.label).unwrap();
+                let vi = base.map(|i| i + 1 + k as u32).unwrap_or(0);
+                let mut w = 0;
+                for (_, ft) in &def.variants[k].1 {
+                    let ft = ft.substitute(&map);
+                    for j in 0..ft.width() {
+                        pre.extend([
+                            I::LocalGet(v),
+                            I::RefCastNonNull(HeapType::Concrete(vi)),
+                            I::StructGet {
+                                struct_type_index: vi,
+                                field_index: w + j,
+                            },
+                        ]);
+                    }
+                    w += ft.width();
+                    self.stack.push(ft);
+                }
+            }
+            // Arm i sits inside i + 1 nested `if`s; `else:` inside all of them.
+            let nest = (i + 1).min(named) as u32;
+            self.depth += nest;
+            let r = self.seq_into(&a.body);
+            self.depth -= nest;
+            let (flow, code) = r?;
+            pre.extend(code);
+            walked.push((flow, std::mem::take(&mut self.stack), pre, a));
+        }
+        let mut result: Option<(Vec<Ty>, &Arm)> = None;
+        for (flow, st, _, a) in &walked {
+            if *flow != Flow::Normal {
+                continue;
+            }
+            match &result {
+                None => result = Some((st.clone(), a)),
+                Some((r, first)) => {
+                    if !self.subst.unify_all(r, st) {
+                        let (x, y) = (self.subst.resolve_all(r), self.subst.resolve_all(st));
+                        return Err(self
+                            .err(
+                                codes::E_BRANCH_MISMATCH,
+                                format!(
+                                    "arms of `match` disagree: `{}:` leaves {}, `{}:` leaves {}",
+                                    first.label,
+                                    fmt_stack(&x),
+                                    a.label,
+                                    fmt_stack(&y)
+                                ),
+                                &a.loc,
+                            )
+                            .with_stacks(names(&x), names(&y)));
+                    }
+                }
+            }
+        }
+        let (flow, result) = match result {
+            Some((r, _)) => (Flow::Normal, r),
+            None => (Flow::Diverged, s.clone()),
+        };
+        let bt = self.block_type(&s, &result);
+        let mut ends = 0;
+        for (_, _, code, a) in walked {
+            if a.label == "else" {
+                self.code.extend(code);
+                continue;
+            }
+            let k = all.iter().position(|x| *x == a.label).unwrap();
+            let vi = base.map(|i| i + 1 + k as u32).unwrap_or(0);
+            self.op(I::LocalGet(v));
+            self.op(I::RefTestNonNull(HeapType::Concrete(vi)));
+            self.op(I::If(bt));
+            self.code.extend(code);
+            self.op(I::Else);
+            ends += 1;
+        }
+        if !has_else {
+            self.op(I::Unreachable);
+        }
+        for _ in 0..ends {
+            self.op(I::End);
+        }
+        self.stack = result;
+        Ok(flow)
     }
 
     fn open_label(&mut self) -> u32 {
@@ -949,7 +1594,7 @@ impl<'c> Walker<'c> {
                 Ok(Flow::Normal)
             }
             NodeKind::Tick(n) => {
-                let Some(&id) = self.ctx.by_name.get(n) else {
+                let Some(id) = self.ctx.lookup(n) else {
                     return Err(self.undefined(n, loc));
                 };
                 if self.ctx.words[id].generic.is_some() {
@@ -988,6 +1633,7 @@ impl<'c> Walker<'c> {
                         inferred: false,
                         generic: None,
                         instance_of: None,
+                        generated: None,
                     });
                     self.callees.push((id, EdgeKind::AddressTaken));
                     self.op(I::I32Const(id as i32));
@@ -1215,6 +1861,7 @@ impl<'c> Walker<'c> {
             NodeKind::Map(b) => self.map(b, loc),
             NodeKind::Filter(b) => self.filter(b, loc),
             NodeKind::Fold(b) => self.fold(b, loc),
+            NodeKind::Match(arms) => self.match_(arms, loc),
         }
     }
 
@@ -1923,6 +2570,7 @@ impl<'c> Walker<'c> {
                 let q = Ty::Quot(e.clone()).to_string();
                 self.pop_expect(&format!("call {q}"), &e.inputs, loc)?;
                 if self.emit {
+                    self.ctx.register_effect(&e);
                     let ti = self.ctx.intern_type(
                         e.wasm_params(&self.ctx.struct_types),
                         e.wasm_results(&self.ctx.struct_types),
@@ -1938,7 +2586,7 @@ impl<'c> Walker<'c> {
             _ => {}
         }
         // User and library words.
-        if let Some(&id) = self.ctx.by_name.get(n) {
+        if let Some(id) = self.ctx.lookup(n) {
             let (e, id) = if self.ctx.words[id].generic.is_some() {
                 let (e, vars) = self.fresh_instance(id);
                 self.pop_expect(n, &e.inputs, loc)?;
@@ -1957,6 +2605,7 @@ impl<'c> Walker<'c> {
             if !self.ctx.indirect_calls {
                 self.op(I::Call(Word::func_index(id)));
             } else if self.emit {
+                self.ctx.register_effect(&e);
                 let ti = self.ctx.intern_type(
                     e.wasm_params(&self.ctx.struct_types),
                     e.wasm_results(&self.ctx.struct_types),
@@ -1973,6 +2622,21 @@ impl<'c> Walker<'c> {
         }
         Err(self.undefined(n, loc))
     }
+}
+
+/// The placeholder body of a generic template: it traps, and is never
+/// called (callers reach instances).
+pub fn template_code(ctx: &mut Ctx, name: &str) -> Vec<I<'static>> {
+    let (ma, ml) = ctx.intern_str(&format!("generic word `{name}` has no code of its own"));
+    let (wa, wl) = ctx.intern_str(name);
+    vec![
+        I::I32Const(ma),
+        I::I32Const(ml),
+        I::I32Const(wa),
+        I::I32Const(wl),
+        I::Call(FN_TRAP),
+        I::Unreachable,
+    ]
 }
 
 #[cfg(test)]
@@ -2011,6 +2675,7 @@ mod tests {
             inferred: false,
             generic: None,
             instance_of: None,
+            generated: None,
         });
         let body = vec![Node {
             kind: NodeKind::Name("f".into()),
@@ -2035,8 +2700,8 @@ mod tests {
         let idx = ctx.register_struct_type(fields(base));
         assert_eq!(idx, base);
         assert_eq!(ctx.types.len() as u32, idx + 2);
-        ctx.struct_types.insert("p".into(), idx);
-        let p = Ty::Struct("p".into());
+        ctx.struct_types.insert("p".into(), (idx, idx + 1));
+        let p = Ty::Struct("p".into(), Vec::new());
         let id = ctx.add_word(Word {
             name: "id".into(),
             effect: Effect::new(vec![p.clone()], vec![p]),
@@ -2053,6 +2718,7 @@ mod tests {
             inferred: false,
             generic: None,
             instance_of: None,
+            generated: None,
         });
         let bytes = crate::module::assemble_step(&mut ctx, &[id], false);
         (ctx, bytes)
@@ -2061,7 +2727,7 @@ mod tests {
     #[test]
     fn check_types_allows_self() {
         let ctx = Ctx::default();
-        let node = Ty::Struct("node".into());
+        let node = Ty::Struct("node".into(), Vec::new());
         let tys = [node.clone(), Ty::Array(Box::new(node))];
         let loc = Location::default();
         assert!(ctx.check_types(&tys, &loc, Some("node")).is_ok());
@@ -2140,7 +2806,7 @@ mod tests {
             };
             let mut ctx = Ctx::default();
             let idx = ctx.register_struct_type(vec![ValType::I32]);
-            ctx.struct_types.insert("p".into(), idx);
+            ctx.struct_types.insert("p".into(), (idx, idx + 1));
             ctx.struct_by_name.insert("p".into(), 0);
             compile_body(
                 &mut ctx,
@@ -2154,7 +2820,7 @@ mod tests {
             .compiled
             .code
         };
-        let p = Ty::Struct("p".into());
+        let p = Ty::Struct("p".into(), Vec::new());
         let code = line_in("", std::slice::from_ref(&p));
         assert!(code.iter().any(|i| matches!(i, I::TableGet(1))));
         let code = line_in("0 array.new ( array p )", &[]);

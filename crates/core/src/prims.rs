@@ -440,6 +440,7 @@ pub fn names() -> impl Iterator<Item = &'static str> {
         "map",
         "filter",
         "fold",
+        "match",
     ];
     NUMERIC_NAMES.iter().chain(OTHER).copied()
 }
@@ -551,7 +552,14 @@ pub fn is_builtin(name: &str) -> bool {
         || special(name).is_some()
         || matches!(
             name,
-            "array.new" | "array.len" | "array.at" | "array.at!" | "array.slice" | "call" | "leave"
+            "array.new"
+                | "array.len"
+                | "array.at"
+                | "array.at!"
+                | "array.slice"
+                | "call"
+                | "leave"
+                | "match"
         )
         || crate::parser::combinator_arity(name).is_some()
 }

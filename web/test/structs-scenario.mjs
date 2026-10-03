@@ -45,4 +45,19 @@ export async function structScenario(repl, assert) {
   r = await repl.step("test point.x : 3 0.0 point.new point.x -> 3");
   assert.equal(r.tests.length, 1);
   assert.equal(r.tests[0].status, "pass", "test with a struct");
+
+  r = await repl.step("union shape | circle  r: f64 | rect  w: f64  h: f64 | empty");
+  assert.ok(r.ok, JSON.stringify(r.diagnostics));
+  assert.equal(r.defined.length, 7, "constructors, tag and readers");
+  r = await repl.step("drop 1.5 shape.circle");
+  assert.equal(JSON.stringify(top(r)), JSON.stringify({ type: "shape", value: "shape.circle{r: 1.5}" }), "union echo");
+  r = await repl.step("drop shape.empty");
+  assert.equal(top(r).value, "shape.empty{}", "fieldless variant");
+  r = await repl.step("drop 3 option.some");
+  assert.equal(JSON.stringify(top(r)), JSON.stringify({ type: "option i32", value: "option.some{v: 3}" }), "generic union");
+  r = await repl.step("drop 2.0 3.0 shape.rect circle: [ ] rect: [ f64.mul ] empty: [ 0.0 ] match");
+  assert.equal(JSON.stringify(top(r)), JSON.stringify({ type: "f64", value: "6.0" }), "match");
+  await repl.step("struct node  v: i32  next: option node");
+  r = await repl.step("drop 1 option.none ( i32 option node ) node.new option.some 2 swap node.new");
+  assert.equal(top(r).value, "node{v: 2, next: option.some{v: node{v: 1, next: option{...}}}}", "nested union");
 }

@@ -113,3 +113,14 @@ fn tests_run_in_the_shared_instance() {
     assert_eq!(o.tests[0].status, TestStatus::Fail);
     assert!(o.tests[0].error.is_some());
 }
+
+#[test]
+fn union_values_echo() {
+    let mut r = repl();
+    assert!(r
+        .step("union shape | circle  r: f64 | rect  w: f64  h: f64 | empty")
+        .diagnostics
+        .is_empty());
+    let o = r.step("1.5 shape.circle");
+    assert_eq!(o.stack, vec![e("shape", "shape.circle{r: 1.5}")]);
+}

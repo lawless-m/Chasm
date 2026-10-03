@@ -8,7 +8,7 @@
 use std::time::Instant;
 
 use chasm_core::layout as L;
-use chasm_core::repl::{read_stack, Defined, StackEntry, Step};
+use chasm_core::repl::{read_stack, Defined, Layout, StackEntry, Step};
 use chasm_core::{Diagnostic, Location, Session, Value};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -334,28 +334,29 @@ impl NativeRepl {
         }
     }
 
-    /// The struct values on the stack, by slot index, read from `chasm.refs`.
+    /// The struct and union values on the stack, by slot index, read from
+    /// `chasm.refs`.
     fn render_structs(&mut self) -> HashMap<u32, Value> {
-        let layouts: Layouts = self
-            .session
-            .structs()
-            .iter()
-            .map(|s| (s.name.clone(), s.fields.clone()))
-            .collect();
         let mut slots = Vec::new();
         let mut i = 0;
         for t in &self.session.stack {
-            if let Ty::Struct(n) = t {
-                slots.push((i, n.clone()));
+            if let Ty::Struct(..) = t {
+                slots.push((i, t.to_string()));
             }
             i += t.width();
         }
         let mut out = HashMap::new();
-        let (refs, memory) = (self.refs, self.memory);
+        let (refs, memory, table) = (self.refs, self.memory, self.table);
+        let session = &self.session;
         let mut scope = RootScope::new(&mut self.store);
+        let mut r = Reader {
+            session,
+            memory,
+            table,
+        };
         for (i, name) in slots {
             let v = match refs.get(&mut scope, i as u64) {
-                Some(Ref::Any(Some(r))) => struct_value(&mut scope, memory, &r, &name, &layouts, 0),
+                Some(Ref::Any(Some(a))) => r.value(&mut scope, &a, &name, 0),
                 _ => Value::Null,
             };
             out.insert(i, v);
@@ -364,65 +365,106 @@ impl NativeRepl {
     }
 }
 
-type Layouts = HashMap<String, Vec<(String, Ty)>>;
-
 /// Below this nesting depth a struct shows its fields; at it, `name{...}`.
 const MAX_DEPTH: u32 = 3;
 
-fn struct_value(
-    scope: &mut RootScope<&mut Store<ReplState>>,
+/// Reads struct and union values out of the store for the stack echo.
+struct Reader<'a> {
+    session: &'a Session,
     memory: Memory,
-    r: &Rooted<AnyRef>,
-    name: &str,
-    layouts: &Layouts,
-    depth: u32,
-) -> Value {
-    if depth >= MAX_DEPTH {
-        return Value::Opaque(format!("{name}{{...}}"));
-    }
-    let (Ok(Some(s)), Some(fields)) = (r.as_struct(&*scope), layouts.get(name)) else {
-        return Value::Opaque(format!("<{name}>"));
-    };
-    let get = |scope: &mut RootScope<&mut Store<ReplState>>, k: u32| -> Option<Val> {
-        s.field(scope, k as usize).ok()
-    };
-    let int = |v: Option<Val>| v.and_then(|v| v.i32()).unwrap_or(0);
-    let mut out = Vec::new();
-    let mut w = 0;
-    for (f, t) in fields {
-        let v = match t {
-            Ty::I32 | Ty::Var(_) | Ty::Param(_) => Value::I32(int(get(scope, w))),
-            Ty::I64 => Value::I64(get(scope, w).and_then(|v| v.i64()).unwrap_or(0)),
-            Ty::F32 => Value::F32(get(scope, w).and_then(|v| v.f32()).unwrap_or(0.0)),
-            Ty::F64 => Value::F64(get(scope, w).and_then(|v| v.f64()).unwrap_or(0.0)),
-            Ty::Str => {
-                let a = int(get(scope, w)) as u32 as usize;
-                let n = int(get(scope, w + 1)) as u32 as usize;
-                let data = memory.data(scope.as_context());
-                let bytes = data.get(a..a.saturating_add(n)).unwrap_or(&[]);
-                Value::Str(String::from_utf8_lossy(bytes).into_owned())
-            }
-            Ty::Array(e) => {
-                let at = if matches!(e.as_ref(), Ty::Struct(_)) {
-                    w + 2
-                } else {
-                    w + 1
+    table: Table,
+}
+
+impl Reader<'_> {
+    /// The value of type `ty` (display name) that `r` references.
+    fn value(
+        &mut self,
+        scope: &mut RootScope<&mut Store<ReplState>>,
+        r: &Rooted<AnyRef>,
+        ty: &str,
+        depth: u32,
+    ) -> Value {
+        let short = ty.split(' ').next().unwrap_or(ty);
+        if depth >= MAX_DEPTH {
+            return Value::Opaque(format!("{short}{{...}}"));
+        }
+        match self.session.layout_of(ty) {
+            Some(Layout::Struct { fields, .. }) => self.fields(scope, r, short, &fields, depth),
+            Some(Layout::Union {
+                name,
+                tag_slot,
+                variants,
+            }) => {
+                let mut res = [Val::I32(-1)];
+                let tag = match self.table.get(&mut *scope, tag_slot as u64) {
+                    Some(Ref::Func(Some(f))) => f
+                        .call(&mut *scope, &[Val::AnyRef(Some(*r))], &mut res)
+                        .ok()
+                        .and_then(|()| res[0].i32()),
+                    _ => None,
                 };
-                Value::Opaque(format!("<{} elements>", int(get(scope, at)) as u32))
-            }
-            Ty::Quot(_) => Value::Opaque(format!("#{}", int(get(scope, w)))),
-            Ty::Struct(n) => match get(scope, w) {
-                Some(Val::AnyRef(Some(r))) => {
-                    struct_value(scope, memory, &r, n, layouts, depth + 1)
+                match tag.and_then(|t| variants.get(t as usize)) {
+                    Some((v, fields, _)) => {
+                        self.fields(scope, r, &format!("{name}.{v}"), fields, depth)
+                    }
+                    None => Value::Opaque(format!("<{ty}>")),
                 }
-                _ => Value::Null,
-            },
-        };
-        out.push((f.clone(), v));
-        w += t.width();
+            }
+            None => Value::Opaque(format!("<{ty}>")),
+        }
     }
-    Value::Struct {
-        name: name.to_string(),
-        fields: out,
+
+    /// A struct (or union variant) named `name` with these fields.
+    fn fields(
+        &mut self,
+        scope: &mut RootScope<&mut Store<ReplState>>,
+        r: &Rooted<AnyRef>,
+        name: &str,
+        fields: &[(String, Ty)],
+        depth: u32,
+    ) -> Value {
+        let Ok(Some(s)) = r.as_struct(&*scope) else {
+            return Value::Opaque(format!("<{name}>"));
+        };
+        let get = |scope: &mut RootScope<&mut Store<ReplState>>, k: u32| -> Option<Val> {
+            s.field(scope, k as usize).ok()
+        };
+        let int = |v: Option<Val>| v.and_then(|v| v.i32()).unwrap_or(0);
+        let mut out = Vec::new();
+        let mut w = 0;
+        for (f, t) in fields {
+            let v = match t {
+                Ty::I32 | Ty::Var(_) | Ty::Param(_) => Value::I32(int(get(scope, w))),
+                Ty::I64 => Value::I64(get(scope, w).and_then(|v| v.i64()).unwrap_or(0)),
+                Ty::F32 => Value::F32(get(scope, w).and_then(|v| v.f32()).unwrap_or(0.0)),
+                Ty::F64 => Value::F64(get(scope, w).and_then(|v| v.f64()).unwrap_or(0.0)),
+                Ty::Str => {
+                    let a = int(get(scope, w)) as u32 as usize;
+                    let n = int(get(scope, w + 1)) as u32 as usize;
+                    let data = self.memory.data(scope.as_context());
+                    let bytes = data.get(a..a.saturating_add(n)).unwrap_or(&[]);
+                    Value::Str(String::from_utf8_lossy(bytes).into_owned())
+                }
+                Ty::Array(e) => {
+                    let at = if matches!(e.as_ref(), Ty::Struct(..)) {
+                        w + 2
+                    } else {
+                        w + 1
+                    };
+                    Value::Opaque(format!("<{} elements>", int(get(scope, at)) as u32))
+                }
+                Ty::Quot(_) => Value::Opaque(format!("#{}", int(get(scope, w)))),
+                Ty::Struct(..) => match get(scope, w) {
+                    Some(Val::AnyRef(Some(a))) => self.value(scope, &a, &t.to_string(), depth + 1),
+                    _ => Value::Null,
+                },
+            };
+            out.push((f.clone(), v));
+            w += t.width();
+        }
+        Value::Struct {
+            name: name.to_string(),
+            fields: out,
+        }
     }
 }

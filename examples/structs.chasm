@@ -2,7 +2,8 @@
 # field. Values are garbage-collected references; arrays of structs are views
 # like every other array.
 # Exercises: struct, s.new, s.f, s.f!, str and struct fields, an optional
-# link as an array of length 0 or 1, arrays of structs with the combinators.
+# link as `option node` from the prelude, matched with `none:`/`some:` in
+# `match`, arrays of structs with the combinators.
 
 struct point  x: i32  y: f64
 
@@ -24,29 +25,22 @@ struct seg  a: point  b: point
 : run ( seg -- i32 )  :> s  s seg.b point.x  s seg.a point.x  i32.sub ;
 test run : 1 0.0 point.new 5 0.0 point.new seg.new run -> 4
 
-# A list, null-free: `next` holds 0 nodes at the end of the list, else 1.
-struct node  v: i32  next: array node
+# A list, null-free: `next` is `option.none` at the end of the list.
+struct node  v: i32  next: option node
 
-: end ( -- array node )  0 array.new ( array node ) ;
+: end ( -- option node )  option.none ;
 
-: cons ( i32 array node -- array node )
-  node.new :> n
-  1 array.new ( array node ) :> one
-  one 0 n array.at!
-  one ;
+: cons ( i32 option node -- option node )  node.new option.some ;
 
 # The list n, n-1, ..., 1.
-: countdown ( i32 -- array node )
+: countdown ( i32 -- option node )
   :> n
   end :> l!
   n [ 1 i32.add l cons l! ] times
   l ;
 
-: sum ( array node -- i32 )
-  :> l!
-  0 :> s!
-  [ l array.len ] [ l 0 array.at :> n  s n node.v i32.add s!  n node.next l! ] while
-  s ;
+: sum ( option node -- i32 )
+  none: [ 0 ] some: [ :> n  n node.v  n node.next sum  i32.add ] match ;
 test sum : 4 countdown sum -> 10
 test sum : end sum -> 0
 

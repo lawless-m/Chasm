@@ -1052,10 +1052,11 @@ fn render(report: &J) -> (String, String) {
             let stack = r["stack"].as_array().cloned().unwrap_or_default();
             let types: Vec<String> = stack.iter().map(|e| s(&e["type"])).collect();
             let values: Vec<String> = stack.iter().map(|e| s(&e["value"])).collect();
-            let has_struct = types
+            // A struct or union value (`point{..}`, `shape.circle{..}`) gets
+            // a line of its own.
+            let has_struct = values
                 .iter()
-                .zip(&values)
-                .any(|(t, v)| v.starts_with(&format!("{t}{{")));
+                .any(|v| v.ends_with('}') && !v.starts_with('"'));
             if stack.is_empty() {
                 out.push_str("( )\n");
             } else if has_struct {

@@ -26,7 +26,10 @@ fn err(src: &str) -> String {
 
 #[test]
 fn prelude_compiles() {
-    ok("");
+    let c = ok("");
+    let some = c.word("option.some").unwrap();
+    assert_eq!(some.effect, "( T -- option T )");
+    assert!(some.generic && some.generated && some.library);
 }
 
 #[test]
@@ -152,6 +155,7 @@ fn step_module_imports_memory_and_table() {
             inferred: false,
             generic: None,
             instance_of: None,
+            generated: None,
         });
         let out = compile_body(
             &mut ctx,
@@ -603,4 +607,231 @@ fn ticking_a_generic_word() {
     ok(&format!(
         "{g}: t5 ( -- [ -- i32 i32 ] ) [ 3 'twice call ] ;"
     ));
+}
+
+#[test]
+fn struct_type_parameters_are_checked() {
+    assert_eq!(
+        err("struct pair T U  first: T  second: V"),
+        "E_UNKNOWN_TYPE"
+    );
+    assert_eq!(err("struct point  x: T"), "E_UNKNOWN_TYPE");
+}
+
+const SHAPE: &str = "union shape\n  | circle  r: f64\n  | rect    w: f64  h: f64\n  | empty\n";
+
+#[test]
+fn union_declarations_and_constructors() {
+    let c = ok(SHAPE);
+    let effect = |w: &str| c.word(w).unwrap().effect.clone();
+    assert_eq!(effect("shape.circle"), "( f64 -- shape )");
+    assert_eq!(effect("shape.rect"), "( f64 f64 -- shape )");
+    assert_eq!(effect("shape.empty"), "( -- shape )");
+    ok(&format!(
+        "{SHAPE}: pick ( i32 shape shape -- shape ) :> b :> a [ a ] [ b ] if ;\n: hold ( shape -- shape ) :> s s ;\n: both ( -- shape shape ) 1.0 shape.circle dup ;\n: arr ( -- array shape ) 2 array.new ( array shape ) ;"
+    ));
+    ok(&format!("{SHAPE}{SHAPE}"));
+    assert_eq!(
+        err(&format!("{SHAPE}union shape | circle  r: f64")),
+        "E_REDEFINE_EFFECT"
+    );
+    assert_eq!(
+        err("struct shape  x: i32\nunion shape | a"),
+        "E_REDEFINE_EFFECT"
+    );
+    assert_eq!(err("union u | a  x: foo"), "E_UNKNOWN_TYPE");
+    assert_eq!(
+        err(&format!(": f ( shape -- ) drop ;\n{SHAPE}")),
+        "E_UNKNOWN_TYPE"
+    );
+    assert_eq!(
+        err(&format!("{SHAPE}test shape.empty : shape.empty -> 1")),
+        "E_TEST_TYPE"
+    );
+    ok("union list | nil | cons  head: i32  tail: list");
+}
+
+#[test]
+fn union_tag_and_readers() {
+    let c = ok(&format!("{SHAPE}: user ( -- ) ;"));
+    let effect = |w: &str| c.word(w).unwrap().effect.clone();
+    assert_eq!(effect("shape.tag"), "( shape -- i32 )");
+    assert_eq!(effect("shape.rect.h"), "( shape -- f64 )");
+    assert!(!c.words.iter().any(|w| w.name.starts_with("shape.empty.")));
+    assert!(c.word("shape.tag").unwrap().generated);
+    assert!(!c.word("user").unwrap().generated);
+}
+
+#[test]
+fn match_is_a_primitive_name() {
+    assert_eq!(err(": match ( -- ) ;"), "E_REDEFINE_EFFECT");
+}
+
+const AREA: &str = ": area ( shape -- f64 ) circle: [ :> r  r r f64.mul 3.14 f64.mul ] rect: [ f64.mul ] empty: [ 0.0 ] match ;\n";
+
+#[test]
+fn match_on_a_union() {
+    ok(&format!("{SHAPE}{AREA}"));
+    ok(&format!(
+        "{SHAPE}: n ( shape -- i32 ) circle: [ drop 1 ] rect: [ 2drop 2 ] empty: [ 3 ] match ;"
+    ));
+    ok(&format!(
+        "{SHAPE}: m ( shape -- f64 ) circle: [ ] rect: [ f64.add ] empty: [ \"no\" trap ] match ;"
+    ));
+    ok(&format!(
+        "{SHAPE}: first-circle ( array shape -- f64 ) :> a 0.0 a array.len [ :> i a i array.at circle: [ f64.add leave ] rect: [ 2drop ] empty: [ ] match ] times ;"
+    ));
+    let c = compile(
+        &[Source::new(
+            "t.chasm",
+            format!("{SHAPE}: f ( shape -- i32 ) circle: [ drop 1 ] rect: [ 2drop 2 ] match ;"),
+        )],
+        &Options::default(),
+    );
+    assert_eq!(c.diagnostics[0].code, "E_MATCH_MISSING");
+    assert_eq!(c.diagnostics[0].expected, Some(vec!["empty".to_string()]));
+    let arms = |a: &str| format!("{SHAPE}: f ( shape -- i32 ) {a} match ;");
+    assert_eq!(
+        err(&arms(
+            "circle: [ drop 1 ] rect: [ 2drop 2 ] empty: [ 3 ] square: [ 4 ]"
+        )),
+        "E_MATCH_ARM"
+    );
+    assert_eq!(
+        err(&arms(
+            "circle: [ drop 1 ] circle: [ drop 1 ] rect: [ 2drop 2 ] empty: [ 3 ]"
+        )),
+        "E_MATCH_ARM"
+    );
+    assert_eq!(
+        err(&arms("circle: [ drop 1 ] rect: [ 2drop 2.0 ] empty: [ 3 ]")),
+        "E_BRANCH_MISMATCH"
+    );
+    assert_eq!(
+        err(": f ( i32 -- i32 ) a: [ 1 ] match ;"),
+        "E_TYPE_MISMATCH"
+    );
+    assert_eq!(
+        err(&format!(
+            "{SHAPE}: g circle: [ 1 ] rect: [ 2 ] empty: [ 3 ] match ;"
+        )),
+        "E_AMBIGUOUS_TYPE"
+    );
+}
+
+#[test]
+fn match_else_arm() {
+    ok(&format!(
+        "{SHAPE}: area2 ( shape -- f64 ) circle: [ :> r r r f64.mul 3.14 f64.mul ] else: [ drop 0.0 ] match ;"
+    ));
+    ok(&format!(
+        "{SHAPE}: tag2 ( shape -- i32 ) else: [ shape.tag ] match ;"
+    ));
+    ok(&format!(
+        "{SHAPE}: mid ( shape -- f64 ) rect: [ f64.mul ] else: [ shape.tag f64.convert_i32_s ] circle: [ 2.0 f64.mul ] match ;"
+    ));
+    let arms = |a: &str| format!("{SHAPE}: f ( shape -- i32 ) {a} match ;");
+    assert_eq!(
+        err(&arms(
+            "circle: [ drop 1 ] else: [ drop 2 ] else: [ drop 3 ]"
+        )),
+        "E_MATCH_ARM"
+    );
+    assert_eq!(
+        err(&arms(
+            "circle: [ drop 1 ] rect: [ 2drop 2 ] empty: [ 3 ] else: [ drop 4 ]"
+        )),
+        "E_MATCH_ARM"
+    );
+    assert_eq!(
+        err(&arms("circle: [ drop 1 ] else: [ ]")),
+        "E_BRANCH_MISMATCH"
+    );
+}
+
+const PAIR: &str = "struct pair T U  first: T  second: U\n";
+
+#[test]
+fn generic_structs() {
+    let c = ok(&format!("{PAIR}: p ( -- pair i32 str ) 3 \"x\" pair.new ;"));
+    assert_eq!(
+        c.word("pair.new<i32,str>").expect("instance").effect,
+        "( i32 str -- pair i32 str )"
+    );
+    assert!(c.word("pair.new").unwrap().generic);
+    ok(&format!("{PAIR}: f ( pair i32 str -- str ) pair.second ;"));
+    let c = ok(&format!(
+        "{PAIR}: swap-pair ( pair T U -- pair U T ) :> p  p pair.second p pair.first pair.new ;\n: use ( -- pair str i32 ) 3 \"x\" pair.new swap-pair ;"
+    ));
+    assert!(c.word("swap-pair<i32,str>").is_some());
+    ok(&format!(
+        "{PAIR}: g ( -- ) 3 \"x\" pair.new :> p  p 4 pair.first! ;"
+    ));
+    ok(&format!(
+        "{PAIR}: a ( -- array pair i32 str ) 2 array.new ( array pair i32 str ) ;"
+    ));
+    ok("struct box T  v: T\nstruct node  n: i32  next: box node\n: deep ( node -- i32 ) node.next box.v node.n ;");
+    assert_eq!(
+        err(&format!("{PAIR}struct pair U T  first: U  second: T")),
+        "E_REDEFINE_EFFECT"
+    );
+    assert_eq!(err("struct w T  next: w i32"), "E_UNKNOWN_TYPE");
+    let c = export(&format!(
+        "{PAIR}: main ( -- ) 3 \"x\" pair.new pair.second println ;"
+    ));
+    assert!(c.ok(), "{:?}", c.diagnostics);
+    let f = functions(c.wasm.as_ref().unwrap());
+    assert!(f.iter().any(|n| n == "pair.new<i32,str>"), "{f:?}");
+    assert!(!f.iter().any(|n| n == "pair.new"), "{f:?}");
+}
+
+const OPTION: &str = "union option T | none | some  v: T\n";
+const LIST: &str = "union list T | nil | cons  head: T  tail: list T\n";
+
+#[test]
+fn generic_unions() {
+    let c = ok(&format!("{OPTION}: s ( -- option i32 ) 3 option.some ;"));
+    assert!(c.word("option.some<i32>").is_some());
+    ok(&format!("{OPTION}: n ( -- option i32 ) option.none ;"));
+    assert_eq!(
+        err(&format!("{OPTION}: bad ( -- ) option.none drop ;")),
+        "E_AMBIGUOUS_TYPE"
+    );
+    ok(&format!(
+        "{OPTION}: get ( option i32 -- i32 ) none: [ 0 ] some: [ ] match ;"
+    ));
+    let c = ok(&format!(
+        "{OPTION}: or-else ( option T T -- T ) :> d  none: [ d ] some: [ ] match ;\n: use ( -- str ) \"x\" option.some \"y\" or-else ;"
+    ));
+    assert!(c.word("or-else<str>").is_some());
+    let c = ok(&format!(
+        "{LIST}: length ( list T -- i32 ) nil: [ 0 ] cons: [ length 1 i32.add nip ] match ;\n: three ( -- list i32 ) 1 2 3 list.nil list.cons list.cons list.cons ;\n: k ( -- i32 ) three length ;"
+    ));
+    assert!(c.word("length<i32>").is_some());
+    assert!(c.word("list.cons<i32>").is_some());
+    ok(&format!(
+        "{OPTION}struct node  v: i32  next: option node\n: nx ( node -- option node ) node.next ;"
+    ));
+    ok(&format!(
+        "{OPTION}: a ( -- array option i32 ) 2 array.new ( array option i32 ) ;"
+    ));
+    assert_eq!(
+        err(&format!("{OPTION}union option U | none | some  v: U")),
+        "E_REDEFINE_EFFECT"
+    );
+    assert_eq!(err("union w T | a  x: w i32"), "E_UNKNOWN_TYPE");
+}
+
+#[test]
+fn prelude_option() {
+    let c = ok(": f ( -- option i32 ) 3 option.some ;");
+    assert!(c.word("option.some<i32>").is_some());
+    let c = export(": f ( -- option i32 ) 3 option.some ;\n: main ( -- ) f none: [ 0 ] some: [ ] match i32.to-str println ;");
+    assert!(c.ok(), "{:?}", c.diagnostics);
+    let f = functions(c.wasm.as_ref().unwrap());
+    assert!(f.iter().any(|n| n == "option.some<i32>"), "{f:?}");
+    assert!(!f.iter().any(|n| n == "option.some"), "{f:?}");
+    let c = export(": f ( -- option i32 ) 3 option.some ;\n: main ( -- ) ;");
+    let f = functions(c.wasm.as_ref().unwrap());
+    assert!(!f.iter().any(|n| n.starts_with("option.")), "{f:?}");
 }

@@ -9,7 +9,7 @@
 pub mod api {
     use std::cell::RefCell;
 
-    use chasm_core::repl::{needs_more as core_needs_more, Step};
+    use chasm_core::repl::{needs_more as core_needs_more, Layout, Step};
     use chasm_core::types::{names, Ty};
     use chasm_core::{layout, Diagnostic, Location, Session};
     use serde_json::{json, Value as J};
@@ -30,24 +30,36 @@ pub mod api {
 
     fn to_json(step: Step, stack: &[Ty], session: &Session) -> StepJson {
         let ok = step.ok();
-        // Field layouts with the table slot of each accessor word: the
-        // browser reads struct fields by calling `name.field` through the table.
-        let structs: serde_json::Map<String, serde_json::Value> = session
-            .structs()
-            .iter()
-            .map(|s| {
-                let fields = s
-                    .fields
-                    .iter()
-                    .map(|(f, t)| {
-                        json!({
-                            "field": f,
-                            "type": t.to_string(),
-                            "get": session.word_slot(&format!("{}.{f}", s.name)),
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                (s.name.clone(), json!(fields))
+        // Layouts of every registered struct and union type, by display
+        // name, with the table slot of each reader (and a union's `tag`):
+        // the browser reads WasmGC values by calling them through the table.
+        let fields = |fields: &[(String, Ty)], get: &[Option<u32>]| -> J {
+            fields
+                .iter()
+                .zip(get)
+                .map(|((f, t), g)| json!({ "field": f, "type": t.to_string(), "get": g }))
+                .collect()
+        };
+        let structs: serde_json::Map<String, J> = session
+            .type_names()
+            .into_iter()
+            .filter_map(|n| {
+                let layout = match session.layout_of(&n)? {
+                    Layout::Struct { fields: f, get } => {
+                        json!({ "kind": "struct", "fields": fields(&f, &get) })
+                    }
+                    Layout::Union {
+                        tag_slot, variants, ..
+                    } => json!({
+                        "kind": "union",
+                        "tag": tag_slot,
+                        "variants": variants
+                            .iter()
+                            .map(|(v, f, get)| json!({ "name": v, "fields": fields(f, get) }))
+                            .collect::<Vec<_>>(),
+                    }),
+                };
+                Some((n, layout))
             })
             .collect();
         let j = json!({
@@ -262,7 +274,9 @@ mod tests {
         let s = step("drop struct point  x: i32  y: f64", hp);
         assert!(j(&s)["ok"] == false, "a line cannot follow a definition");
         let s = step("struct point  x: i32  y: f64", hp);
-        let fields = &j(&s)["structs"]["point"];
+        let point = &j(&s)["structs"]["point"];
+        assert_eq!(point["kind"], "struct");
+        let fields = &point["fields"];
         assert_eq!(fields[0]["field"], "x");
         assert_eq!(fields[1]["field"], "y");
         assert_eq!(fields[0]["type"], "i32");

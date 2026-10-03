@@ -40,10 +40,22 @@ export function attach(post, onMessage) {
 
   // Read a struct as a plain tree by calling its accessor words through the
   // table: JavaScript cannot read WasmGC struct fields itself.
+  // A union's variant comes from its `tag` word, then that variant's
+  // fields from its readers. `name` is the type's display name.
   function renderStruct(ref, name, structs, depth) {
     if (ref === null) return null;
-    if (depth >= 3) return { name, fields: null };
-    const fields = structs[name].map((f) => {
+    const short = name.split(" ")[0];
+    if (depth >= 3) return { name: short, fields: null };
+    const layout = structs[name];
+    if (layout.kind === "union") {
+      const v = layout.variants[table.get(layout.tag)(ref)];
+      return { name: `${short}.${v.name}`, fields: readFields(ref, v.fields, structs, depth) };
+    }
+    return { name: short, fields: readFields(ref, layout.fields, structs, depth) };
+  }
+
+  function readFields(ref, layoutFields, structs, depth) {
+    return layoutFields.map((f) => {
       const r = table.get(f.get)(ref);
       const vals = r === undefined ? [] : Array.isArray(r) ? r : [r];
       let v;
@@ -61,7 +73,6 @@ export function attach(post, onMessage) {
       }
       return [f.field, f.type, v];
     });
-    return { name, fields };
   }
 
   onMessage((msg) => {

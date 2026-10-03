@@ -1,12 +1,29 @@
 //! Parser: tokens to top-level items.
 
-use crate::ast::{Body, Item, Lit, Node, NodeKind};
+use std::collections::HashMap;
+
+use crate::ast::{Arm, Body, Item, Lit, Node, NodeKind, Variant};
 use crate::diag::{codes, Diagnostic, Location};
 use crate::lexer::{TokKind, Token};
 use crate::types::{Effect, Ty};
 
 pub fn parse(file: &str, toks: &[Token]) -> Result<Vec<Item>, Diagnostic> {
-    let mut p = Parser { file, toks, pos: 0 };
+    parse_with(file, toks, &HashMap::new())
+}
+
+/// Parse with the arities of generic types declared before this text
+/// (`pair` takes 2), so `pair i32 str` reads its arguments.
+pub fn parse_with(
+    file: &str,
+    toks: &[Token],
+    known: &HashMap<String, usize>,
+) -> Result<Vec<Item>, Diagnostic> {
+    let mut p = Parser {
+        file,
+        toks,
+        pos: 0,
+        known: known.clone(),
+    };
     let mut items = Vec::new();
     while p.pos < toks.len() {
         items.push(p.item()?);
@@ -25,17 +42,30 @@ pub enum ReplInput {
 /// `declare` or `test` is parsed exactly like a file; anything else is one
 /// body running to the end of the input.
 pub fn parse_repl(file: &str, toks: &[Token]) -> Result<ReplInput, Diagnostic> {
+    parse_repl_with(file, toks, &HashMap::new())
+}
+
+pub fn parse_repl_with(
+    file: &str,
+    toks: &[Token],
+    known: &HashMap<String, usize>,
+) -> Result<ReplInput, Diagnostic> {
     match toks.first() {
         None => Ok(ReplInput::Body(Vec::new())),
         Some(t)
-            if [":", "export", "declare", "test", "struct"]
+            if [":", "export", "declare", "test", "struct", "union"]
                 .iter()
                 .any(|k| t.is(k)) =>
         {
-            Ok(ReplInput::Items(parse(file, toks)?))
+            Ok(ReplInput::Items(parse_with(file, toks, known)?))
         }
         Some(_) => {
-            let mut p = Parser { file, toks, pos: 0 };
+            let mut p = Parser {
+                file,
+                toks,
+                pos: 0,
+                known: known.clone(),
+            };
             Ok(ReplInput::Body(p.body_inner(&[], true)?))
         }
     }
@@ -128,6 +158,8 @@ struct Parser<'a> {
     file: &'a str,
     toks: &'a [Token],
     pos: usize,
+    /// Arities of the generic types declared so far.
+    known: HashMap<String, usize>,
 }
 
 impl<'a> Parser<'a> {
@@ -245,9 +277,12 @@ impl<'a> Parser<'a> {
         if t.is("struct") {
             return self.struct_item();
         }
+        if t.is("union") {
+            return self.union_item();
+        }
         Err(self.err(
             format!(
-                "expected `:`, `export`, `declare`, `test` or `struct` at top level, found `{}`",
+                "expected `:`, `export`, `declare`, `test`, `struct` or `union` at top level, found `{}`",
                 t.text
             ),
             self.loc(t),
@@ -257,23 +292,111 @@ impl<'a> Parser<'a> {
     /// After `struct`: the name, then `field: type` pairs while the next token
     /// is a field label. No terminator.
     fn struct_item(&mut self) -> Result<Item, Diagnostic> {
-        let name = self.name("a struct name after `struct`")?;
+        let name = self.type_name("a struct name after `struct`", "a struct name")?;
+        let n = name.text.as_str();
+        let params = self.params(n)?;
+        let fields = self.fields(n)?;
+        Ok(Item::Struct {
+            name: n.to_string(),
+            params,
+            fields,
+            loc: self.loc(name),
+        })
+    }
+
+    /// After `union`: the name, then one or more `| variant  field: type ...`
+    /// groups. No terminator.
+    fn union_item(&mut self) -> Result<Item, Diagnostic> {
+        let name = self.type_name("a union name after `union`", "a union name")?;
+        let n = name.text.as_str();
+        let params = self.params(n)?;
+        let mut variants: Vec<Variant> = Vec::new();
+        while self.peek().is_some_and(|t| t.is("|")) {
+            self.pos += 1;
+            let v = self.type_name("a variant name after `|`", "a variant name")?;
+            let vn = v.text.as_str();
+            if vn == "else" || vn == "tag" || vn.contains('.') {
+                return Err(self.err(
+                    format!("`{vn}` cannot be a variant name: `else` is the catch-all arm of `match` and `{n}.tag` gives the variant"),
+                    self.loc(v),
+                ));
+            }
+            if variants.iter().any(|w| w.name == vn) {
+                return Err(self.err(
+                    format!("variant `{vn}` appears twice in `{n}`"),
+                    self.loc(v),
+                ));
+            }
+            let fields = self.fields(&format!("{n}.{vn}"))?;
+            variants.push(Variant {
+                name: vn.to_string(),
+                fields,
+                loc: self.loc(v),
+            });
+        }
+        if variants.is_empty() {
+            return Err(self.err(
+                format!("a union needs at least one variant: `union {n} | a | b  field: i32`"),
+                self.loc(name),
+            ));
+        }
+        Ok(Item::Union {
+            name: n.to_string(),
+            params,
+            variants,
+            loc: self.loc(name),
+        })
+    }
+
+    /// Type parameters after a struct or union name: uppercase-initial
+    /// names. The type's arity is known from here on, its own fields
+    /// included.
+    fn params(&mut self, owner: &str) -> Result<Vec<String>, Diagnostic> {
+        let mut params: Vec<String> = Vec::new();
+        while let Some(t) = self.peek().filter(|t| {
+            t.kind == TokKind::Word
+                && t.text.starts_with(|c: char| c.is_ascii_uppercase())
+                && !t.text.ends_with(':')
+        }) {
+            self.pos += 1;
+            if params.contains(&t.text) {
+                return Err(self.err(
+                    format!("type parameter `{}` appears twice in `{owner}`", t.text),
+                    self.loc(t),
+                ));
+            }
+            params.push(t.text.clone());
+        }
+        self.known.insert(owner.to_string(), params.len());
+        Ok(params)
+    }
+
+    /// A struct, union or variant name: lowercase, not a type keyword,
+    /// number, primitive or punctuation.
+    fn type_name(&mut self, what: &str, kind: &str) -> Result<&'a Token, Diagnostic> {
+        let name = self.name(what)?;
         let n = name.text.as_str();
         if TYPE_KEYWORDS.contains(&n)
             || n.starts_with('\'')
             || parse_number(n).is_some()
             || crate::prims::is_builtin(n)
             || is_punct(n)
+            || n == "|"
         {
-            return Err(self.err(format!("`{n}` cannot be a struct name"), self.loc(name)));
+            return Err(self.err(format!("`{n}` cannot be {kind}"), self.loc(name)));
         }
         if n.starts_with(|c: char| c.is_ascii_uppercase()) {
             let lower = n.to_ascii_lowercase();
             return Err(self.err(
-                format!("`{n}` cannot be a struct name: a name starting with an uppercase letter is a type variable; write `{lower}`"),
+                format!("`{n}` cannot be {kind}: a name starting with an uppercase letter is a type variable; write `{lower}`"),
                 self.loc(name),
             ));
         }
+        Ok(name)
+    }
+
+    /// `field: type` pairs while the next token is a field label.
+    fn fields(&mut self, owner: &str) -> Result<Vec<(String, Ty, Location)>, Diagnostic> {
         let mut fields: Vec<(String, Ty, Location)> = Vec::new();
         while let Some(label) = self.peek().filter(|t| field_label(t).is_some()) {
             self.pos += 1;
@@ -281,21 +404,19 @@ impl<'a> Parser<'a> {
             let loc = self.loc(label);
             if f == "new" || f.ends_with('!') {
                 return Err(self.err(
-                    format!("`{f}` cannot be a field name: `{n}.new` is the constructor and `!` marks a write"),
+                    format!(
+                        "`{f}` cannot be a field name: `.new` makes a value and `!` marks a write"
+                    ),
                     loc,
                 ));
             }
             if fields.iter().any(|(g, _, _)| g == f) {
-                return Err(self.err(format!("field `{f}` appears twice in `{n}`"), loc));
+                return Err(self.err(format!("field `{f}` appears twice in `{owner}`"), loc));
             }
             let ty = self.ty()?;
             fields.push((f.to_string(), ty, loc));
         }
-        Ok(Item::Struct {
-            name: n.to_string(),
-            fields,
-            loc: self.loc(name),
-        })
+        Ok(fields)
     }
 
     /// The numeric literal at `t` (already consumed), or `None`. An integer
@@ -417,7 +538,27 @@ impl<'a> Parser<'a> {
             s if s.starts_with(|c: char| c.is_ascii_uppercase()) && !s.ends_with(':') => {
                 Ty::Param(s.to_string())
             }
-            s if !is_punct(s) && !s.ends_with(':') => Ty::Struct(s.to_string()),
+            s if !is_punct(s) && !s.ends_with(':') => {
+                let arity = self.known.get(s).copied().unwrap_or(0);
+                let mut args = Vec::new();
+                for _ in 0..arity {
+                    if self
+                        .peek()
+                        .is_none_or(|n| [")", "]", "--", ";"].iter().any(|k| n.is(k)))
+                    {
+                        return Err(Diagnostic::error(
+                            codes::E_UNKNOWN_TYPE,
+                            format!(
+                                "`{s}` takes {arity} type argument{}",
+                                if arity == 1 { "" } else { "s" }
+                            ),
+                            self.loc(t),
+                        ));
+                    }
+                    args.push(self.ty()?);
+                }
+                Ty::Struct(s.to_string(), args)
+            }
             _ => return Err(unknown(self)),
         })
     }
@@ -472,6 +613,41 @@ impl<'a> Parser<'a> {
                         NodeKind::Bind { name, mutable }
                     } else if text == "leave" {
                         NodeKind::Leave
+                    } else if text == "match" {
+                        let mut arms = Vec::new();
+                        while out.len() >= 2 {
+                            let n = out.len();
+                            let label = match (&out[n - 2].kind, &out[n - 1].kind) {
+                                (NodeKind::Name(l), NodeKind::Quote(_)) => {
+                                    match l.strip_suffix(':').filter(|l| !l.is_empty()) {
+                                        Some(l) => l.to_string(),
+                                        None => break,
+                                    }
+                                }
+                                _ => break,
+                            };
+                            let Some(Node {
+                                kind: NodeKind::Quote(body),
+                                ..
+                            }) = out.pop()
+                            else {
+                                unreachable!()
+                            };
+                            let at = out.pop().unwrap().loc;
+                            arms.push(Arm {
+                                label,
+                                body,
+                                loc: at,
+                            });
+                        }
+                        if arms.is_empty() {
+                            return Err(self.err(
+                                "`match` takes labelled arms written directly before it, e.g. `s circle: [ ... ] rect: [ ... ] match`",
+                                loc,
+                            ));
+                        }
+                        arms.reverse();
+                        NodeKind::Match(arms)
                     } else if let Some(arity) = combinator_arity(text) {
                         let mut quotes = Vec::new();
                         for _ in 0..arity {
@@ -555,6 +731,106 @@ mod tests {
     }
 
     #[test]
+    fn type_parameters_and_application() {
+        let Item::Struct { params, .. } = &p("struct pair T U  first: T  second: U")[0] else {
+            panic!()
+        };
+        assert_eq!(params, &["T", "U"]);
+        let items = p(
+            "struct pair T U  first: T  second: U\n: f ( pair i32 str -- array pair i32 str ) ;",
+        );
+        let Item::Def {
+            effect: Some(e), ..
+        } = &items[1]
+        else {
+            panic!()
+        };
+        assert_eq!(
+            e.inputs,
+            [Ty::Struct("pair".into(), vec![Ty::I32, Ty::Str])]
+        );
+        assert_eq!(e.to_string(), "( pair i32 str -- array pair i32 str )");
+        let items = p("union list T | nil | cons  head: T  tail: list T\nstruct pair T U  a: T  b: U\n: g ( pair list i32 str -- ) drop ;");
+        let Item::Def {
+            effect: Some(e), ..
+        } = &items[2]
+        else {
+            panic!()
+        };
+        assert_eq!(
+            e.inputs,
+            [Ty::Struct(
+                "pair".into(),
+                vec![Ty::Struct("list".into(), vec![Ty::I32]), Ty::Str]
+            )]
+        );
+        assert_eq!(
+            perr("struct pair T U  a: T  b: U\n: h ( pair i32 ) ;").code,
+            codes::E_UNKNOWN_TYPE
+        );
+        assert_eq!(perr("struct p T T  x: T").code, codes::E_SYNTAX);
+    }
+
+    #[test]
+    fn match_arms() {
+        let items =
+            p(": f ( shape -- f64 ) circle: [ 1.0 ] rect: [ f64.mul ] else: [ drop 0.0 ] match ;");
+        let Item::Def { body, .. } = &items[0] else {
+            panic!()
+        };
+        assert_eq!(body.len(), 1);
+        let NodeKind::Match(arms) = &body[0].kind else {
+            panic!()
+        };
+        let labels: Vec<&str> = arms.iter().map(|a| a.label.as_str()).collect();
+        assert_eq!(labels, ["circle", "rect", "else"]);
+        assert_eq!(arms[2].body.len(), 2);
+        for bad in [": f ( -- ) match ;", ": f ( -- ) [ 1 ] match ;"] {
+            assert_eq!(perr(bad).code, codes::E_SYNTAX, "{bad}");
+        }
+        let Item::Def { body, .. } = &p(": f ( -- ) 1 a: [ 2 ] match ;")[0] else {
+            panic!()
+        };
+        assert_eq!(body.len(), 2);
+        assert!(matches!(body[0].kind, NodeKind::Lit(_)));
+        let Ok(ReplInput::Body(b)) = parse_repl("t", &lex("t", "s a: [ 1 ] match").unwrap()) else {
+            panic!()
+        };
+        assert!(matches!(b[1].kind, NodeKind::Match(_)));
+    }
+
+    #[test]
+    fn unions() {
+        let Item::Union { name, variants, .. } =
+            &p("union shape | circle  r: f64 | rect  w: f64  h: f64 | empty")[0]
+        else {
+            panic!()
+        };
+        assert_eq!(name, "shape");
+        let shape: Vec<(&str, usize)> = variants
+            .iter()
+            .map(|v| (v.name.as_str(), v.fields.len()))
+            .collect();
+        assert_eq!(shape, [("circle", 1), ("rect", 2), ("empty", 0)]);
+        assert_eq!(variants[1].fields[1].1, Ty::F64);
+        for bad in [
+            "union e",
+            "union e | else",
+            "union e | a | a",
+            "union e | a  x: i32  x: f64",
+            "union e | tag",
+        ] {
+            assert_eq!(perr(bad).code, codes::E_SYNTAX, "{bad}");
+        }
+        assert_eq!(p("union s | a\n: f ( s -- s ) ;").len(), 2);
+        assert!(matches!(
+            parse_repl("t", &lex("t", "union s | a").unwrap()),
+            Ok(ReplInput::Items(_))
+        ));
+        assert!(!crate::repl::needs_more("union s | a"));
+    }
+
+    #[test]
     fn type_params() {
         let Item::Def {
             effect: Some(e), ..
@@ -575,7 +851,7 @@ mod tests {
             panic!()
         };
         assert!(
-            matches!(&body[0].kind, NodeKind::Assert(tys) if tys == &[Ty::Struct("a".into()), Ty::Struct("b".into())]),
+            matches!(&body[0].kind, NodeKind::Assert(tys) if tys == &[Ty::Struct("a".into(), Vec::new()), Ty::Struct("b".into(), Vec::new())]),
             "{body:?}"
         );
         assert_eq!(perr("struct Point  x: i32").code, codes::E_SYNTAX);
@@ -606,13 +882,13 @@ mod tests {
         else {
             panic!()
         };
-        assert_eq!(e.inputs, vec![Ty::Struct("point".into())]);
+        assert_eq!(e.inputs, vec![Ty::Struct("point".into(), Vec::new())]);
 
         let items = p("struct node  next: node  v: i32");
         let Item::Struct { fields, .. } = &items[0] else {
             panic!()
         };
-        assert_eq!(fields[0].1, Ty::Struct("node".into()));
+        assert_eq!(fields[0].1, Ty::Struct("node".into(), Vec::new()));
         assert!(matches!(&p("struct empty")[0], Item::Struct { fields, .. } if fields.is_empty()));
 
         for bad in [
@@ -634,7 +910,10 @@ mod tests {
         };
         assert_eq!(
             body[0].kind,
-            NodeKind::Assert(vec![Ty::Struct("a".into()), Ty::Struct("b".into())])
+            NodeKind::Assert(vec![
+                Ty::Struct("a".into(), Vec::new()),
+                Ty::Struct("b".into(), Vec::new())
+            ])
         );
     }
 

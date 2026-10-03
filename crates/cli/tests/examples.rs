@@ -411,3 +411,90 @@ fn infer_write_inserts_effects() {
     assert_eq!(out, "no un-annotated words\n");
     let _ = std::fs::remove_file(src);
 }
+
+/// A scratch program for the union tests: the shape union plus `extra`.
+fn union_program(name: &str, extra: &str) -> std::path::PathBuf {
+    let f = scratch(name);
+    std::fs::write(
+        &f,
+        format!("union shape\n  | circle  r: f64\n  | rect    w: f64  h: f64\n  | empty\n{extra}"),
+    )
+    .unwrap();
+    f
+}
+
+fn test_results(f: &std::path::Path) -> (bool, serde_json::Value) {
+    let (ok, out, err) = chasm(&["test", "--json", f.to_str().unwrap()]);
+    let j: serde_json::Value =
+        serde_json::from_str(&out).unwrap_or_else(|e| panic!("{e}: {out}{err}"));
+    (ok, j)
+}
+
+#[test]
+fn union_tag_readers_and_traps() {
+    let f = union_program(
+        "union-tag.chasm",
+        "test shape.tag : 2.0 3.0 shape.rect shape.tag -> 1\ntest shape.tag : shape.empty shape.tag -> 2\ntest shape.rect.h : 2.0 3.0 shape.rect shape.rect.h -> 3.0\n\
+         : area ( shape -- f64 ) circle: [ :> r  r r f64.mul 3.14 f64.mul ] rect: [ f64.mul ] empty: [ 0.0 ] match ;\n\
+         : n ( shape -- i32 ) circle: [ drop 1 ] rect: [ 2drop 2 ] empty: [ 3 ] match ;\n\
+         : area2 ( shape -- f64 ) circle: [ :> r r r f64.mul 3.14 f64.mul ] else: [ drop 0.0 ] match ;\n\
+         test area2 : 2.0 3.0 shape.rect area2 -> 0.0\ntest area2 : 1.0 shape.circle area2 -> 3.14\n\
+         test area : 2.0 3.0 shape.rect area -> 6.0\ntest area : shape.empty area -> 0.0\ntest n : 1.0 shape.circle n -> 1\n",
+    );
+    let (ok, j) = test_results(&f);
+    assert!(ok, "{j}");
+    assert!(
+        j["results"]["tests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["status"] == "pass"),
+        "{j}"
+    );
+    let (_, out, _) = chasm(&["words", "--json", f.to_str().unwrap()]);
+    let w: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let tag = w["results"]["words"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["name"] == "shape.tag")
+        .unwrap()
+        .clone();
+    assert_eq!(tag["generated"], true);
+    let (_, out, _) = chasm(&["dead", f.to_str().unwrap()]);
+    assert!(!out.contains("shape.tag"), "{out}");
+    let g = union_program(
+        "union-trap.chasm",
+        "test shape.rect.h : 1.0 shape.circle shape.rect.h -> 0.0\n",
+    );
+    let (_, j) = test_results(&g);
+    let t = &j["results"]["tests"][0];
+    assert_eq!(t["status"], "fail", "{j}");
+    assert_eq!(t["trap"]["message"], "shape.rect.h: not a rect", "{j}");
+    let _ = std::fs::remove_file(f);
+    let _ = std::fs::remove_file(g);
+}
+
+#[test]
+fn generic_unions_run() {
+    let src =
+        "union option T | none | some  v: T\nunion list T | nil | cons  head: T  tail: list T\n\
+               : length ( list T -- i32 ) nil: [ 0 ] cons: [ length 1 i32.add nip ] match ;\n\
+               : three ( -- list i32 ) 1 2 3 list.nil list.cons list.cons list.cons ;\n\
+               : sum ( list i32 -- i32 ) nil: [ 0 ] cons: [ sum i32.add ] match ;\n\
+               : get ( option i32 -- i32 ) none: [ 0 ] some: [ ] match ;\n\
+               test length : three length -> 3\ntest sum : three sum -> 6\n\
+               test get : 5 option.some get -> 5\ntest get : option.none ( option i32 ) get -> 0\n\
+               : main ( -- ) three sum i32.to-str println ;\n";
+    let f = scratch("generic-unions.chasm");
+    std::fs::write(&f, src).unwrap();
+    let (ok, j) = test_results(&f);
+    assert!(ok, "{j}");
+    let tests = j["results"]["tests"].as_array().unwrap();
+    assert_eq!(tests.len(), 4, "{j}");
+    assert!(tests.iter().all(|t| t["status"] == "pass"), "{j}");
+    let (ok, out, err) = chasm(&["run", f.to_str().unwrap()]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "6\n");
+    let _ = std::fs::remove_file(f);
+}

@@ -6,7 +6,7 @@ Rust workspace. Read `docs/reference.md` before writing `.chasm` code;
 
 ## Layout
 
-- `crates/core`: lexer, parser (top-level `:`, `declare`, `test` and `struct` items), checker and emitter (`check.rs`), module assembly (`module.rs`), driver (`program.rs`), memory layout (`layout.rs`), primitives (`prims.rs`), prelude written in Chasm (`prelude.chasm`). **No I/O**: it must keep building for `wasm32-unknown-unknown`.
+- `crates/core`: lexer, parser (top-level `:`, `declare`, `test`, `struct` and `union` items), checker and emitter (`check.rs`), module assembly (`module.rs`), driver (`program.rs`), memory layout (`layout.rs`), primitives (`prims.rs`), prelude written in Chasm (`prelude.chasm`). **No I/O**: it must keep building for `wasm32-unknown-unknown`.
 - `crates/runtime`: ring servicing (`lib.rs`), native namespace (`namespace.rs`), HTTP client (`net.rs`), 9p client (`ninep.rs`), wasmtime runner and test runner (`native.rs`), native REPL host (`repl.rs`).
 - `crates/web`: `chasm-web`, the C-ABI cdylib the browser loads (the REPL session; no I/O, builds for `wasm32-unknown-unknown`).
 - `web/`: the static browser REPL (`web/build.sh`, `web/serve.py`, node checks under `web/test/`).

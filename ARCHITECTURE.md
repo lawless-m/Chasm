@@ -1,6 +1,6 @@
 # Chasm: Architecture and Milestones
 
-Status: draft v0.17 (M0 to M7 implemented; decisions in sections 13 to 19). **Chasm** (Chuck-Wasm, after Chuck Moore) is a typed, concatenative language that compiles to WebAssembly, with an interactive REPL, written in Rust. Source files use the `.chasm` extension; the CLI binary is `chasm`.
+Status: draft v0.18 (M0 to M8 implemented; decisions in sections 13 to 20). **Chasm** (Chuck-Wasm, after Chuck Moore) is a typed, concatenative language that compiles to WebAssembly, with an interactive REPL, written in Rust. Source files use the `.chasm` extension; the CLI binary is `chasm`.
 
 ## 1. Goals
 
@@ -79,6 +79,7 @@ Wasm has no polymorphic instructions, and a word's effect is its wasm function t
 
 - **Shuffle primitives** (`dup`, `swap`, `drop`, `over`, `rot`, `nip`, `tuck`, `2dup`) and **collection combinators** (`each`, `map`, `filter`, `fold`) have effects written with type variables, for example `( a b -- b a )`. Checking is forward, so the stack is concrete (or holds a generic word's own type variables) when the checker meets one of these. It instantiates the primitive at the types present and the emitter produces the matching code: `dup` on `i32` is `local.tee` into a compiler-only `i32` local, `swap` is two locals, and so on.
 - **Generic words.** A user effect may carry type variables, uppercase-initial names such as `T` and `U`: `: twice ( T -- T T ) dup ;`. The word is a template, checked once with its variables rigid (a `T` matches only `T`) and never emitted. Each concrete instantiation that a call or a `'word` fixes is an instance: its own wasm function, table slot and dependency-graph node, named `twice<i32>`, compiled by checking the template's body at those types. There are no constraints: `i32.add` on a `T` is a type error in a declared generic, and fixes `T = i32` under inference. `export` words and `main` are concrete.
+- **Generic structs and unions** are monomorphised the same way: each concrete instantiation (`pair i32 str`) is its own WasmGC type, made when first needed, and the words the declaration generates are templates instantiated per use like any generic word.
 
 ## 5c. Control flow
 
@@ -229,6 +230,8 @@ Principles; exact fields are settled in M1 and generated from the Rust types (`s
 
 **M7: Inference and generic words.** An elaboration pass in front of the checker infers missing effects, which the checker re-verifies, so soundness is unaffected. User effects may carry type variables, monomorphised per concrete use. `chasm infer` lists inferred effects and `--write` puts them into the source.
 
+**M8: Sum types and generic types.** `union` declares a type with inline variants, each with its own fields, lowered to a WasmGC supertype with a final subtype per variant; postfix `match` takes labelled arms in any order, with an optional `else:`. Structs and unions may take explicit type parameters (`struct pair T U`, applied as `pair i32 str`), monomorphised per instantiation. The prelude's `option T` replaces the array-of-0-or-1 optional link.
+
 M1 to M3 can overlap; the graph and stub data structures are part of M1 so that M3 is tooling only.
 
 ## 11. Open questions
@@ -349,3 +352,14 @@ Heavy native batch work (large test corpora, benchmarks, Binaryen runs over big 
 9. **`chasm infer`** lists un-annotated words with their inferred effects; `--write` inserts ` ( effect )` after each name and leaves every other byte of the file unchanged, and writes nothing when the program has errors.
 10. **Compatibility.** Programs that declare every effect and use no type variables compile byte-identically to M6. `inferred`, `generic` and `instance_of` are additive JSON fields.
 
+## 20. Decisions taken in M8
+
+1. **Lowering.** A union instantiation is one rec group: a non-final supertype struct with no fields, a final subtype struct per variant with that supertype, then the GC array type of `(ref null $super)`. A struct is a group of the struct and its array, as before. `TypeDef::Rec` holds a group at the index of its first member, `TypeDef::Slot` marks the indices of the rest, and `StructTypes` maps a type's display name (`shape`, `pair i32 str`) to its struct (or supertype) and array indices.
+2. **Recursive groups.** `Ctx::register_type` registers a concrete type and, first, every unregistered type its fields need, each in its own group, except those that refer back to it: they share its group. So `struct node  v: i32  next: option node` puts `node` and `option node` in one group. A plain struct still gets its two-member group at the same indices.
+3. **Code.** A constructor is `struct.new` of the variant. `tag` and the readers test the variant with `ref.test` and read with `ref.cast` and `struct.get`; a reader traps with `u.v.f: not a v` on another variant. `match` stashes the value in a local, traps on null through `ref.as_non_null`, then is an if/else chain of `ref.test` over the named arms in the order written, each arm getting its fields by `ref.cast` and `struct.get`; `else:` (or `unreachable` when every variant is named) is the last `else`. `br_on_cast` is not used.
+4. **When types are made.** Concrete instantiations are registered in the emitting pass (lowering, `array.new`, `match`, calls), by declared effects, by instances' effects and by module assembly, never in a check-only pass, which lowers an unregistered applied type to an `i32` placeholder and discards its code. Registering a generic type's instantiation also instantiates its readers (and a union's `tag`), so the REPL can always render a value of it.
+5. **Generated words of a generic type** are templates (`generic` and `generated` set); an instance's code is generated for the instantiation's indices rather than compiled from a body. A generic type may name itself only applied to its own parameters in order. M7's rule that struct fields cannot be type variables (section 19, item 3) gives way to declared parameters.
+6. **Templates are never emitted** by whole-program builds, rooted or not. In whole-program compilation the prelude's generic types make their words on first use, or after every other word when nothing uses them, and template slots at the end of the table are dropped, so word ids and the table of a program that does not use `option` are unchanged. Programs using no union and no generic struct compile byte-identically to M7; the examples outside that rule are `structs`, `word-frequency`, `unions` and `generic-structs`.
+7. **REPL echo.** Natively, a union value in `chasm.refs` is rendered by calling its `tag` word through the table inside a `RootScope`, then reading the variant's fields with the GC API. In the browser the worker calls `tag` and the variant's readers through the funcref table, from layouts the step JSON gives by type display name (`kind` `struct` or `union`, with the slot of each reader). Nesting shows three levels.
+8. **Parsing.** The parser knows each declared type's arity and reads an applied type's arguments by it, so `pair list i32 str` needs no parentheses; the arities of earlier files and REPL steps are passed in.
+9. **`option T`** is in the prelude. `match` is a primitive name. `E_MATCH_ARM` and `E_MATCH_MISSING` are new codes. Binaryen's wasm-opt 133 accepts the subtyped groups.

@@ -54,8 +54,10 @@ static host works if it sends both headers.
   without structs unchanged. JavaScript cannot read WasmGC struct fields, so
   for the stack echo the worker calls the generated accessor words
   (`point.x`, ...) through the table; the step JSON gives each struct's fields
-  and their accessor slots. A struct array's length is its `len` slot in
-  memory.
+  and their accessor slots. A union value is read through its `tag` word,
+  then the readers of that variant (`shape.circle.r`, or the instance at the
+  type's arguments for `option i32`). A struct array's length is its `len`
+  slot in memory.
 - **Layout.** The JavaScript never hard-codes an address: `compiler.js`
   reads the layout from the compiler (`chasm_core::layout::constants`).
 

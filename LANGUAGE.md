@@ -1,6 +1,6 @@
 # Chasm: Language Specification
 
-Status: draft v0.13 (M1 to M7 decisions recorded; see sections 12 to 18). Chasm source files use the `.chasm` extension. Companion to `ARCHITECTURE.md`. Sections marked **TBD** are not yet decided.
+Status: draft v0.14 (M1 to M8 decisions recorded; see sections 12 to 19). Chasm source files use the `.chasm` extension. Companion to `ARCHITECTURE.md`. Sections marked **TBD** are not yet decided.
 
 ## 1. Types
 
@@ -13,6 +13,8 @@ Status: draft v0.13 (M1 to M7 decisions recorded; see sections 12 to 18). Chasm 
 | `str` | `i32 i32` (addr, byte length) | Checker-level type with a fixed, documented lowering. See section 4. |
 | `array T` | `i32 i32` (addr, element count); for a struct `T`, `(ref null $T_array) i32 i32` (GC array, start, count) | `T` is any type in this table except `array`. See sections 4a and 4b. |
 | struct name | `(ref null $name)` | A declared struct: a reference to a WasmGC struct. See section 4b. |
+| union name | `(ref null $name)` | A declared union: a reference to one of its variants, WasmGC subtypes of the union's type. See section 4c. |
+| `name T...` | `(ref null $instance)` | A generic struct or union applied to type arguments (`pair i32 str`): its own WasmGC type per instantiation. See section 4c. |
 | `[ effect ]` | `i32` (function table index) | A quotation type: a function as a value. See section 7a. |
 
 Signedness is a property of operations, not types, as in wasm. There is no `bool`, `char`, `u32`, `v128` or nested array in v1.
@@ -108,6 +110,57 @@ The declaration generates ordinary words: `point.new ( i32 f64 -- point )` (fiel
 Lowering: a WasmGC struct type, every field mutable. A `str` or linear `array` field is two `i32` fields, an `array <struct>` field three (reference, start, count), a struct field one reference, a quotation one `i32`. Each struct's type and the GC array type of its elements form one rec group.
 
 Rules: a struct can be named only after its declaration; redeclaring with the same fields is a no-op and with different fields is `E_REDEFINE_EFFECT`; field names `new` and names ending in `!` are reserved; struct values are not test literals. An `array <struct>` is a view `( ref start count )` over a WasmGC array: the array words and combinators work on it, and slicing shares storage. `array.new` fills it with null references, and reading a field of one traps; programs cannot otherwise make or test a null.
+
+## 4c. Unions and generic types
+
+**Declarations.**
+
+```
+struct pair T U  first: T  second: U
+union shape
+  | circle  r: f64
+  | rect    w: f64  h: f64
+  | empty
+union option T | none | some  v: T
+```
+
+`struct name P...  field: type ...` and `union name P...  | variant  field: type ...  | variant ...`. Optional type parameters are uppercase-initial names listed between the name and the first field or first `|`; there is no terminator, as for `struct`. A union needs at least one variant, and a variant may have no fields. Variant names follow struct-name rules (lowercase-initial, not a primitive or type keyword) and may not be `else` or `tag`. Field names `new` and names ending in `!` are reserved, as for structs. A parameter, variant, or a field within one variant named twice is `E_SYNTAX`.
+
+A field type may name only the declared parameters; any other type variable is `E_UNKNOWN_TYPE`, naming the parameter list. A generic type may name itself in its fields only applied to exactly its own parameters in order (`tail: list T` inside `union list T`); any other self-application is `E_UNKNOWN_TYPE`. A non-generic struct or union may name itself directly, in `array`, or through a generic type declared above (`next: option node`). Struct and union names share one namespace, separate from words, and a type can be named only after its declaration.
+
+**Type application.** A generic type is written prefix with exactly as many argument types as it has parameters, like `array T`: `pair i32 str`, `option node`, `array pair i32 str` (an array of pairs), `pair list i32 str` (a pair whose first component is `list i32`). There are no parentheses: the parser reads the arguments by the declared arity, so the declaration must come first, and the wrong number of arguments is `E_UNKNOWN_TYPE`. Types display the same way. Applied types may appear wherever a type may: effects, stack assertions, fields, `array` elements, quotation types, and `( option T )` inside a generic word.
+
+**Generated words.** A struct generates `s.new`, `s.f` and `s.f!` as in section 4b. A union generates:
+
+| Word | Effect | Behaviour |
+|---|---|---|
+| `shape.circle` | `( f64 -- shape )` | A constructor per variant, its fields in order. |
+| `shape.empty` | `( -- shape )` | |
+| `shape.tag` | `( shape -- i32 )` | The variant's index in declaration order, from 0. |
+| `shape.circle.r` | `( shape -- f64 )` | A reader per field of each variant. Traps with `shape.circle.r: not a circle` when the value is another variant. |
+
+There are no per-variant writers: fields are reached through `match`. `tag` and the readers exist for code that has already tested the variant and for the REPL's stack echo. For a generic type every generated word is a generic word (section 18): `pair.new ( T U -- pair T U )`, `option.some ( T -- option T )`, `option.tag ( option T -- i32 )`, `option.some.v ( option T -- T )`, instantiated per concrete use and named `pair.new<i32,str>` by `words`, `deps` and `dead`. A constructor's type arguments are inferred from the stack (`3 "x" pair.new` is a `pair i32 str`); a use that nothing fixes (`option.none` alone) is `E_AMBIGUOUS_TYPE`, as for any generic word. Generated words are listed by `words` as `generated`, are never reported dead, and cannot be forgotten or forced.
+
+**Monomorphisation.** Each concrete instantiation is its own WasmGC type: `pair i32 str` and `pair str i32` are distinct types that share nothing. An instantiation is made when it is first needed. A union value is never null; nulls arise only as unset elements of `array.new` over a struct, union or instantiated type, and `tag`, a reader or `match` on one traps with a null-reference message.
+
+**match.**
+
+```
+s circle: [ :> r  r r f64.mul 3.14 f64.mul ]
+  rect:   [ f64.mul ]
+  else:   [ drop 0.0 ]
+  match
+```
+
+Labelled arms are written directly before the word `match`, in any order, as `if` takes its quotations. Arms are syntax: they are inlined, the word's locals are visible in them, and `leave` in an arm inside a loop works as in `if`. The union is the type of the value on top of the stack; `match` on a value that is not a union is `E_TYPE_MISMATCH`, and on a value whose type is not yet known (as in an un-annotated word that matches its input) it is `E_AMBIGUOUS_TYPE`: write the effect or an assertion. An arm named for a variant receives, in place of the value, that variant's fields in declaration order (the last on top). `else:` is an optional catch-all for every variant not named, and receives the whole union value. Every arm that does not diverge must leave the same stack (`E_BRANCH_MISMATCH`, naming the two arms), as for `if`; an arm that diverges (`trap`, `leave`) is exempt. Arms are tested in the order written.
+
+`E_MATCH_ARM`: an arm names something that is not a variant of the union, names a variant twice, `else:` appears twice, or `else:` is present when every variant is already named. `E_MATCH_MISSING`: a variant has no arm and there is no `else:`; the diagnostic's `expected` lists the missing variants. Both messages name the union and its variants.
+
+**Redeclaration.** Declaring a struct or union again with the same parameters (same names, same order) and the same fields or variants is a no-op. Anything else, including a reordered parameter list or a union where a struct was, is `E_REDEFINE_EFFECT`, listing the dependants. `)force` chunks may not hold `struct` or `union`.
+
+**REPL echo.** A union value prints as `shape.circle{r: 1.5}`, a fieldless variant as `shape.empty{}`, and a value of an instantiated type under its applied type name: `( option i32 ) option.some{v: 3}`. Nesting shows three levels, then `name{...}`. A stack holding a struct or union value prints one entry per line, as for structs.
+
+**Prelude.** `union option T | none | some  v: T` is in the prelude; an optional value is an `option T`. Union and generic struct values are not test literals: tests compare through words.
 
 ## 5. Shuffle primitives
 
@@ -283,4 +336,14 @@ Recorded here so the spec matches the compiler. `docs/reference.md` is the user-
 3. **Generic words** are checked once with their type variables rigid: a `T` matches only `T`, so there are no constraints, and `i32.add` on a `T` is `E_TYPE_MISMATCH`. Each concrete use compiles an instance, named `twice<i32>` in `chasm words`, `chasm dead` and `chasm deps`. A test of a generic word runs on the instance its body uses. `export` words and `main` are concrete.
 4. **Redefinition** keeps the same-effect rule for inferred and generic effects alike, and a redefined generic word's instances are rebuilt.
 5. **`chasm infer`** lists the effects it inferred; `--write` writes them into the source.
+
+## 19. Decisions taken in M8
+
+1. **Unions with inline variants**, `union name P... | variant  field: type ...`, generating a constructor per variant, `tag`, and a trapping reader per field (section 4c). No per-variant writers.
+2. **`match` is postfix with labelled arms** in any order, written before the word as `if` takes its quotations; no closing keyword. Each arm receives its variant's fields; `else:` covers every variant not named and receives the whole value. Arms are tested in the order written.
+3. **Type parameters are explicit and ordered**, listed after the name (`struct pair T U`), and generic types are applied prefix by arity (`pair i32 str`) with no parentheses. Reordering fields cannot change what an applied type means; reordering parameters is a redefinition.
+4. **Generic structs and unions are monomorphised**: each concrete instantiation is its own WasmGC type, and their generated words are generic words instantiated per use.
+5. **New codes**: `E_MATCH_ARM` and `E_MATCH_MISSING`.
+6. **Byte identity.** Generic types and unused prelude unions put nothing in a module's type section until instantiated, so programs that use neither compile byte-identically to M7.
+7. **`option T` is in the prelude** and replaces the array-of-0-or-1 idiom for optional links; decision 15.9 (no null test; optional links as arrays of 0 or 1) is superseded by it.
 

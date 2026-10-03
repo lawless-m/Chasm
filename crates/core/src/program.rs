@@ -1,15 +1,17 @@
 //! Whole-program driver: sources in, diagnostics + word database + module out.
 
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::{Item, Lit};
-use crate::check::{compile_body, Compiled, Ctx, Mode, Origin, StructDef, Word, WordId, WordKind};
+use crate::check::{
+    compile_body, Compiled, Ctx, Mode, Origin, StructDef, UnionDef, Word, WordId, WordKind,
+};
 use crate::diag::{codes, Diagnostic, Location};
 use crate::graph::{Edge, Graph};
 use crate::lexer::lex;
 use crate::module::{assemble, ModuleOptions};
-use crate::parser::parse;
+use crate::parser::parse_with;
 use crate::prims;
 use crate::types::{names, width_all, Effect, Ty};
 use wasm_encoder::Instruction as I;
@@ -210,10 +212,17 @@ pub fn compile(sources: &[Source], opts: &Options) -> Compilation {
 
     // Parse everything first so "used before defined" can be explained.
     let mut parsed = Vec::new();
+    let mut known: HashMap<String, usize> = HashMap::new();
     for (src, origin) in &all {
-        let items = lex(&src.name, &src.text).and_then(|t| parse(&src.name, &t));
+        let items = lex(&src.name, &src.text).and_then(|t| parse_with(&src.name, &t, &known));
         match items {
             Ok(items) => {
+                for it in &items {
+                    if let Item::Struct { name, params, .. } | Item::Union { name, params, .. } = it
+                    {
+                        known.insert(name.clone(), params.len());
+                    }
+                }
                 register_names(&mut ctx, &items);
                 parsed.push((items, *origin));
             }
@@ -229,11 +238,14 @@ pub fn compile(sources: &[Source], opts: &Options) -> Compilation {
         diagnostics: diags,
         ..Program::default()
     };
+    ctx.defer_library_generics = true;
     for (items, origin) in parsed {
         for item in items {
             process_item(&mut ctx, item, origin, &mut prog);
         }
     }
+    // Templates nothing used come last, after every other word.
+    ctx.make_lazy_words();
     let Program {
         diagnostics: mut diags,
         mut tests,
@@ -271,12 +283,6 @@ pub fn compile(sources: &[Source], opts: &Options) -> Compilation {
     }
 
     let graph = graph_of(&ctx);
-    let generated: std::collections::HashSet<String> = ctx
-        .structs
-        .iter()
-        .flat_map(|sd| struct_words(&sd.name, &sd.fields, 0))
-        .map(|(w, _, _)| w)
-        .collect();
     let words = ctx
         .words
         .iter()
@@ -290,7 +296,7 @@ pub fn compile(sources: &[Source], opts: &Options) -> Compilation {
             failed: w.failed,
             export: w.export,
             library: w.origin == Origin::Library,
-            generated: generated.contains(&w.name),
+            generated: w.generated.is_some(),
             generic: w.generic.is_some(),
             inferred: w.inferred,
             instance_of: w
@@ -367,15 +373,23 @@ pub(crate) fn register_names(ctx: &mut Ctx, items: &[Item]) {
             Item::Def { name, .. } | Item::Declare { name, .. } => {
                 ctx.all_names.insert(name.clone());
             }
-            Item::Struct { name, fields, .. } => {
+            Item::Struct {
+                name,
+                params,
+                fields,
+                ..
+            } => {
                 ctx.all_names.insert(name.clone());
                 let plain: Vec<(String, Ty)> = fields
                     .iter()
                     .map(|(n, t, _)| (n.clone(), t.clone()))
                     .collect();
-                for (w, _, _) in struct_words(name, &plain, 0) {
+                for (w, _, _) in struct_words(name, params, &plain, 0) {
                     ctx.all_names.insert(w);
                 }
+            }
+            Item::Union { name, .. } => {
+                ctx.all_names.insert(name.clone());
             }
             Item::Test { .. } => {}
         }
@@ -390,6 +404,10 @@ pub(crate) fn process_item(
     origin: Origin,
     p: &mut Program,
 ) -> Vec<WordId> {
+    // A definition named like a pending prelude template meets the template.
+    if let Item::Def { name, .. } | Item::Declare { name, .. } = &item {
+        ctx.lookup(name);
+    }
     match item {
         Item::Declare { name, effect, loc } => {
             if let Some(d) = check_new_name(&name, &loc) {
@@ -524,7 +542,18 @@ pub(crate) fn process_item(
                 }
             }
         }
-        Item::Struct { name, fields, loc } => define_struct(ctx, name, fields, loc, origin, p),
+        Item::Struct {
+            name,
+            params,
+            fields,
+            loc,
+        } => define_struct(ctx, name, params, fields, loc, origin, p),
+        Item::Union {
+            name,
+            params,
+            variants,
+            loc,
+        } => define_union(ctx, name, params, variants, loc, origin, p),
         Item::Test {
             word,
             body,
@@ -583,6 +612,7 @@ pub(crate) fn process_item(
                 inferred: false,
                 generic: None,
                 instance_of: None,
+                generated: None,
             });
             p.test_words.push(tid);
             p.tests.push(TestInfo {
@@ -604,10 +634,14 @@ pub(crate) fn process_item(
 /// `s.new`, then `s.f` and `s.f!` for each field.
 pub(crate) fn struct_words(
     name: &str,
+    params: &[String],
     fields: &[(String, Ty)],
     idx: u32,
 ) -> Vec<(String, Effect, Vec<I<'static>>)> {
-    let me = Ty::Struct(name.to_string());
+    let me = Ty::Struct(
+        name.to_string(),
+        params.iter().map(|p| Ty::Param(p.clone())).collect(),
+    );
     let tys: Vec<Ty> = fields.iter().map(|(_, t)| t.clone()).collect();
     let mut code: Vec<I> = (0..width_all(&tys)).map(I::LocalGet).collect();
     code.push(I::StructNew(idx));
@@ -660,6 +694,7 @@ fn render_fields(fields: &[(String, Ty)]) -> String {
 fn define_struct(
     ctx: &mut Ctx,
     name: String,
+    params: Vec<String>,
     fields: Vec<(String, Ty, Location)>,
     loc: Location,
     origin: Origin,
@@ -670,10 +705,31 @@ fn define_struct(
         return vec![];
     }
     for (field, ty, floc) in &fields {
-        if ty.has_param() {
+        let unknown: Vec<String> = Effect::new(vec![ty.clone()], vec![])
+            .params()
+            .into_iter()
+            .filter(|t| !params.contains(t))
+            .collect();
+        if let Some(t) = unknown.first() {
+            let msg = if params.is_empty() {
+                format!("field `{field}` of struct `{name}` has type {ty}: `{t}` is a type variable, and `{name}` has no type parameters; declare them after the name, `struct {name} {t}  ...`")
+            } else {
+                format!(
+                    "field `{field}` of struct `{name}` has type {ty}: `{t}` is not one of its type parameters ({})",
+                    params.join(" ")
+                )
+            };
+            p.diagnostics
+                .push(Diagnostic::error(codes::E_UNKNOWN_TYPE, msg, floc.clone()));
+            return vec![];
+        }
+        if !self_application(&name, &params, ty) {
             p.diagnostics.push(Diagnostic::error(
                 codes::E_UNKNOWN_TYPE,
-                format!("field `{field}` of struct `{name}` has type {ty}: struct fields cannot be type variables"),
+                format!(
+                    "field `{field}` of struct `{name}` has type {ty}: a generic type may name itself only as `{}`",
+                    Ty::Struct(name.clone(), params.iter().map(|p| Ty::Param(p.clone())).collect())
+                ),
                 floc.clone(),
             ));
             return vec![];
@@ -683,15 +739,23 @@ fn define_struct(
             return vec![];
         }
     }
+    if ctx.union_by_name.contains_key(&name) {
+        p.diagnostics.push(Diagnostic::error(
+            codes::E_REDEFINE_EFFECT,
+            format!("`{name}` is already declared as a union and cannot become a struct"),
+            loc,
+        ));
+        return vec![];
+    }
     let plain: Vec<(String, Ty)> = fields.into_iter().map(|(n, t, _)| (n, t)).collect();
     if let Some(&k) = ctx.struct_by_name.get(&name) {
         let old = ctx.structs[k].fields.clone();
-        if old == plain {
+        if old == plain && ctx.structs[k].params == params {
             return vec![];
         }
         let graph = graph_of(ctx);
         let mut deps: Vec<String> = Vec::new();
-        for (w, _, _) in struct_words(&name, &old, 0) {
+        for (w, _, _) in struct_words(&name, &ctx.structs[k].params.clone(), &old, 0) {
             for c in graph.callers(&w) {
                 if !deps.contains(&c) {
                     deps.push(c);
@@ -712,7 +776,7 @@ fn define_struct(
         return vec![];
     }
     // A generated name already taken with another effect blocks the struct.
-    let preview = struct_words(&name, &plain, 0);
+    let preview = struct_words(&name, &params, &plain, 0);
     for (w, effect, _) in &preview {
         if let Some(&id) = ctx.by_name.get(w) {
             if ctx.words[id].effect != *effect {
@@ -732,38 +796,80 @@ fn define_struct(
             }
         }
     }
-    let idx = ctx.types.len() as u32;
-    ctx.struct_types.insert(name.clone(), idx);
-    let lowered: Vec<_> = plain
-        .iter()
-        .flat_map(|(_, t)| t.lower(&ctx.struct_types))
-        .collect();
-    let got = ctx.register_struct_type(lowered);
-    debug_assert_eq!(got, idx);
     ctx.struct_by_name.insert(name.clone(), ctx.structs.len());
     ctx.structs.push(StructDef {
         name: name.clone(),
+        params: params.clone(),
         fields: plain.clone(),
-        type_index: idx,
+        type_index: 0,
         loc: loc.clone(),
     });
+    let generic = !params.is_empty();
+    // A generic struct registers no type: each instantiation is its own.
+    let idx = if generic {
+        0
+    } else {
+        let idx = ctx
+            .register_type(&Ty::Struct(name.clone(), Vec::new()))
+            .expect("a declared struct registers");
+        let k = ctx.struct_by_name[&name];
+        ctx.structs[k].type_index = idx;
+        idx
+    };
     let mut ids = Vec::new();
-    for (w, effect, code) in struct_words(&name, &plain, idx) {
-        let body = Compiled {
-            locals: vec![],
-            code,
-        };
+    for (w, effect, code) in struct_words(&name, &params, &plain, idx) {
         let id = match ctx.by_name.get(&w) {
             Some(&id) => id,
-            None => ctx.add_word(new_word(w, effect, origin, WordKind::Named, loc.clone())),
+            None => ctx.add_word(new_word(
+                w.clone(),
+                effect,
+                origin,
+                WordKind::Named,
+                loc.clone(),
+            )),
+        };
+        let code = if generic {
+            crate::check::template_code(ctx, &w)
+        } else {
+            code
         };
         let word = &mut ctx.words[id];
-        word.body = Some(body);
+        word.body = Some(Compiled {
+            locals: vec![],
+            code,
+        });
         word.failed = false;
         word.loc = loc.clone();
+        word.generated = Some(name.clone());
+        if generic {
+            word.generic = Some(crate::check::Generic { body: None });
+        }
         ids.push(id);
     }
     ids
+}
+
+/// A generic type may name itself in its fields only applied to its own
+/// parameters in order (`list T` in `union list T`).
+fn self_application(name: &str, params: &[String], t: &Ty) -> bool {
+    match t {
+        Ty::Struct(n, args) => {
+            (n != name
+                || args.len() == params.len()
+                    && args
+                        .iter()
+                        .zip(params)
+                        .all(|(a, p)| *a == Ty::Param(p.clone())))
+                && args.iter().all(|a| self_application(name, params, a))
+        }
+        Ty::Array(e) => self_application(name, params, e),
+        Ty::Quot(e) => e
+            .inputs
+            .iter()
+            .chain(&e.outputs)
+            .all(|t| self_application(name, params, t)),
+        _ => true,
+    }
 }
 
 pub fn validate(bytes: &[u8]) -> Result<(), String> {
@@ -794,16 +900,7 @@ fn define_template(
         p.diagnostics.push(d);
         return vec![];
     }
-    let (ma, ml) = ctx.intern_str(&format!("generic word `{name}` has no code of its own"));
-    let (wa, wl) = ctx.intern_str(name);
-    let code = vec![
-        I::I32Const(ma),
-        I::I32Const(ml),
-        I::I32Const(wa),
-        I::I32Const(wl),
-        I::Call(crate::check::FN_TRAP),
-        I::Unreachable,
-    ];
+    let code = crate::check::template_code(ctx, name);
     let w = &mut ctx.words[id];
     w.body = Some(Compiled {
         locals: Vec::new(),
@@ -852,12 +949,17 @@ pub(crate) fn new_word(
         inferred: false,
         generic: None,
         instance_of: None,
+        generated: None,
     }
 }
 
-fn check_effect_types(ctx: &Ctx, e: &Effect, loc: &Location) -> Result<(), Diagnostic> {
+/// Check the types an effect names, and register the concrete struct and
+/// union types among them.
+fn check_effect_types(ctx: &mut Ctx, e: &Effect, loc: &Location) -> Result<(), Diagnostic> {
     ctx.check_types(&e.inputs, loc, None)?;
-    ctx.check_types(&e.outputs, loc, None)
+    ctx.check_types(&e.outputs, loc, None)?;
+    ctx.register_effect(e);
+    Ok(())
 }
 
 pub(crate) fn check_new_name(name: &str, loc: &Location) -> Option<Diagnostic> {
@@ -940,4 +1042,271 @@ pub(crate) fn graph_of(ctx: &Ctx) -> Graph {
         g.set_callees(&w.name, edges);
     }
     g
+}
+
+/// A union declaration (`union shape | circle  r: f64 | empty`): checked
+/// like a struct, registered as a WasmGC supertype with a final subtype per
+/// variant, and given its generated words.
+fn define_union(
+    ctx: &mut Ctx,
+    name: String,
+    params: Vec<String>,
+    variants: Vec<crate::ast::Variant>,
+    loc: Location,
+    origin: Origin,
+    p: &mut Program,
+) -> Vec<WordId> {
+    if let Some(d) = check_new_name(&name, &loc) {
+        p.diagnostics.push(d);
+        return vec![];
+    }
+    if ctx.struct_by_name.contains_key(&name) {
+        p.diagnostics.push(Diagnostic::error(
+            codes::E_REDEFINE_EFFECT,
+            format!("`{name}` is already declared as a struct and cannot become a union"),
+            loc,
+        ));
+        return vec![];
+    }
+    for v in &variants {
+        for (field, ty, floc) in &v.fields {
+            let unknown: Vec<String> = Effect::new(vec![ty.clone()], vec![])
+                .params()
+                .into_iter()
+                .filter(|t| !params.contains(t))
+                .collect();
+            if let Some(t) = unknown.first() {
+                p.diagnostics.push(Diagnostic::error(
+                    codes::E_UNKNOWN_TYPE,
+                    format!("field `{field}` of `{name}.{}` has type {ty}: `{t}` is not one of the type parameters of `{name}`", v.name),
+                    floc.clone(),
+                ));
+                return vec![];
+            }
+            if !self_application(&name, &params, ty) {
+                p.diagnostics.push(Diagnostic::error(
+                    codes::E_UNKNOWN_TYPE,
+                    format!(
+                        "field `{field}` of `{name}.{}` has type {ty}: a generic type may name itself only as `{}`",
+                        v.name,
+                        Ty::Struct(name.clone(), params.iter().map(|p| Ty::Param(p.clone())).collect())
+                    ),
+                    floc.clone(),
+                ));
+                return vec![];
+            }
+            if let Err(d) = ctx.check_types(std::slice::from_ref(ty), floc, Some(&name)) {
+                p.diagnostics.push(d);
+                return vec![];
+            }
+        }
+    }
+    let plain: Vec<(String, Vec<(String, Ty)>)> = variants
+        .into_iter()
+        .map(|v| {
+            (
+                v.name,
+                v.fields.into_iter().map(|(n, t, _)| (n, t)).collect(),
+            )
+        })
+        .collect();
+    if let Some(&k) = ctx.union_by_name.get(&name) {
+        let old = &ctx.unions[k];
+        if old.variants == plain && old.params == params {
+            return vec![];
+        }
+        let graph = graph_of(ctx);
+        let mut deps: Vec<String> = Vec::new();
+        for w in union_word_names(old) {
+            for c in graph.callers(&w) {
+                if !deps.contains(&c) {
+                    deps.push(c);
+                }
+            }
+        }
+        let mut d = Diagnostic::error(
+            codes::E_REDEFINE_EFFECT,
+            format!("union `{name}` is already declared with other variants and cannot change"),
+            loc,
+        );
+        d.dependants = Some(deps);
+        p.diagnostics.push(d);
+        return vec![];
+    }
+    let k = ctx.unions.len();
+    ctx.union_by_name.insert(name.clone(), k);
+    let generic = !params.is_empty();
+    ctx.unions.push(UnionDef {
+        name: name.clone(),
+        params,
+        variants: plain,
+        type_index: 0,
+        loc: loc.clone(),
+    });
+    // A generic union registers no type: each instantiation is its own.
+    let idx = if generic {
+        0
+    } else {
+        let idx = ctx
+            .register_type(&Ty::Struct(name.clone(), Vec::new()))
+            .expect("a declared union registers");
+        ctx.unions[k].type_index = idx;
+        idx
+    };
+    let def = ctx.unions[k].clone();
+    let words = union_words(ctx, &def, idx, !generic);
+    if generic && origin == Origin::Library && ctx.defer_library_generics {
+        let group: Vec<String> = words.iter().map(|(w, _, _)| w.clone()).collect();
+        for (w, effect, _) in words {
+            ctx.lazy_words.insert(
+                w,
+                crate::check::LazyWord {
+                    ty: name.clone(),
+                    group: group.clone(),
+                    effect,
+                    origin,
+                    loc: loc.clone(),
+                },
+            );
+        }
+        return vec![];
+    }
+    let mut ids = Vec::new();
+    for (w, effect, code) in words {
+        let id = match ctx.by_name.get(&w) {
+            Some(&id) => id,
+            None => ctx.add_word(new_word(
+                w.clone(),
+                effect,
+                origin,
+                WordKind::Named,
+                loc.clone(),
+            )),
+        };
+        let code = if generic {
+            crate::check::template_code(ctx, &w)
+        } else {
+            code
+        };
+        let word = &mut ctx.words[id];
+        word.body = Some(Compiled {
+            locals: vec![],
+            code,
+        });
+        word.failed = false;
+        word.loc = loc.clone();
+        word.generated = Some(name.clone());
+        if generic {
+            word.generic = Some(crate::check::Generic { body: None });
+        }
+        ids.push(id);
+    }
+    ids
+}
+
+/// The words a union generates: a constructor per variant, `u.v`, taking its
+/// fields in order; `u.tag`, the variant's index; and a reader per field of
+/// each variant, `u.v.f`, which traps on another variant.
+///
+/// Without `emit` (a generic union's templates) only names and effects are
+/// meaningful, and no literal is interned.
+pub(crate) fn union_words(
+    ctx: &mut Ctx,
+    def: &UnionDef,
+    idx: u32,
+    emit: bool,
+) -> Vec<(String, Effect, Vec<I<'static>>)> {
+    use wasm_encoder::{BlockType, HeapType, ValType};
+    let u = &def.name;
+    let me = Ty::Struct(
+        u.clone(),
+        def.params.iter().map(|p| Ty::Param(p.clone())).collect(),
+    );
+    let variant = |k: usize| idx + 1 + k as u32;
+    let mut out = Vec::new();
+    for (k, (v, fields)) in def.variants.iter().enumerate() {
+        let tys: Vec<Ty> = fields.iter().map(|(_, t)| t.clone()).collect();
+        let mut code: Vec<I> = (0..width_all(&tys)).map(I::LocalGet).collect();
+        code.push(I::StructNew(variant(k)));
+        out.push((format!("{u}.{v}"), Effect::new(tys, vec![me.clone()]), code));
+    }
+    // tag: a null traps; then test each variant but the last in order.
+    let n = def.variants.len();
+    let mut tag = vec![I::LocalGet(0), I::RefAsNonNull, I::Drop];
+    for k in 0..n - 1 {
+        tag.extend([
+            I::LocalGet(0),
+            I::RefTestNonNull(HeapType::Concrete(variant(k))),
+            I::If(BlockType::Result(ValType::I32)),
+            I::I32Const(k as i32),
+            I::Else,
+        ]);
+    }
+    tag.push(I::I32Const(n as i32 - 1));
+    tag.extend((0..n - 1).map(|_| I::End));
+    out.push((
+        format!("{u}.tag"),
+        Effect::new(vec![me.clone()], vec![Ty::I32]),
+        tag,
+    ));
+    for (k, (v, fields)) in def.variants.iter().enumerate() {
+        let mut w = 0;
+        for (f, t) in fields {
+            let name = format!("{u}.{v}.{f}");
+            if !emit {
+                out.push((
+                    name,
+                    Effect::new(vec![me.clone()], vec![t.clone()]),
+                    Vec::new(),
+                ));
+                continue;
+            }
+            let (ma, ml) = ctx.intern_str(&format!("{name}: not a {v}"));
+            let (wa, wl) = ctx.intern_str(&name);
+            let mut code = vec![
+                I::LocalGet(0),
+                I::RefAsNonNull,
+                I::Drop,
+                I::LocalGet(0),
+                I::RefTestNonNull(HeapType::Concrete(variant(k))),
+                I::I32Eqz,
+                I::If(BlockType::Empty),
+                I::I32Const(ma),
+                I::I32Const(ml),
+                I::I32Const(wa),
+                I::I32Const(wl),
+                I::Call(crate::check::FN_TRAP),
+                I::Unreachable,
+                I::End,
+            ];
+            for j in 0..t.width() {
+                code.extend([
+                    I::LocalGet(0),
+                    I::RefCastNonNull(HeapType::Concrete(variant(k))),
+                    I::StructGet {
+                        struct_type_index: variant(k),
+                        field_index: w + j,
+                    },
+                ]);
+            }
+            w += t.width();
+            out.push((name, Effect::new(vec![me.clone()], vec![t.clone()]), code));
+        }
+    }
+    out
+}
+
+/// The names of the words a union generates.
+fn union_word_names(def: &UnionDef) -> Vec<String> {
+    let u = &def.name;
+    let mut out: Vec<String> = def
+        .variants
+        .iter()
+        .map(|(v, _)| format!("{u}.{v}"))
+        .collect();
+    out.push(format!("{u}.tag"));
+    for (v, fields) in &def.variants {
+        out.extend(fields.iter().map(|(f, _)| format!("{u}.{v}.{f}")));
+    }
+    out
 }

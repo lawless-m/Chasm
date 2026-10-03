@@ -99,7 +99,8 @@ TCP; native only), `--no-file` (hides the host filesystem) and `--no-net` (hides
 
 `chasm repl` reads chunks from stdin and compiles and runs each at once.
 
-- A chunk that starts with `:`, `export`, `declare` or `test` is processed
+- A chunk that starts with `:`, `export`, `declare`, `test`, `struct` or
+  `union` is processed
   exactly as in a file. Anything else is a **line**: it runs on the current
   stack, whose types are always known, and its effect is worked out from
   that stack. A line cannot follow a definition in the same chunk.
@@ -107,10 +108,12 @@ TCP; native only), `--no-file` (hides the host filesystem) and `--no-net` (hides
   quotation is open.
 - After each chunk the stack is printed as `( types ) values`, bottom to
   top, or `( )` when empty. Arrays print as `<n elements>`, function
-  values as `#slot`, structs with their fields, `point{x: 7, y: 2.5}`
-  (nested structs to three levels, then `seg{...}`), and an unset struct
-  as `null`. A stack holding a struct prints one entry per line, type then
-  value, between `(` and `)`:
+  values as `#slot`, structs with their fields, `point{x: 7, y: 2.5}`,
+  union values as their variant, `shape.circle{r: 1.5}` or `shape.empty{}`
+  (nested values to three levels, then `seg{...}`), and an unset struct
+  as `null`. A value of an instantiated generic type shows under its applied
+  type: `option i32 option.some{v: 3}`. A stack holding a struct or union
+  value prints one entry per line, type then value, between `(` and `)`:
 
   ```
   (
@@ -130,7 +133,7 @@ TCP; native only), `--no-file` (hides the host filesystem) and `--no-net` (hides
   which can then be defined with any effect. It is refused (`E_FORGET`, with
   the `dependants`) while another word, a quotation in one, or another
   word's test uses it: forget those first, top-down. Primitives, prelude
-  words and struct-generated words cannot be forgotten. A function value of
+  words and words a `struct` or `union` generated cannot be forgotten. A function value of
   a forgotten word already on the stack still runs the old code. Forgetting
   a generic word removes its instances too.
 - A definition without an effect shows its inferred one: `ok: cube ( i32 -- i32 ) (inferred)`.
@@ -149,8 +152,8 @@ TCP; native only), `--no-file` (hides the host filesystem) and `--no-net` (hides
   afterwards is the new one. A definition without an effect in a `)force`
   chunk is inferred first, and a generic word's instances are retired with
   it. Only existing user words can be forced, not
-  primitives, prelude words or struct-generated words, and the chunk may not
-  hold `declare` or `struct`.
+  primitives, prelude words or struct- or union-generated words, and the
+  chunk may not hold `declare`, `struct` or `union`.
 - `print` writes to the terminal and `read-line` reads from the same stdin
   as the REPL. With `--json` the program's output is captured into
   `results.output`; each report also has `results.defined` (each with
@@ -221,6 +224,8 @@ A file is a sequence of top-level forms, processed **in order**:
 export : name ( inputs -- outputs )  body ;   # define and export from the module
 declare name ( inputs -- outputs )            # stub: a contract without a body
 test name : body -> expected-literals         # a test of `name`
+struct name P...  field: type ...             # a struct (section 10a, 10c)
+union name P... | variant  field: type ... | ...   # a union (section 10b, 10c)
 ```
 
 - A word can call itself, and any word defined or declared **above** it.
@@ -240,7 +245,8 @@ test name : body -> expected-literals         # a test of `name`
 | `i32` `i64` `f32` `f64` | numbers; `i32` is also boolean (0 false) and address | itself |
 | `str` | immutable UTF-8 bytes | `i32 i32` (addr, byte length) |
 | `array T` | mutable, fixed length; `T` not an array | `i32 i32` (addr, count); for a struct `T`, `ref i32 i32` (a view over a WasmGC array: ref, start, count) |
-| `name` | a declared struct (section 10a): a reference to a garbage-collected record | `(ref null $name)` |
+| `name` | a declared struct or union (sections 10a, 10b): a reference to a garbage-collected record | `(ref null $name)` |
+| `name T...` | a generic struct or union applied to its type arguments, `pair i32 str` (section 10c) | `(ref null $name)` of that instantiation |
 | `[ ins -- outs ]` | a function value | `i32` (table index) |
 
 An effect lists types bottom to top, rightmost on top:
@@ -259,7 +265,7 @@ effect has one is **generic**:
 Each concrete use compiles its own instance, shown as `twice<i32>` by
 `words`, `dead` and `deps`. A `T` is any type but matches only itself, so
 there are no constraints: `i32.add` on a `T` is a type error. `export` words
-and `main` must be concrete; struct names are lowercase.
+and `main` must be concrete; struct and union names are lowercase.
 
 ## 4. Literals
 
@@ -334,12 +340,15 @@ word.
 | `[ cond ] [ body ] while` | cond leaves the stack plus one `i32`; body leaves it unchanged; loops while cond is non-zero |
 | `[ body ] [ cond ] until` | runs body, then cond; repeats until cond is non-zero |
 | `n [ body ] times` | body receives the index (0 to n-1) on top and must consume it |
+| `value v1: [ ... ] v2: [ ... ] else: [ ... ] match` | one labelled arm per variant of the union on top, in any order; each receives its variant's fields, `else:` receives the value; every arm leaves the same stack (section 10b) |
 | `leave` | exits the innermost `while`/`until`/`times`/`each`/`fold`; the stack must match the loop's exit shape |
 | `"message" trap` | stops the program with a message |
 
 `leave` and `trap` end their quotation: code after them is an error
-(`E_UNREACHABLE`). A branch that ends in `leave` or `trap` does not have to
-match the other branch.
+(`E_UNREACHABLE`). A branch or arm that ends in `leave` or `trap` does not
+have to match the others. A `match` arm for something that is not a variant
+is `E_MATCH_ARM`; a variant without an arm, and no `else:`, is
+`E_MATCH_MISSING`.
 
 ## 9. Strings
 
@@ -415,17 +424,104 @@ combinator; `map` may turn an `array i32` into an `array point` and back.
 (`null reference`). Like every array it is a view: `array.slice` shares
 storage, and a write through the slice is visible in the original.
 
-**Optional links.** There is no null test. A link that may be absent is an
-`array` holding 0 or 1 elements, tested with `array.len`:
+**Optional links.** There is no null test. A link that may be absent is the
+prelude's `option T` (section 10c), matched with `none:` and `some:`:
 
 ```
-struct node  v: i32  next: array node
+struct node  v: i32  next: option node
 
-: sum ( array node -- i32 )
-  :> l!
-  0 :> s!
-  [ l array.len ] [ l 0 array.at :> n  s n node.v i32.add s!  n node.next l! ] while
-  s ;
+: sum ( option node -- i32 )
+  none: [ 0 ] some: [ :> n  n node.v  n node.next sum  i32.add ] match ;
+```
+
+## 10b. Unions
+
+```
+union shape
+  | circle  r: f64
+  | rect    w: f64  h: f64
+  | empty
+```
+
+A top-level form: the name, then one or more `| variant` groups, each with
+`field: type` pairs as in a struct. There is no terminator. A union value is
+exactly one of its variants. The declaration generates ordinary words:
+
+| Word | Effect |
+|---|---|
+| `shape.circle` | `( f64 -- shape )` a constructor per variant, fields in order |
+| `shape.empty` | `( -- shape )` |
+| `shape.tag` | `( shape -- i32 )` the variant's index in declaration order |
+| `shape.circle.r` | `( shape -- f64 )` a reader per field of each variant; traps (`shape.circle.r: not a circle`) on another variant |
+
+Union fields cannot be written: build a new value instead.
+
+**match.** Labelled arms written directly before `match`, in any order, as
+`if` takes its quotations:
+
+```
+: area ( shape -- f64 )
+  circle: [ :> r  r r f64.mul 3.14 f64.mul ]
+  rect:   [ f64.mul ]
+  empty:  [ 0.0 ]
+  match ;
+
+: corners ( shape -- i32 )  rect: [ 2drop 4 ] else: [ drop 0 ] match ;
+```
+
+- An arm receives, in place of the value, its variant's fields in
+  declaration order, the last on top. `else:` covers every variant not named
+  and receives the whole value.
+- Arms are inlined: the word's locals are visible, and `leave` in an arm
+  inside a loop works as in `if`.
+- Every arm that does not end in `leave` or `trap` leaves the same stack
+  (`E_BRANCH_MISMATCH`).
+- An arm naming something that is not a variant, a variant twice, `else:`
+  twice, or `else:` when every variant is named is `E_MATCH_ARM`. A variant
+  without an arm and no `else:` is `E_MATCH_MISSING`, listing the missing
+  variants in `expected`.
+- `match` on a value that is not a union is `E_TYPE_MISMATCH`. The type of
+  the value must be known: `match` as the first thing applied to an input of
+  a word without an effect is `E_AMBIGUOUS_TYPE`; write the effect.
+- Declaring a union again with the same variants does nothing; changing them
+  is `E_REDEFINE_EFFECT`. A name is either a struct or a union, not both.
+- Variant names `else` and `tag` are reserved.
+
+## 10c. Generic structs and unions
+
+Type parameters follow the name; a field may use them:
+
+```
+struct pair T U  first: T  second: U
+union list T | nil | cons  head: T  tail: list T
+```
+
+- A generic type is applied to its arguments by position, without
+  parentheses: `pair i32 str`, `array pair i32 str`, `pair list i32 str`
+  (a `pair` of a `list i32` and a `str`). The wrong number of arguments is
+  `E_UNKNOWN_TYPE`.
+- The generated words are generic words: `pair.new ( T U -- pair T U )`,
+  `pair.first ( pair T U -- T )`, `list.cons ( T list T -- list T )`.
+  `3 "x" pair.new` is a `pair i32 str`. A constructor whose arguments do not
+  fix every parameter, such as `list.nil`, needs a stack assertion or a
+  declared effect (`E_AMBIGUOUS_TYPE`): `list.nil ( list i32 )`.
+- Each instantiation is its own WasmGC type, made on first use, and its
+  words are instances such as `pair.new<i32,str>` in `words`.
+- Generic words work over generic types:
+  `: swap-pair ( pair T U -- pair U T )  :> p  p pair.second p pair.first pair.new ;`
+- A generic type may name itself in its fields only applied to its own
+  parameters in order (`list T` inside `list T`), and a field may use only
+  the declared parameters (`E_UNKNOWN_TYPE`).
+- Declaring it again with the same parameters and fields does nothing;
+  different parameters or fields are `E_REDEFINE_EFFECT`.
+
+The prelude declares `union option T | none | some  v: T`:
+`option.none ( -- option T )`, `option.some ( T -- option T )`, matched with
+`none:` and `some:`:
+
+```
+: or-zero ( option i32 -- i32 )  none: [ 0 ] some: [ ] match ;
+test or-zero : 5 option.some or-zero -> 5
 ```
 
 ## 11. Functions as values
@@ -543,36 +639,41 @@ Library words:
 | `ls` | `( str -- i32 )` prints a directory, one entry per line |
 | `now` | `( -- i64 )` nanoseconds since the epoch |
 
+The prelude also declares `option T` (section 10c): `option.none ( -- option T )`,
+`option.some ( T -- option T )`.
+
 ## 15. Diagnostic codes
 
 | Code | Meaning |
 |---|---|
 | `E_LEX`, `E_SYNTAX` | malformed source |
 | `E_LITERAL_RANGE` | a literal does not fit its type |
-| `E_UNKNOWN_TYPE` | not a type name, or a struct used before its declaration |
+| `E_UNKNOWN_TYPE` | not a type name, a struct or union used before its declaration, the wrong number of type arguments, a field using an undeclared parameter, or a generic type naming itself with other arguments |
 | `E_UNDEFINED` | unknown word (the message suggests the nearest name, or the Chasm word for a common name from another language: `pop` → `drop`, `+` → `i32.add`), or used before it is defined or declared |
 | `E_STACK_UNDERFLOW` | not enough values; `expected` and `actual` are given |
 | `E_TYPE_MISMATCH` | wrong types on top of the stack |
 | `E_EFFECT_MISMATCH` | body does not leave the declared outputs |
 | `E_ASSERTION` | stack assertion failed |
-| `E_BRANCH_MISMATCH` | `if` branches disagree, or a `when` body changes the stack |
+| `E_BRANCH_MISMATCH` | `if` branches or `match` arms disagree, or a `when` body changes the stack |
+| `E_MATCH_ARM` | a `match` arm names something that is not a variant, a variant twice, `else:` twice, or `else:` when every variant is named |
+| `E_MATCH_MISSING` | a variant has no `match` arm and there is no `else:`; `expected` lists the missing variants |
 | `E_LOOP_EFFECT` | loop body or condition has the wrong shape |
 | `E_LEAVE` | `leave` outside a loop or with the wrong stack |
 | `E_UNREACHABLE` | code after `leave` or `trap` |
 | `E_LOCAL` | local bound twice, assigned while immutable, or named like a primitive |
 | `E_CAPTURE` | a quotation value uses a local (no closures) |
-| `E_AMBIGUOUS_TYPE` | an element type is never fixed, or a generic word's instantiation is not fixed |
+| `E_AMBIGUOUS_TYPE` | an element type is never fixed, a generic word's or constructor's instantiation is not fixed, or `match` on a value whose type is not known |
 | `E_DECLARE_MISMATCH` | definition or redeclaration differs from the declaration |
-| `E_REDEFINE_EFFECT` | redefinition changes an effect, redefines a primitive, or changes a struct's fields; lists `dependants` |
+| `E_REDEFINE_EFFECT` | redefinition changes an effect, redefines a primitive, or changes a struct's fields or a union's variants or a type's parameters; lists `dependants` |
 | `E_TEST_TYPE` | a test's expected literals do not match what its body leaves |
 | `E_MAIN_EFFECT` | `main` is not `( -- )` |
 | `E_NO_MAIN` | `run` without `main` |
 | `E_UNRESOLVED` | `build` or `run`: a word `main` or an `export` word reaches is declared but has no body; lists `dependants` |
 | `E_IO`, `E_USAGE` | CLI problems |
 | `E_INTERNAL` | compiler bug |
-| `E_FORGET` | `)forget` refused: the word is still used (lists `dependants`), or is a primitive, prelude or struct-generated word |
+| `E_FORGET` | `)forget` refused: the word is still used (lists `dependants`), or is a primitive, prelude, or struct- or union-generated word |
 | `E_NEEDS_EFFECT` | the effect must be written: the word is recursive or mutually recursive, exported, or `main`; or an exported word's effect has type variables |
-| `E_FORCE` | `)force` refused: a dependant no longer checks (lists `dependants`, then their errors), or the word is a primitive, prelude or struct-generated word |
+| `E_FORCE` | `)force` refused: a dependant no longer checks (lists `dependants`, then their errors), or the word is a primitive, prelude, or struct- or union-generated word |
 
 ## 16. Worked examples
 
@@ -580,5 +681,8 @@ See `examples/`: `hello`, `basics` (words, loops, tests), `strings`,
 `arrays` (combinators, functions as values), `contract` (declare first),
 `files` (the namespace), `http` (requests with headers), `ninep` (a 9p
 mount and directory records), `wasi` (a program for `build --wasi`), `generics` (generic words),
-`inferred` (effects left out), `structs` (structs, lists, arrays of structs). Any of them can also be typed or piped into
+`inferred` (effects left out), `structs` (structs, a list of `option node`
+links, arrays of structs), `unions` (shapes with `match` and `else:`, a
+recursive `list T`, `option`), `generic-structs` (`pair T U`, a generic word
+over it, a struct holding an `option`). Any of them can also be typed or piped into
 `chasm repl`, e.g. `chasm repl < examples/basics.chasm`.

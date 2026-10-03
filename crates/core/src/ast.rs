@@ -59,6 +59,17 @@ pub enum NodeKind {
     Map(Body),
     Filter(Body),
     Fold(Body),
+    /// `value v1: [ ... ] v2: [ ... ] else: [ ... ] match`, arms in the order
+    /// written.
+    Match(Vec<Arm>),
+}
+
+/// A labelled arm of `match`; the label of `else:` is `else`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Arm {
+    pub label: String,
+    pub body: Body,
+    pub loc: Location,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -84,7 +95,24 @@ pub enum Item {
     /// `struct name  field: type ...`
     Struct {
         name: String,
+        /// Type parameters, `struct pair T U ...`.
+        params: Vec<String>,
         fields: Vec<(String, Ty, Location)>,
         loc: Location,
     },
+    /// `union name  | variant  field: type ...  | variant ...`
+    Union {
+        name: String,
+        params: Vec<String>,
+        variants: Vec<Variant>,
+        loc: Location,
+    },
+}
+
+/// One variant of a union, with its fields.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Variant {
+    pub name: String,
+    pub fields: Vec<(String, Ty, Location)>,
+    pub loc: Location,
 }

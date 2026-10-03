@@ -43,9 +43,7 @@ A flat dictionary is fine until the library grows. Likely shape: a file is a mod
 
 ## 7. Sum types
 
-A type that is one of several shapes: `list = nil | cons`, a token kind, a JSON value. Without them, M4 code writes an optional link as an `array` of length 0 or 1 (`next: array node`, tested with `array.len`), the way Prolog's `[]` ends a list but as an empty container rather than its own value. Sum types would retire that idiom.
-
-With WasmGC the lowering is natural: one non-final supertype per sum type, a final struct subtype per variant, and matching by `br_on_cast` / `ref.test`. The checker would need an exhaustive match combinator (one quotation per variant, all leaving the same stack), in the style of `if`. Depends on M4 structs.
+Implemented in M8. `union` declares a type with inline variants, each with its own fields, matched by postfix `match` with labelled arms and an optional `else:`; structs and unions take explicit type parameters and are monomorphised per instantiation, and the prelude's `option T` is the optional value. See `LANGUAGE.md` section 4c.
 
 ## 8. Self-hosting
 

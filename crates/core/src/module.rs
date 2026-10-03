@@ -9,7 +9,7 @@ use wasm_encoder::{
     TableType, TypeSection, ValType,
 };
 
-use crate::check::{Ctx, TypeDef, Word, WordId, WordKind, FN_ALLOC, FN_RING, FN_TRAP};
+use crate::check::{Ctx, Member, TypeDef, Word, WordId, WordKind, FN_ALLOC, FN_RING, FN_TRAP};
 use crate::layout as L;
 use crate::types::ref_ty;
 
@@ -258,6 +258,7 @@ fn version_section() -> CustomSection<'static> {
 }
 
 pub fn assemble(ctx: &mut Ctx, opts: &ModuleOptions) -> Vec<u8> {
+    register_word_types(ctx, &(0..ctx.words.len()).collect::<Vec<_>>());
     let void = ctx.intern_type(vec![], vec![]);
     // Imported functions: (module, name, type). Everything after them is
     // numbered `shift` past the single-import layout of `check`.
@@ -281,14 +282,16 @@ pub fn assemble(ctx: &mut Ctx, opts: &ModuleOptions) -> Vec<u8> {
         names.append(idx, name);
     }
 
+    // A generic template is never emitted: callers reach its instances.
     let kept: Vec<usize> = (0..ctx.words.len())
+        .filter(|&id| ctx.words[id].generic.is_none())
         .filter(|id| opts.live.as_ref().is_none_or(|l| l.contains(id)))
         .collect();
     let mut index: Vec<Option<u32>> = vec![None; ctx.words.len()];
     for (k, &id) in kept.iter().enumerate() {
         index[id] = Some(Word::func_index(k) + shift);
     }
-    let remap = (opts.live.is_some() || shift > 0).then_some(index.as_slice());
+    let remap = (kept.len() != ctx.words.len() || shift > 0).then_some(index.as_slice());
     for &id in &kept {
         let w = ctx.words[id].clone();
         let ty = ctx.intern_type(
@@ -326,7 +329,14 @@ pub fn assemble(ctx: &mut Ctx, opts: &ModuleOptions) -> Vec<u8> {
         imports.import(module, name, EntityType::Function(*ty));
     }
 
-    let nwords = ctx.words.len() as u64;
+    // Templates made last (prelude generics no word used) take no slot.
+    let trailing = ctx
+        .words
+        .iter()
+        .rev()
+        .take_while(|w| w.generic.is_some() && w.kind == crate::check::WordKind::Named)
+        .count();
+    let nwords = (ctx.words.len() - trailing) as u64;
     let mut tables = TableSection::new();
     tables.table(TableType {
         element_type: RefType::FUNCREF,
@@ -368,7 +378,7 @@ pub fn assemble(ctx: &mut Ctx, opts: &ModuleOptions) -> Vec<u8> {
     // Table slot `id` holds word `id`; a left-out word's slot stays null.
     let mut elems = ElementSection::new();
     let mut id = 0;
-    while id < index.len() {
+    while id < nwords as usize {
         if index[id].is_none() {
             id += 1;
             continue;
@@ -419,9 +429,9 @@ pub fn assemble(ctx: &mut Ctx, opts: &ModuleOptions) -> Vec<u8> {
 /// GC array type, so a struct may hold itself or an array of itself; types
 /// in other groups are distinct, and only earlier groups can be referenced.
 fn type_section(ctx: &Ctx) -> TypeSection {
-    let sub = |inner| SubType {
-        is_final: true,
-        supertype_idxs: vec![],
+    let sub = |inner, is_final: bool, supertype: Option<u32>| SubType {
+        is_final,
+        supertype_idxs: supertype.into_iter().collect(),
         composite_type: CompositeType {
             inner,
             shared: false,
@@ -434,19 +444,36 @@ fn type_section(ctx: &Ctx) -> TypeSection {
         mutable: true,
     };
     let mut types = TypeSection::new();
-    for (i, t) in ctx.types.iter().enumerate() {
+    for t in &ctx.types {
         match t {
             TypeDef::Func(p, r) => {
                 types.ty().function(p.iter().copied(), r.iter().copied());
             }
-            TypeDef::Struct(fields) => {
-                let s = CompositeInnerType::Struct(StructType {
-                    fields: fields.iter().map(|&vt| field(vt)).collect(),
-                });
-                let a = CompositeInnerType::Array(ArrayType(field(ref_ty(i as u32))));
-                types.ty().rec([sub(s), sub(a)]);
+            TypeDef::Rec(members) => {
+                let subs: Vec<SubType> = members
+                    .iter()
+                    .map(|m| match m {
+                        Member::Struct {
+                            fields,
+                            is_final,
+                            supertype,
+                        } => sub(
+                            CompositeInnerType::Struct(StructType {
+                                fields: fields.iter().map(|&vt| field(vt)).collect(),
+                            }),
+                            *is_final,
+                            *supertype,
+                        ),
+                        Member::Array(e) => sub(
+                            CompositeInnerType::Array(ArrayType(field(ref_ty(*e)))),
+                            true,
+                            None,
+                        ),
+                    })
+                    .collect();
+                types.ty().rec(subs);
             }
-            TypeDef::StructArray => {}
+            TypeDef::Slot => {}
         }
     }
     types
@@ -462,7 +489,17 @@ pub fn export_name(id: WordId) -> String {
 /// copy of the runtime helpers, and exports each word as `w<id>`; the host
 /// installs them in the table at slot = word id. No data, memory, table or
 /// element sections: the host places the step's literals.
+/// Register the concrete struct and union types in the effects of `ids`, so
+/// their function types lower to the real reference types.
+fn register_word_types(ctx: &mut Ctx, ids: &[WordId]) {
+    for &id in ids {
+        let e = ctx.words[id].effect.clone();
+        ctx.register_effect(&e);
+    }
+}
+
 pub fn assemble_step(ctx: &mut Ctx, ids: &[WordId], shared_memory: bool) -> Vec<u8> {
+    register_word_types(ctx, ids);
     let void = ctx.intern_type(vec![], vec![]);
 
     let mut funcs = FunctionSection::new();
@@ -536,7 +573,7 @@ pub fn assemble_step(ctx: &mut Ctx, ids: &[WordId], shared_memory: bool) -> Vec<
             shared: false,
         }),
     );
-    if !ctx.structs.is_empty() {
+    if ctx.has_ref_types() {
         imports.import(
             L::IMPORT_MODULE,
             L::IMPORT_REFS,

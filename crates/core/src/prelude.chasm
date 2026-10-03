@@ -226,3 +226,8 @@
   h buf 8 host.read drop
   h host.close drop
   buf i64.load ;
+
+# ---------------------------------------------------------------- unions
+# An optional value: `option.none` or `x option.some`, matched with
+# `none: [ ... ] some: [ ... ] match`.
+union option T | none | some  v: T

@@ -1,9 +1,8 @@
 # The most frequent words in a text: lower-cased, split on anything that is
 # not an ASCII letter, ties broken by first appearance.
 # Rosetta Code: Word_frequency. Exercises: structs, a binary search tree of
-# optional links (an `array node` of length 0 or 1, as in structs.chasm), a
-# map without a map type, selection of the top k. Non-ASCII letters count as
-# separators.
+# `option node` links matched with `none:`/`some:`, a map without a map
+# type, selection of the top k. Non-ASCII letters count as separators.
 
 : letter? ( i32 -- i32 )
   :> c
@@ -37,11 +36,10 @@ test str.cmp : "bat" "cat" str.cmp 0 i32.lt_s -> 1
 test str.cmp : "cats" "cat" str.cmp 0 i32.gt_s -> 1
 
 # A word, its count, when it first appeared, and the subtrees before and
-# after it: each an array of 0 or 1 nodes.
-struct node  word: str  count: i32  first: i32  left: array node  right: array node
+# after it.
+struct node  word: str  count: i32  first: i32  left: option node  right: option node
 
-: none ( -- array node )  0 array.new ( array node ) ;
-: one ( node -- array node )  :> n  1 array.new ( array node ) :> a  a 0 n array.at!  a ;
+: none ( -- option node )  option.none ;
 
 # Count a word under a non-empty tree; 1 if it is new, else 0.
 : insert ( node str i32 -- i32 )
@@ -52,27 +50,26 @@ struct node  word: str  count: i32  first: i32  left: array node  right: array n
   [ w cur node.word str.cmp :> c
     c 0 i32.eq
     [ cur  cur node.count 1 i32.add  node.count!  0 added! ]
-    [ c 0 i32.lt_s [ cur node.left ] [ cur node.right ] if :> next
-      next array.len
-      [ next 0 array.at cur! ]
-      [ w 1 seq none none node.new one :> leaf
+    [ c 0 i32.lt_s [ cur node.left ] [ cur node.right ] if
+      none: [
+        w 1 seq none none node.new option.some :> leaf
         c 0 i32.lt_s [ cur leaf node.left! ] [ cur leaf node.right! ] if
         1 added! ]
-      if ]
+      some: [ cur! ]
+      match ]
     if ]
   while
   added ;
 
 # Store the nodes under a link into out from index at; the next free index.
-: collect ( array node array node i32 -- i32 )
-  :> at :> out :> link
-  link array.len
-  [ link 0 array.at :> n
+: collect ( option node array node i32 -- i32 )
+  :> at :> out
+  none: [ at ]
+  some: [ :> n
     n node.left out at collect :> at2
     out at2 n array.at!
     n node.right out at2 1 i32.add collect ]
-  [ at ]
-  if ;
+  match ;
 
 : top-words ( str i32 -- str )
   :> k :> s
@@ -84,10 +81,10 @@ struct node  word: str  count: i32  first: i32  left: array node  right: array n
     [ i :> start
       [ i s str.len i32.lt_u [ s i str.byte-at letter? ] [ 0 ] if ] [ i 1 i32.add i! ] while
       s start i start i32.sub lower-slice :> w
-      root array.len
-      [ root 0 array.at w used insert used i32.add used! ]
-      [ w 1 used none none node.new one root!  1 used! ]
-      if ]
+      root
+      none: [ w 1 used none none node.new option.some root!  1 used! ]
+      some: [ w used insert used i32.add used! ]
+      match ]
     [ i 1 i32.add i! ]
     if ]
   while

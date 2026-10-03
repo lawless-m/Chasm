@@ -299,3 +299,33 @@ fn inferred_effects_are_shown() {
     let first: serde_json::Value = serde_json::from_str(out.lines().next().unwrap()).unwrap();
     assert_eq!(first["results"]["defined"][0]["inferred"], true);
 }
+
+const SHAPE: &str = "union shape | circle  r: f64 | rect  w: f64  h: f64 | empty\n";
+
+#[test]
+fn union_echo() {
+    let run = |lines: &str| last_stack(&repl(&[], &format!("{SHAPE}{lines}")).1).to_string();
+    assert_eq!(
+        run("1.5 shape.circle\n"),
+        "(\nshape shape.circle{r: 1.5}\n)"
+    );
+    assert_eq!(
+        run("1.5 shape.circle\ndrop shape.empty\n"),
+        "(\nshape shape.empty{}\n)"
+    );
+    assert_eq!(run("3 option.some\n"), "(\noption i32 option.some{v: 3}\n)");
+    assert_eq!(
+        run("option.none ( option str )\n"),
+        "(\noption str option.none{}\n)"
+    );
+    assert_eq!(
+        run("struct node  v: i32  next: option node\n1 option.none ( i32 option node ) node.new option.some 2 swap node.new\n"),
+        "(\nnode node{v: 2, next: option.some{v: node{v: 1, next: option{...}}}}\n)"
+    );
+    let (_, out, _) = repl(&["--json"], &format!("{SHAPE}1.5 shape.circle\n"));
+    let last: serde_json::Value = serde_json::from_str(out.lines().last().unwrap()).unwrap();
+    assert_eq!(
+        last["results"]["stack"][0],
+        serde_json::json!({"type": "shape", "value": "shape.circle{r: 1.5}"})
+    );
+}

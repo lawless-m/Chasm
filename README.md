@@ -39,7 +39,9 @@ refused, Binaryen) and M6 (polish and tooling: JSON output everywhere, the
 `chasm lsp` language server, `)force` in the REPL, `/net/http` with request
 headers natively and in the browser, 9p mounts, `chasm build --wasi`, and
 examples for each) and M7 (optional effects with inference, generic words
-with type variables monomorphised per use, `chasm infer --write`) are
-implemented: M0 to M7 implemented.
+with type variables monomorphised per use, `chasm infer --write`) and M8
+(sum types: `union` with `match`, generic structs and unions monomorphised
+per instantiation, `option T` in the prelude) are implemented: M0 to M8
+implemented.
 
 Licence: MIT.

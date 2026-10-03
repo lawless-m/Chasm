@@ -152,7 +152,7 @@ fn struct_values_cross_steps() {
 
     let mut s = session();
     ok(&mut s, "struct point  x: i32  y: f64");
-    let p = Ty::Struct("point".into());
+    let p = Ty::Struct("point".into(), Vec::new());
     let step = ok(&mut s, "7 2.5 point.new");
     assert_eq!(step.line.as_ref().unwrap().stack_after, vec![p.clone()]);
     assert_eq!(step.refs_size, 1);
@@ -417,5 +417,38 @@ fn force_a_generic_word() {
     assert_eq!(
         ok(&mut s, ")force : f dup ;\n").forced[0].to,
         "( T -- T T )"
+    );
+}
+
+#[test]
+fn unions_at_the_repl() {
+    let mut s = session();
+    let step = ok(
+        &mut s,
+        "union shape | circle  r: f64 | rect  w: f64  h: f64 | empty",
+    );
+    assert_eq!(step.defined.len(), 7, "3 constructors, tag and 3 readers");
+    assert_eq!(step.installs.len(), 7);
+    let step = ok(&mut s, "1.0 shape.circle");
+    assert_eq!(step.refs_size, 1);
+    let module = step.module.unwrap();
+    assert!(
+        wasmparser::Parser::new(0).parse_all(&module).any(|p| matches!(
+            p,
+            Ok(wasmparser::Payload::ImportSection(r)) if r.clone().into_imports().any(|i| i.unwrap().name == "refs")
+        )),
+        "a session with a union imports chasm.refs"
+    );
+    assert_eq!(code(&mut s, ")forget shape.circle"), "E_FORGET");
+}
+
+#[test]
+fn prelude_option_at_the_repl() {
+    let mut s = session();
+    let step = ok(&mut s, "3 option.some");
+    assert_eq!(step.refs_size, 1);
+    assert_eq!(
+        step.line.as_ref().unwrap().stack_after[0].to_string(),
+        "option i32"
     );
 }

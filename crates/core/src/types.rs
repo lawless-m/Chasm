@@ -15,8 +15,9 @@ pub enum Ty {
     Array(Box<Ty>),
     /// `[ effect ]`: a function table index.
     Quot(Box<Effect>),
-    /// A declared struct, by name: a WasmGC reference.
-    Struct(String),
+    /// A declared struct or union, by name, with its type arguments (empty
+    /// unless the type is generic): a WasmGC reference.
+    Struct(String, Vec<Ty>),
     /// A type variable of the checker's own, from polymorphic primitives
     /// (`array.new`, element types) and inference.
     Var(u32),
@@ -34,9 +35,10 @@ pub struct Effect {
     pub row: Option<u32>,
 }
 
-/// Struct name to the index of its wasm struct type in the module's type
-/// section; the GC array type of that struct is the next index.
-pub type StructTypes = HashMap<String, u32>;
+/// A registered struct or union type, by its display name (`point`,
+/// `pair i32 str`), to its wasm struct type index and the index of the GC
+/// array type of its elements.
+pub type StructTypes = HashMap<String, (u32, u32)>;
 
 /// A nullable reference to concrete type `index` (nullable so locals are
 /// defaultable).
@@ -92,20 +94,31 @@ impl Ty {
     /// (only ever seen during the checking pass, whose code is discarded).
     /// A struct is one reference; an array of structs is a view over a
     /// WasmGC array: `( ref start len )`.
+    ///
+    /// An applied generic type that is not registered (only the checking
+    /// pass meets one, and discards its code) lowers to an `i32` placeholder.
     pub fn lower(&self, structs: &StructTypes) -> Vec<ValType> {
-        let index = |name: &str| -> u32 {
-            *structs
-                .get(name)
-                .unwrap_or_else(|| panic!("struct `{name}` lowered before it was declared"))
+        let index = |t: &Ty, array: bool| -> ValType {
+            let name = t.to_string();
+            match structs.get(&name) {
+                Some(&(s, a)) => ref_ty(if array { a } else { s }),
+                None if matches!(t, Ty::Struct(_, args) if !args.is_empty())
+                    || t.has_var()
+                    || t.has_param() =>
+                {
+                    ValType::I32
+                }
+                None => panic!("struct `{name}` lowered before it was declared"),
+            }
         };
         match self {
             Ty::I32 | Ty::Quot(_) | Ty::Var(_) | Ty::Param(_) => vec![ValType::I32],
             Ty::I64 => vec![ValType::I64],
             Ty::F32 => vec![ValType::F32],
             Ty::F64 => vec![ValType::F64],
-            Ty::Struct(name) => vec![ref_ty(index(name))],
+            Ty::Struct(..) => vec![index(self, false)],
             Ty::Array(e) => match e.as_ref() {
-                Ty::Struct(name) => vec![ref_ty(index(name) + 1), ValType::I32, ValType::I32],
+                Ty::Struct(..) => vec![index(e, true), ValType::I32, ValType::I32],
                 _ => vec![ValType::I32, ValType::I32],
             },
             Ty::Str => vec![ValType::I32, ValType::I32],
@@ -116,7 +129,7 @@ impl Ty {
     pub fn width(&self) -> u32 {
         match self {
             Ty::Str => 2,
-            Ty::Array(e) if matches!(e.as_ref(), Ty::Struct(_)) => 3,
+            Ty::Array(e) if matches!(e.as_ref(), Ty::Struct(..)) => 3,
             Ty::Array(_) => 2,
             _ => 1,
         }
@@ -126,7 +139,7 @@ impl Ty {
     /// Never used for structs: arrays of structs are GC arrays with no byte layout.
     pub fn elem_size(&self) -> u32 {
         match self {
-            Ty::I32 | Ty::F32 | Ty::Quot(_) | Ty::Var(_) | Ty::Param(_) | Ty::Struct(_) => 4,
+            Ty::I32 | Ty::F32 | Ty::Quot(_) | Ty::Var(_) | Ty::Param(_) | Ty::Struct(..) => 4,
             Ty::I64 | Ty::F64 | Ty::Str | Ty::Array(_) => 8,
         }
     }
@@ -135,6 +148,7 @@ impl Ty {
         match self {
             Ty::Var(_) => true,
             Ty::Array(t) => t.has_var(),
+            Ty::Struct(_, args) => args.iter().any(Ty::has_var),
             Ty::Quot(e) => e.inputs.iter().chain(&e.outputs).any(Ty::has_var),
             _ => false,
         }
@@ -144,6 +158,7 @@ impl Ty {
         match self {
             Ty::Param(_) => true,
             Ty::Array(t) => t.has_param(),
+            Ty::Struct(_, args) => args.iter().any(Ty::has_param),
             Ty::Quot(e) => e.is_generic(),
             _ => false,
         }
@@ -154,6 +169,9 @@ impl Ty {
         match self {
             Ty::Param(p) => map.get(p).cloned().unwrap_or_else(|| self.clone()),
             Ty::Array(t) => Ty::Array(Box::new(t.substitute(map))),
+            Ty::Struct(n, args) => {
+                Ty::Struct(n.clone(), args.iter().map(|a| a.substitute(map)).collect())
+            }
             Ty::Quot(e) => Ty::Quot(Box::new(e.substitute(map))),
             _ => self.clone(),
         }
@@ -163,6 +181,11 @@ impl Ty {
         match self {
             Ty::Param(p) if !out.contains(p) => out.push(p.clone()),
             Ty::Array(t) => t.collect_params(out),
+            Ty::Struct(_, args) => {
+                for a in args {
+                    a.collect_params(out);
+                }
+            }
             Ty::Quot(e) => {
                 for t in e.inputs.iter().chain(&e.outputs) {
                     t.collect_params(out);
@@ -175,6 +198,25 @@ impl Ty {
 
 pub fn lower_all(tys: &[Ty], structs: &StructTypes) -> Vec<ValType> {
     tys.iter().flat_map(|t| t.lower(structs)).collect()
+}
+
+/// The struct and union types `t` mentions directly (inside arrays and
+/// quotation effects, but not inside another struct's type arguments).
+pub fn applied_types(t: &Ty, out: &mut Vec<Ty>) {
+    match t {
+        Ty::Struct(..) => {
+            if !out.contains(t) {
+                out.push(t.clone());
+            }
+        }
+        Ty::Array(e) => applied_types(e, out),
+        Ty::Quot(e) => {
+            for t in e.inputs.iter().chain(&e.outputs) {
+                applied_types(t, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 pub fn width_all(tys: &[Ty]) -> u32 {
@@ -201,7 +243,13 @@ impl fmt::Display for Ty {
                 }
                 write!(f, " ]")
             }
-            Ty::Struct(name) => write!(f, "{name}"),
+            Ty::Struct(name, args) => {
+                write!(f, "{name}")?;
+                for a in args {
+                    write!(f, " {a}")?;
+                }
+                Ok(())
+            }
             Ty::Var(n) => write!(f, "?{n}"),
             Ty::Param(p) => write!(f, "{p}"),
         }
@@ -253,6 +301,7 @@ impl Subst {
                 None => t.clone(),
             },
             Ty::Array(e) => Ty::Array(Box::new(self.resolve(e))),
+            Ty::Struct(n, args) => Ty::Struct(n.clone(), self.resolve_all(args)),
             Ty::Quot(e) => Ty::Quot(Box::new(Effect {
                 inputs: e.inputs.iter().map(|t| self.resolve(t)).collect(),
                 outputs: e.outputs.iter().map(|t| self.resolve(t)).collect(),
@@ -270,6 +319,7 @@ impl Subst {
         match self.resolve(t) {
             Ty::Var(w) => v == w,
             Ty::Array(e) => self.occurs(v, &e),
+            Ty::Struct(_, args) => args.iter().any(|t| self.occurs(v, t)),
             Ty::Quot(e) => e.inputs.iter().chain(&e.outputs).any(|t| self.occurs(v, t)),
             _ => false,
         }
@@ -289,6 +339,7 @@ impl Subst {
                 true
             }
             (Ty::Array(x), Ty::Array(y)) => self.unify(x, y),
+            (Ty::Struct(a, xs), Ty::Struct(b, ys)) => a == b && self.unify_all(xs, ys),
             (Ty::Quot(x), Ty::Quot(y)) => {
                 x.inputs.len() == y.inputs.len()
                     && x.outputs.len() == y.outputs.len()
@@ -326,7 +377,7 @@ mod tests {
 
     #[test]
     fn structs() {
-        let p = || Ty::Struct("p".into());
+        let p = || Ty::Struct("p".into(), Vec::new());
         let e = Effect::new(vec![p()], vec![Ty::Array(Box::new(p()))]);
         assert_eq!(e.to_string(), "( p -- array p )");
         let widths: Vec<u32> = [
@@ -339,14 +390,14 @@ mod tests {
         .map(Ty::width)
         .collect();
         assert_eq!(widths, [2, 2, 3, 1]);
-        let map: StructTypes = [("p".to_string(), 3)].into();
+        let map: StructTypes = [("p".to_string(), (3, 4))].into();
         assert_eq!(p().lower(&map), vec![ref_ty(3)]);
         assert_eq!(
             Ty::Array(Box::new(p())).lower(&map),
             vec![ref_ty(4), ValType::I32, ValType::I32]
         );
         let mut s = Subst::default();
-        assert!(!s.unify(&p(), &Ty::Struct("q".into())));
+        assert!(!s.unify(&p(), &Ty::Struct("q".into(), Vec::new())));
         assert!(s.unify(&p(), &p()));
     }
 

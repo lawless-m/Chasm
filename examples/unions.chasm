@@ -1,0 +1,70 @@
+# Unions: a value that is one of several variants, each with its own
+# fields. One declaration gives a constructor per variant, `u.tag` and a
+# reader per field; `match` takes one labelled arm per variant, in any order.
+# Exercises: union, match, else:, u.tag, a recursive generic `list T`, the
+# prelude's `option T`.
+
+union shape
+  | circle  r: f64
+  | rect    w: f64  h: f64
+  | empty
+
+# Each arm receives its variant's fields, the last on top.
+: area ( shape -- f64 )
+  circle: [ :> r  r r f64.mul 3.14 f64.mul ]
+  rect:   [ f64.mul ]
+  empty:  [ 0.0 ]
+  match ;
+test area : 2.0 3.0 shape.rect area -> 6.0
+test area : shape.empty area -> 0.0
+test area : 1.0 shape.circle area -> 3.14
+
+# `else:` covers every variant not named, and receives the whole value.
+: corners ( shape -- i32 )
+  rect: [ 2drop 4 ]
+  else: [ drop 0 ]
+  match ;
+test corners : 1.0 2.0 shape.rect corners -> 4
+test corners : 1.0 shape.circle corners -> 0
+
+# The variant's index, in declaration order.
+test shape.tag : shape.empty shape.tag -> 2
+
+# A recursive generic list: `list T` names itself in its own fields.
+union list T | nil | cons  head: T  tail: list T
+
+: length ( list T -- i32 )
+  nil:  [ 0 ]
+  cons: [ length 1 i32.add nip ]
+  match ;
+
+: sum ( list i32 -- i32 )
+  nil:  [ 0 ]
+  cons: [ sum i32.add ]
+  match ;
+
+# The list 1, 2, ..., n.
+: range ( i32 -- list i32 )
+  :> n
+  list.nil ( list i32 ) :> l!
+  n [ :> i  n i i32.sub l list.cons l! ] times
+  l ;
+test length : 3 range length -> 3
+test sum : 4 range sum -> 10
+
+# The prelude's `option T`: `option.none` or `x option.some`.
+: safe-div ( i32 i32 -- option i32 )
+  :> d :> n
+  d 0 i32.eq [ option.none ] [ n d i32.div_s option.some ] if ;
+
+: or-zero ( option i32 -- i32 )
+  none: [ 0 ]
+  some: [ ]
+  match ;
+test or-zero : 7 2 safe-div or-zero -> 3
+test or-zero : 7 0 safe-div or-zero -> 0
+
+: main ( -- )
+  "area of a 2 by 3 rect: " print 2.0 3.0 shape.rect area 1 f64.fixed println
+  "sum of 1 to 10: " print 10 range sum i32.to-str println
+  "7 / 0 or zero: " print 7 0 safe-div or-zero i32.to-str println ;

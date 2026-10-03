@@ -11,11 +11,9 @@ use crate::diag::{codes, Diagnostic, Location};
 use crate::layout;
 use crate::lexer::lex;
 use crate::module::{assemble_step, export_name};
-use crate::parser::{parse, parse_repl, ReplInput};
+use crate::parser::{parse_repl_with, parse_with, ReplInput};
 use crate::program::Value;
-use crate::program::{
-    process_item, register_names, struct_words, validate, Program, PRELUDE, PRELUDE_NAME,
-};
+use crate::program::{process_item, register_names, validate, Program, PRELUDE, PRELUDE_NAME};
 use crate::types::{names, width_all, Ty};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -126,6 +124,26 @@ impl Step {
     }
 }
 
+/// A union variant's name, fields, and the table slot of each field's reader.
+pub type VariantLayout = (String, Vec<(String, Ty)>, Vec<Option<u32>>);
+
+/// How a struct or union value is laid out, for rendering it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Layout {
+    /// The fields, in order, and the table slot of each field's reader.
+    Struct {
+        fields: Vec<(String, Ty)>,
+        get: Vec<Option<u32>>,
+    },
+    /// The union's name, the table slot of its `tag` word (at these type
+    /// arguments), and each variant's fields with their readers' slots.
+    Union {
+        name: String,
+        tag_slot: u32,
+        variants: Vec<VariantLayout>,
+    },
+}
+
 pub struct Session {
     ctx: Ctx,
     /// Types on the memory data stack, bottom to top; always concrete.
@@ -142,8 +160,9 @@ pub struct Session {
 }
 
 impl Session {
+    /// Whether any struct or union type is registered.
     pub fn has_structs(&self) -> bool {
-        !self.ctx.structs.is_empty()
+        self.ctx.has_ref_types()
     }
 
     pub fn structs(&self) -> &[StructDef] {
@@ -153,6 +172,66 @@ impl Session {
     pub fn struct_fields(&self, name: &str) -> Option<&[(String, Ty)]> {
         let &k = self.ctx.struct_by_name.get(name)?;
         Some(&self.ctx.structs[k].fields)
+    }
+
+    /// How to read a value of the registered struct or union type named
+    /// `ty` (`point`, `pair i32 str`, `option i32`), parameters substituted.
+    pub fn layout_of(&self, ty: &str) -> Option<Layout> {
+        let Ty::Struct(name, args) = self.ctx.registered.get(ty)? else {
+            return None;
+        };
+        let subst = |params: &[String], fields: &[(String, Ty)]| -> Vec<(String, Ty)> {
+            let map: HashMap<String, Ty> =
+                params.iter().cloned().zip(args.iter().cloned()).collect();
+            fields
+                .iter()
+                .map(|(f, t)| (f.clone(), t.substitute(&map)))
+                .collect()
+        };
+        // The slot of a generated word at these type arguments.
+        let slot = |w: String| -> Option<u32> {
+            let id = *self.ctx.by_name.get(&w)?;
+            let id = if args.is_empty() {
+                id
+            } else {
+                *self.ctx.instances.get(&(id, args.clone()))?
+            };
+            Some(id as u32)
+        };
+        if let Some(&k) = self.ctx.struct_by_name.get(name) {
+            let s = &self.ctx.structs[k];
+            return Some(Layout::Struct {
+                fields: subst(&s.params, &s.fields),
+                get: s
+                    .fields
+                    .iter()
+                    .map(|(f, _)| slot(format!("{name}.{f}")))
+                    .collect(),
+            });
+        }
+        let u = &self.ctx.unions[*self.ctx.union_by_name.get(name)?];
+        Some(Layout::Union {
+            name: name.clone(),
+            tag_slot: slot(format!("{name}.tag"))?,
+            variants: u
+                .variants
+                .iter()
+                .map(|(v, f)| {
+                    let get = f
+                        .iter()
+                        .map(|(x, _)| slot(format!("{name}.{v}.{x}")))
+                        .collect();
+                    (v.clone(), subst(&u.params, f), get)
+                })
+                .collect(),
+        })
+    }
+
+    /// The display names of every registered struct and union type, sorted.
+    pub fn type_names(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.ctx.registered.keys().cloned().collect();
+        v.sort();
+        v
     }
 
     /// The table slot of a named word (its id), e.g. to call `point.x`.
@@ -178,7 +257,9 @@ impl Session {
         };
         let mut built = Vec::new();
         if prelude {
-            match lex(PRELUDE_NAME, PRELUDE).and_then(|t| parse(PRELUDE_NAME, &t)) {
+            match lex(PRELUDE_NAME, PRELUDE)
+                .and_then(|t| parse_with(PRELUDE_NAME, &t, &HashMap::new()))
+            {
                 Ok(items) => {
                     register_names(&mut s.ctx, &items);
                     for item in items {
@@ -211,7 +292,8 @@ impl Session {
         let mut built = Vec::new();
         let mut defined = Vec::new();
         let mut line = None;
-        match lex(&file, text).and_then(|t| parse_repl(&file, &t)) {
+        let known = self.ctx.type_arities();
+        match lex(&file, text).and_then(|t| parse_repl_with(&file, &t, &known)) {
             Err(d) => self.program.diagnostics.push(d),
             Ok(ReplInput::Items(mut items)) => {
                 register_names(&mut self.ctx, &items);
@@ -219,7 +301,10 @@ impl Session {
                 for item in items {
                     let named = matches!(
                         item,
-                        Item::Def { .. } | Item::Declare { .. } | Item::Struct { .. }
+                        Item::Def { .. }
+                            | Item::Declare { .. }
+                            | Item::Struct { .. }
+                            | Item::Union { .. }
                     );
                     let source = item.clone();
                     let tests = self.program.tests.len();
@@ -275,6 +360,7 @@ impl Session {
                             inferred: false,
                             generic: None,
                             instance_of: None,
+                            generated: None,
                         });
                         line = Some(Line {
                             slot: id as u32,
@@ -333,7 +419,8 @@ impl Session {
         let file = format!("<repl:{}>", self.steps);
         let before = self.ctx.words.len();
         let tests_before = self.program.tests.len();
-        let parsed = lex(&file, text).and_then(|t| parse(&file, &t));
+        let known = self.ctx.type_arities();
+        let parsed = lex(&file, text).and_then(|t| parse_with(&file, &t, &known));
         let outcome = match parsed {
             Err(d) => Err(vec![d]),
             Ok(items) => self.force_items(items),
@@ -392,10 +479,10 @@ impl Session {
                     }
                 }
                 Item::Test { .. } => {}
-                Item::Declare { loc, .. } | Item::Struct { loc, .. } => {
+                Item::Declare { loc, .. } | Item::Struct { loc, .. } | Item::Union { loc, .. } => {
                     return Err(vec![Diagnostic::error(
                         codes::E_SYNTAX,
-                        "`)force` takes definitions and tests; `declare` and `struct` are not allowed",
+                        "`)force` takes definitions and tests; `declare`, `struct` and `union` are not allowed",
                         loc.clone(),
                     )]);
                 }
@@ -588,14 +675,14 @@ impl Session {
                 "`{name}` is a prelude word and cannot be {verb}"
             )));
         }
-        if let Some(sd) = self.ctx.structs.iter().find(|sd| {
-            struct_words(&sd.name, &sd.fields, 0)
-                .iter()
-                .any(|(w, _, _)| w == name)
-        }) {
+        if let Some(t) = &self.ctx.words[id].generated {
+            let kind = if self.ctx.union_by_name.contains_key(t) {
+                "union"
+            } else {
+                "struct"
+            };
             return Err(refuse(format!(
-                "`{name}` is generated by struct `{}` and cannot be {verb} on its own",
-                sd.name
+                "`{name}` is generated by {kind} `{t}` and cannot be {verb} on its own"
             )));
         }
         Ok(id)
@@ -809,7 +896,7 @@ pub fn needs_more(text: &str) -> bool {
     };
     if toks
         .first()
-        .is_some_and(|t| t.is("declare") || t.is("test") || t.is("struct"))
+        .is_some_and(|t| t.is("declare") || t.is("test") || t.is("struct") || t.is("union"))
     {
         return false;
     }
@@ -862,8 +949,8 @@ pub fn read_stack(
             Ty::F32 => Value::F32(f32::from_bits(lo(a))),
             Ty::F64 => Value::F64(f64::from_le_bytes(a)),
             // A struct slot holds its own index into `chasm.refs`; the host reads it.
-            Ty::Struct(name) => refs(i, name),
-            Ty::Array(e) if matches!(e.as_ref(), Ty::Struct(_)) => {
+            Ty::Struct(..) => refs(i, &t.to_string()),
+            Ty::Array(e) if matches!(e.as_ref(), Ty::Struct(..)) => {
                 let Some(len) = slot(i + 2) else { break };
                 Value::Opaque(format!("<{} elements>", lo(len)))
             }
@@ -924,14 +1011,22 @@ mod tests {
             fields: vec![("x".into(), Value::I32(7)), ("y".into(), Value::F64(2.5))],
         };
         assert_eq!(
-            read_stack(&mem, &[Ty::Struct("point".into())], &mut |i, n| {
-                assert_eq!((i, n), (0, "point"));
-                point.clone()
-            }),
+            read_stack(
+                &mem,
+                &[Ty::Struct("point".into(), Vec::new())],
+                &mut |i, n| {
+                    assert_eq!((i, n), (0, "point"));
+                    point.clone()
+                }
+            ),
             vec![e("point", "point{x: 7, y: 2.5}")]
         );
         assert_eq!(
-            read_stack(&mem, &[Ty::Struct("point".into())], &mut |_, _| Value::Null),
+            read_stack(
+                &mem,
+                &[Ty::Struct("point".into(), Vec::new())],
+                &mut |_, _| Value::Null
+            ),
             vec![e("point", "null")]
         );
         let mut views = vec![0u8; 0x10_0100];
@@ -941,7 +1036,7 @@ mod tests {
         assert_eq!(
             read_stack(
                 &views,
-                &[Ty::Array(Box::new(Ty::Struct("point".into())))],
+                &[Ty::Array(Box::new(Ty::Struct("point".into(), Vec::new())))],
                 &mut |_, _| panic!("no refs")
             ),
             vec![e("array point", "<2 elements>")]

@@ -136,4 +136,6 @@ pub mod codes {
     pub const E_FORGET: &str = "E_FORGET";
     pub const E_FORCE: &str = "E_FORCE";
     pub const E_NEEDS_EFFECT: &str = "E_NEEDS_EFFECT";
+    pub const E_MATCH_ARM: &str = "E_MATCH_ARM";
+    pub const E_MATCH_MISSING: &str = "E_MATCH_MISSING";
 }
