@@ -12,11 +12,9 @@ Now milestone M4, as WasmGC structs rather than linear memory: see `ARCHITECTURE
 
 Both moved into v1 (`LANGUAGE.md` 4a and 7a). Left for later: nested arrays (`array array i32`) and a real allocator so `map` results can be freed. Arrays of structs are part of M4.
 
-**Growable arrays.** Every v1 array is a fixed-length view (`( addr len )`, or `( ref start len )` for an array of structs), and slicing shares storage. The preferred growable array never moves its storage: it is a list of chunks whose sizes double (1, 2, 4, 8, ...), so growing allocates one new chunk as large as everything before it, at most 32 times.
+**Growable arrays.** Every array is a fixed-length view (`( addr len )`, or `( ref start len )` for an array of structs), and slicing shares storage. The growable array, `vec T`, is in the prelude since M9: a list of chunks whose sizes double (1, 2, 4, 8, ...), so growing allocates one new chunk as large as everything before it, at most 32 times, and storage never moves. It is library code written in Chasm (`struct chunk T  items: array T`, `struct vec T  chunks: array chunk T  count: i32`), beside the hash map `map K V` (`LANGUAGE.md` section 4d).
 - Indexing is O(1): element `i` is in chunk `31 - clz(i + 1)` at offset `i + 1 - 2^chunk` (one `i32.clz` and a shift).
 - Because nothing moves, every view into a chunk stays valid, so no separate owning-array and `slice` types are needed.
-- A view is still contiguous, so it cannot span two chunks; walking the whole array goes through `each`/`fold`-style words on the growable array itself.
-- With M4 structs it is library code, not a language feature, and needs no nested arrays: `struct chunk  items: array i32` and `struct vec-i32  chunks: array chunk  count: i32`. Struct fields cannot be type variables, so it is still written once per element type (`vec-i32`, `vec-str`, `vec-point`); generic words share only the code that touches no struct.
 
 ## 3. Closures
 
@@ -24,18 +22,22 @@ A quotation plus captured locals: an environment struct and a funcref, with the 
 
 ## 4. WasmGC
 
-Adopted for structs in M4 (`ARCHITECTURE.md` section 15). Strings and arrays of numbers stay in linear memory, allocated by a bump allocator that never frees: `[ "x" str.concat ] 1000000 times` keeps every string. A program that runs and exits does not notice; a long REPL session or a compiler would.
+Adopted for structs and unions (M4, M8). Strings and arrays of anything but structs stay in linear memory, allocated by a bump allocator that never frees: `[ "x" str.concat ] 1000000 times` keeps every string. A program that runs and exits does not notice; a long REPL session, a compiler, or a puzzle that builds and drops many collections would.
 
-Moving `str` and numeric arrays to GC arrays (`array i8`, `array i32`, ...) would put all memory under the collector, and the engine's own bounds checks on GC arrays would replace Chasm's. The costs:
+Collections built on today's arrays inherit this (vec and map are in the prelude since M9). A `vec` or `map` whose storage is an `array i32` or `array str` is never freed once dropped, so a loop that makes a fresh one per step (a search over a large grid) uses memory in proportion to the steps, not to what is live; reusing one collection (`vec.clear`) is the workaround. Fixing collections alone is half a fix while `str` still leaks, so the move is one decision for every non-struct value, a milestone of its own.
+
+Moving `str` and the arrays to GC arrays (`array i8`, `array i32`, `array f64`, and a representation for `array str`, whose elements are two values) would put all memory under the collector, and the engine's own bounds checks on GC arrays would replace Chasm's. The costs:
 
 - **I/O copies.** The ring hands the host an address and length in linear memory, so every read and write would copy between a GC array and a linear buffer.
 - **Literals.** String literals live in a data segment; they would be built as GC arrays at start-up or with `array.new_data`.
 - **Speed is unmeasured.** GC array access under Cranelift may be slower or faster than linear memory; `bench/` would decide.
 - **The REPL stack.** Strings and arrays would join structs in the `chasm.refs` table, which already exists.
+- **Views.** An `array T` is a view (`( addr len )`) that `array.slice` shares; over a GC array it becomes `( ref start len )`, as arrays of structs already are, so the rule carries over unchanged.
+- **Raw memory.** `mem.alloc`, `i32.load` and the host words stay on linear memory, which remains for I/O buffers and low-level code.
 
 ## 5. Inference
 
-Implemented in M7 (`ARCHITECTURE.md` section 19): effects may be left out and are inferred, and generic words with type variables are monomorphised per use. Still out of scope: row variables or stack-polymorphic effects in user syntax, constraints or type classes, higher-rank types, and generic structs (struct fields cannot be type variables).
+Implemented in M7 (`ARCHITECTURE.md` section 19): effects may be left out and are inferred, and generic words with type variables are monomorphised per use. Still out of scope: row variables or stack-polymorphic effects in user syntax, constraints or type classes, and higher-rank types. Generic structs and unions came in M8.
 
 ## 6. Namespaces and libraries
 
@@ -50,13 +52,12 @@ Implemented in M8. `union` declares a type with inline variants, each with its o
 A Chasm compiler written in Chasm, reached in stages, each an ordinary example with tests:
 
 1. **Lexer.** Grow `examples/tokenizer.chasm` into a lexer whose tokens match `crates/core/src/lexer.rs` on the same input.
-2. **Parser.** Items and bodies as structs. This is where the lack of sum types (section 7) bites: an AST node is a word, a literal or a quotation, and without sum types each becomes a tagged struct with fields used only sometimes, matched by `if` chains the checker cannot prove exhaustive.
-3. **Decide.** Measure what the first two stages cost, then choose whether sum types and generic structs (generic words exist since M7) come first.
+2. **Parser.** Items and bodies as unions (section 7): an AST node is a word, a literal or a quotation, matched exhaustively by `match`.
+3. **Decide.** Measure what the first two stages cost before going further.
 
 What a compiler needs that the language lacks today:
 
-- **Generic collections.** Generic words cover helpers over `array T`, but structs are not generic, so a growable array, a token list or a symbol table built from structs is still written once per element type.
-- **Growable arrays and maps.** The chunked growable list (section 2) and a hash map, again per type.
+- **Growable arrays and maps.** Both are in the prelude since M9: `vec T` (section 2) and `map K V`.
 - **Collected memory.** A compiler that runs and exits survives the bump allocator; one inside the REPL would want section 4's GC strings and arrays. An AST built from structs is collected already.
 
 The end state is the usual fixpoint: the Rust compiler builds the Chasm compiler, that compiler builds itself, and the two outputs are byte-identical. The browser REPL could then run a compiler written in Chasm.

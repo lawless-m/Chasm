@@ -1,6 +1,6 @@
 # Chasm: Architecture and Milestones
 
-Status: draft v0.18 (M0 to M8 implemented; decisions in sections 13 to 20). **Chasm** (Chuck-Wasm, after Chuck Moore) is a typed, concatenative language that compiles to WebAssembly, with an interactive REPL, written in Rust. Source files use the `.chasm` extension; the CLI binary is `chasm`.
+Status: draft v0.19 (M0 to M9 implemented; decisions in sections 13 to 21). **Chasm** (Chuck-Wasm, after Chuck Moore) is a typed, concatenative language that compiles to WebAssembly, with an interactive REPL, written in Rust. Source files use the `.chasm` extension; the CLI binary is `chasm`.
 
 ## 1. Goals
 
@@ -79,6 +79,7 @@ Wasm has no polymorphic instructions, and a word's effect is its wasm function t
 
 - **Shuffle primitives** (`dup`, `swap`, `drop`, `over`, `rot`, `nip`, `tuck`, `2dup`) and **collection combinators** (`each`, `map`, `filter`, `fold`) have effects written with type variables, for example `( a b -- b a )`. Checking is forward, so the stack is concrete (or holds a generic word's own type variables) when the checker meets one of these. It instantiates the primitive at the types present and the emitter produces the matching code: `dup` on `i32` is `local.tee` into a compiler-only `i32` local, `swap` is two locals, and so on.
 - **Generic words.** A user effect may carry type variables, uppercase-initial names such as `T` and `U`: `: twice ( T -- T T ) dup ;`. The word is a template, checked once with its variables rigid (a `T` matches only `T`) and never emitted. Each concrete instantiation that a call or a `'word` fixes is an instance: its own wasm function, table slot and dependency-graph node, named `twice<i32>`, compiled by checking the template's body at those types. There are no constraints: `i32.add` on a `T` is a type error in a declared generic, and fixes `T = i32` under inference. `export` words and `main` are concrete.
+- **`eq` and `hash`** are polymorphic primitives emitted per concrete type: inline code for numbers and function values, otherwise a call to a generated per-type word (`eq<point>`) made on first use in the emitting pass.
 - **Generic structs and unions** are monomorphised the same way: each concrete instantiation (`pair i32 str`) is its own WasmGC type, made when first needed, and the words the declaration generates are templates instantiated per use like any generic word.
 
 ## 5c. Control flow
@@ -232,6 +233,8 @@ Principles; exact fields are settled in M1 and generated from the Rust types (`s
 
 **M8: Sum types and generic types.** `union` declares a type with inline variants, each with its own fields, lowered to a WasmGC supertype with a final subtype per variant; postfix `match` takes labelled arms in any order, with an optional `else:`. Structs and unions may take explicit type parameters (`struct pair T U`, applied as `pair i32 str`), monomorphised per instantiation. The prelude's `option T` replaces the array-of-0-or-1 optional link.
 
+**M9: Collections.** A growable `vec T` (chunked, so storage never moves) and a hash map `map K V`, both written in Chasm in the prelude on the new by-contents primitives `hash` and `eq`. Prelude generics are made lazily, so programs that use none of them compile byte-identically.
+
 M1 to M3 can overlap; the graph and stub data structures are part of M1 so that M3 is tooling only.
 
 ## 11. Open questions
@@ -363,3 +366,11 @@ Heavy native batch work (large test corpora, benchmarks, Binaryen runs over big 
 7. **REPL echo.** Natively, a union value in `chasm.refs` is rendered by calling its `tag` word through the table inside a `RootScope`, then reading the variant's fields with the GC API. In the browser the worker calls `tag` and the variant's readers through the funcref table, from layouts the step JSON gives by type display name (`kind` `struct` or `union`, with the slot of each reader). Nesting shows three levels.
 8. **Parsing.** The parser knows each declared type's arity and reads an applied type's arguments by it, so `pair list i32 str` needs no parentheses; the arities of earlier files and REPL steps are passed in.
 9. **`option T`** is in the prelude. `match` is a primitive name. `E_MATCH_ARM` and `E_MATCH_MISSING` are new codes. Binaryen's wasm-opt 133 accepts the subtyped groups.
+
+## 21. Decisions taken in M9
+
+1. **Lazy library generics.** In whole-program compilation (`Ctx::defer_library_generics`), a prelude `struct` or `union` with type parameters defers its generated words, and a prelude `:` word with a written generic effect defers its template, into `Ctx::lazy_words` (a `LazyWord` carries the template's body). `Ctx::lookup` makes them on first use with a literal-free placeholder body (`unreachable`), unchecked; `make_lazy_words` makes the rest after every other word, and `assemble` drops those trailing templates from the table. So the ids, table, type section and data segment of a program that uses none of them are unchanged. The REPL processes the prelude eagerly and checks every template there; a core test pins that the prelude step has no diagnostics. No non-generic prelude helpers are written for collections: every collection word takes the collection, so it is generic.
+2. **`hash` and `eq` helpers.** `Ctx::hash_eq_word(op, ty)` maps (operation, type) to a word: a `WordKind::Instance` word of `Origin::Library` named `eq<ty>` or `hash<ty>`, registered before its body is compiled so recursive types (`node` holding `option node`) terminate. Its body is Chasm source generated per type by `crates/core/src/hasheq.rs` (field readers, `tag`, `array.at` and primitives only, no prelude words), parsed with `parse_repl_with` and compiled by `compile_body`. Callee edges keep it and the readers it uses live in whole-program builds, and the REPL step that made it installs it. `i32` hashes by a multiply-and-xorshift mix, `i64` folds its halves into it, floats hash their bits, `str` is FNV-1a over its bytes, and aggregates fold `h * 31 + hash(part)`. The function is not a contract.
+3. **Type names may be primitive names** (`map`): the parser's `type_name` and the struct and union definitions skip the primitive check for type names; generated words still go through the ordinary clash rules.
+4. **`vec.make` and `map.make`**, because `.new` is the generated constructor.
+5. **REPL echo unchanged**: collections echo as structs. The examples outside the byte-identity rule now also include `collections`.

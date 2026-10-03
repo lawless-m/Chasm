@@ -10,6 +10,7 @@ pub mod ast;
 pub mod check;
 pub mod diag;
 pub mod graph;
+pub mod hasheq;
 pub mod infer;
 pub mod layout;
 pub mod lexer;

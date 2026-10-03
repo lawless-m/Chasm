@@ -441,6 +441,8 @@ pub fn names() -> impl Iterator<Item = &'static str> {
         "filter",
         "fold",
         "match",
+        "hash",
+        "eq",
     ];
     NUMERIC_NAMES.iter().chain(OTHER).copied()
 }
@@ -560,6 +562,8 @@ pub fn is_builtin(name: &str) -> bool {
                 | "call"
                 | "leave"
                 | "match"
+                | "hash"
+                | "eq"
         )
         || crate::parser::combinator_arity(name).is_some()
 }

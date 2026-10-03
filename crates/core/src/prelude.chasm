@@ -231,3 +231,149 @@
 # An optional value: `option.none` or `x option.some`, matched with
 # `none: [ ... ] some: [ ... ] match`.
 union option T | none | some  v: T
+
+# ---------------------------------------------------------------- collections
+# A growable array: chunks of 1, 2, 4, ... elements, so storage never moves.
+# Element i is in chunk 31 - clz(i + 1), at offset i + 1 - 2^chunk.
+struct chunk T  items: array T
+struct vec T  chunks: array chunk T  count: i32
+
+: vec.make ( -- vec T )  32 array.new ( array chunk T ) 0 vec.new ;
+: vec.len ( vec T -- i32 )  vec.count ;
+: vec.clear ( vec T -- )  0 vec.count! ;
+
+: vec.push ( vec T T -- )
+  :> x :> v
+  v vec.count 1 i32.add :> j
+  31 j i32.clz i32.sub :> c
+  j 1 c i32.shl i32.sub :> o
+  o i32.eqz [
+    1 c i32.shl array.new ( array T ) :> items
+    v vec.chunks c items chunk.new array.at! ] when
+  v vec.chunks c array.at chunk.items o x array.at!
+  v j vec.count! ;
+
+: vec.at ( vec T i32 -- T )
+  :> i :> v
+  i v vec.count i32.ge_u [ "vec.at: index out of range" trap ] when
+  i 1 i32.add :> j
+  31 j i32.clz i32.sub :> c
+  v vec.chunks c array.at chunk.items  j 1 c i32.shl i32.sub  array.at ;
+
+: vec.at! ( vec T i32 T -- )
+  :> x :> i :> v
+  i v vec.count i32.ge_u [ "vec.at!: index out of range" trap ] when
+  i 1 i32.add :> j
+  31 j i32.clz i32.sub :> c
+  v vec.chunks c array.at chunk.items  j 1 c i32.shl i32.sub  x array.at! ;
+
+: vec.pop ( vec T -- option T )
+  :> v
+  v vec.count i32.eqz
+  [ option.none ]
+  [ v vec.count 1 i32.sub :> i  v i vec.at  v i vec.count!  option.some ]
+  if ;
+
+: vec.to-array ( vec T -- array T )
+  :> v
+  v vec.count array.new ( array T ) :> a
+  v vec.count [ :> i  a i  v i vec.at  array.at! ] times
+  a ;
+
+: vec.each ( vec T [ T -- ] -- )
+  :> f :> v
+  v vec.count [ :> i  v i vec.at f call ] times ;
+
+: vec.fold ( vec T A [ A T -- A ] -- A )
+  :> f :> acc :> v
+  acc  v vec.count [ :> i  v i vec.at f call ] times ;
+
+# A hash map: open addressing with linear probing over `hash` and `eq`.
+# `used` is 0 for an empty slot, 1 for a live one, 2 for a removed one; the
+# capacity is a power of two, doubled before half the slots are filled.
+struct map K V  ks: array K  vs: array V  used: array i32  count: i32  filled: i32
+
+: map.make ( -- map K V )
+  8 array.new ( array K ) :> ks
+  8 array.new ( array V ) :> vs
+  8 array.new ( array i32 ) :> used
+  ks vs used 0 0 map.new ;
+
+: map.len ( map K V -- i32 )  map.count ;
+
+# The slot holding k, or -1.
+: map.find ( map K V K -- i32 )
+  :> k :> m
+  m map.used array.len 1 i32.sub :> mask
+  k hash mask i32.and :> i!
+  -1 :> r!
+  [ 1 ] [
+    m map.used i array.at :> u
+    u i32.eqz [ leave ] when
+    u 1 i32.eq [ m map.ks i array.at k eq [ i r! leave ] when ] when
+    i 1 i32.add mask i32.and i! ]
+  while
+  r ;
+
+# Store a key that is not present, in a map with room for it.
+: map.put ( map K V K V -- )
+  :> v :> k :> m
+  m map.used array.len 1 i32.sub :> mask
+  k hash mask i32.and :> i!
+  [ m map.used i array.at 1 i32.eq ] [ i 1 i32.add mask i32.and i! ] while
+  m map.used i array.at i32.eqz [ m  m map.filled 1 i32.add  map.filled! ] when
+  m map.ks i k array.at!
+  m map.vs i v array.at!
+  m map.used i 1 array.at!
+  m  m map.count 1 i32.add  map.count! ;
+
+# Move every live entry into arrays twice as large.
+: map.rehash ( map K V -- )
+  :> m
+  m map.ks :> oks
+  m map.vs :> ovs
+  m map.used :> oused
+  oused array.len 2 i32.mul :> cap
+  cap array.new ( array K ) :> ks
+  cap array.new ( array V ) :> vs
+  cap array.new ( array i32 ) :> used
+  m ks map.ks!  m vs map.vs!  m used map.used!
+  m 0 map.count!  m 0 map.filled!
+  oused array.len [ :> i
+    oused i array.at 1 i32.eq [ m  oks i array.at  ovs i array.at  map.put ] when ]
+  times ;
+
+: map.set ( map K V K V -- )
+  :> v :> k :> m
+  m k map.find :> at
+  at 0 i32.ge_s
+  [ m map.vs at v array.at! ]
+  [ m map.filled 1 i32.add 2 i32.mul  m map.used array.len  i32.gt_s [ m map.rehash ] when
+    m k v map.put ]
+  if ;
+
+: map.get ( map K V K -- option V )
+  :> k :> m
+  m k map.find :> i
+  i 0 i32.lt_s [ option.none ] [ m map.vs i array.at option.some ] if ;
+
+: map.has ( map K V K -- i32 )  map.find 0 i32.ge_s ;
+
+: map.remove ( map K V K -- )
+  :> k :> m
+  m k map.find :> i
+  i 0 i32.ge_s [ m map.used i 2 array.at!  m  m map.count 1 i32.sub  map.count! ] when ;
+
+: map.keys ( map K V -- vec K )
+  :> m
+  vec.make ( vec K ) :> out
+  m map.used array.len [ :> i
+    m map.used i array.at 1 i32.eq [ out  m map.ks i array.at  vec.push ] when ]
+  times
+  out ;
+
+: map.each ( map K V [ K V -- ] -- )
+  :> f :> m
+  m map.used array.len [ :> i
+    m map.used i array.at 1 i32.eq [ m map.ks i array.at  m map.vs i array.at  f call ] when ]
+  times ;

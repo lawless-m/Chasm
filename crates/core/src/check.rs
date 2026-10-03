@@ -114,6 +114,8 @@ pub struct Ctx {
     /// first use (`lookup`) or at the end of the program, so a program that
     /// never uses them keeps its word numbering.
     pub lazy_words: HashMap<String, LazyWord>,
+    /// The generated `eq` and `hash` words, by operation and type.
+    pub helpers: HashMap<(Op, Ty), WordId>,
     /// Every registered struct or union type, by display name.
     pub registered: HashMap<String, Ty>,
     /// Defer the words of the prelude's generic types (whole programs).
@@ -135,8 +137,16 @@ pub struct StructDef {
     pub loc: Location,
 }
 
-/// A generated template word waiting to be made: its type, the words made
-/// with it (in order), its effect, origin and location.
+/// `eq` or `hash`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Op {
+    Eq,
+    Hash,
+}
+
+/// A prelude template waiting to be made: the generic type it belongs to (or
+/// its own name), the words made with it (in order), its effect, origin,
+/// location, and for a generic `:` word its body.
 #[derive(Debug, Clone)]
 pub struct LazyWord {
     pub ty: String,
@@ -144,6 +154,8 @@ pub struct LazyWord {
     pub effect: Effect,
     pub origin: Origin,
     pub loc: Location,
+    /// A generic `:` word's body; `None` for the words of a generic type.
+    pub body: Option<Body>,
 }
 
 /// A declared union: its variants with their fields, in order, and the wasm
@@ -200,6 +212,7 @@ impl Default for Ctx {
             unions: Vec::new(),
             union_by_name: HashMap::new(),
             lazy_words: HashMap::new(),
+            helpers: HashMap::new(),
             registered: HashMap::new(),
             defer_library_generics: false,
             instances: HashMap::new(),
@@ -532,6 +545,63 @@ impl Ctx {
         self.literal_base = base;
     }
 
+    /// The generated word for `eq` or `hash` on the concrete type `t`
+    /// (`eq<point>`), made on first use. It is added before its body is
+    /// compiled, so a recursive type's helper finds itself.
+    pub fn hash_eq_word(&mut self, op: Op, t: &Ty, loc: &Location) -> Result<WordId, Diagnostic> {
+        if let Some(&id) = self.helpers.get(&(op, t.clone())) {
+            return Ok(id);
+        }
+        let (name, effect) = match op {
+            Op::Eq => (
+                format!("eq<{t}>"),
+                Effect::new(vec![t.clone(), t.clone()], vec![Ty::I32]),
+            ),
+            Op::Hash => (
+                format!("hash<{t}>"),
+                Effect::new(vec![t.clone()], vec![Ty::I32]),
+            ),
+        };
+        let id = self.add_word(Word {
+            name: name.clone(),
+            effect: effect.clone(),
+            body: None,
+            failed: false,
+            export: false,
+            origin: Origin::Library,
+            kind: WordKind::Instance,
+            loc: loc.clone(),
+            callees: Vec::new(),
+            inferred: false,
+            generic: None,
+            instance_of: None,
+            generated: None,
+        });
+        self.helpers.insert((op, t.clone()), id);
+        self.register_types(std::slice::from_ref(t));
+        let src = crate::hasheq::helper_source(self, op, t);
+        let internal = |d: Diagnostic| {
+            Diagnostic::error(
+                codes::E_INTERNAL,
+                format!("the generated `{name}` does not compile: {}", d.message),
+                loc.clone(),
+            )
+        };
+        let toks = crate::lexer::lex(&name, &src).map_err(internal)?;
+        let body = match crate::parser::parse_repl_with(&name, &toks, &self.type_arities())
+            .map_err(internal)?
+        {
+            crate::parser::ReplInput::Body(b) => b,
+            crate::parser::ReplInput::Items(_) => unreachable!("a generated body has no items"),
+        };
+        let out = compile_body(self, &name, Mode::Declared(&effect), &body, loc, &[])
+            .map_err(internal)?;
+        let w = &mut self.words[id];
+        w.body = Some(out.compiled);
+        w.callees = out.callees;
+        Ok(id)
+    }
+
     /// The word named `n`, making it first if it is a pending prelude
     /// template (with the rest of its type's words).
     pub fn lookup(&mut self, n: &str) -> Option<WordId> {
@@ -552,9 +622,11 @@ impl Ctx {
                 loc: l.loc,
                 callees: Vec::new(),
                 inferred: false,
-                generic: Some(Generic { body: None }),
+                generic: Some(Generic {
+                    body: l.body.clone(),
+                }),
                 instance_of: None,
-                generated: Some(l.ty),
+                generated: if l.body.is_some() { None } else { Some(l.ty) },
             };
             // Never emitted by `assemble`; no literal is interned for it.
             word.body = Some(Compiled {
@@ -1511,6 +1583,77 @@ impl<'c> Walker<'c> {
         Ok(flow)
     }
 
+    /// Emit `eq` or `hash` on values of the concrete type `t`: inline for
+    /// numbers and function values, a call to a generated word otherwise.
+    fn hash_eq(&mut self, op: Op, t: &Ty, loc: &Location) -> Result<(), Diagnostic> {
+        let mut ta = TempAlloc::default();
+        // Turn a float on top into its bits.
+        let bits = |w: &mut Self, t: &Ty| match t {
+            Ty::F32 => w.op(I::I32ReinterpretF32),
+            Ty::F64 => w.op(I::I64ReinterpretF64),
+            _ => {}
+        };
+        let wide = matches!(t, Ty::I64 | Ty::F64);
+        match t {
+            Ty::I32 | Ty::Quot(_) | Ty::I64 | Ty::F32 | Ty::F64 => {
+                if op == Op::Eq {
+                    if matches!(t, Ty::F32 | Ty::F64) {
+                        let vt = if wide { ValType::I64 } else { ValType::I32 };
+                        bits(self, t);
+                        let b = self.temp(&mut ta, vt);
+                        self.op(I::LocalSet(b));
+                        bits(self, t);
+                        self.op(I::LocalGet(b));
+                    }
+                    self.op(if wide { I::I64Eq } else { I::I32Eq });
+                    return Ok(());
+                }
+                bits(self, t);
+                if wide {
+                    // Fold the high half into the low.
+                    let x = self.temp(&mut ta, ValType::I64);
+                    self.op(I::LocalTee(x));
+                    self.op(I::I32WrapI64);
+                    self.op(I::LocalGet(x));
+                    self.op(I::I64Const(32));
+                    self.op(I::I64ShrU);
+                    self.op(I::I32WrapI64);
+                    self.op(I::I32Xor);
+                }
+                // A multiply-and-xorshift mix.
+                self.op(I::I32Const(0x9E37_79B1_u32 as i32));
+                self.op(I::I32Mul);
+                let h = self.temp(&mut ta, ValType::I32);
+                self.op(I::LocalTee(h));
+                self.op(I::LocalGet(h));
+                self.op(I::I32Const(16));
+                self.op(I::I32ShrU);
+                self.op(I::I32Xor);
+                Ok(())
+            }
+            _ => {
+                let id = self.ctx.hash_eq_word(op, t, loc)?;
+                let e = self.ctx.words[id].effect.clone();
+                if !self.ctx.indirect_calls {
+                    self.op(I::Call(Word::func_index(id)));
+                } else {
+                    self.ctx.register_effect(&e);
+                    let ti = self.ctx.intern_type(
+                        e.wasm_params(&self.ctx.struct_types),
+                        e.wasm_results(&self.ctx.struct_types),
+                    );
+                    self.op(I::I32Const(id as i32));
+                    self.op(I::CallIndirect {
+                        type_index: ti,
+                        table_index: 0,
+                    });
+                }
+                self.callees.push((id, EdgeKind::Call));
+                Ok(())
+            }
+        }
+    }
+
     fn open_label(&mut self) -> u32 {
         self.depth += 1;
         self.depth
@@ -2420,6 +2563,31 @@ impl<'c> Walker<'c> {
             return Ok(Flow::Normal);
         }
         match n {
+            "eq" | "hash" => {
+                let op = if n == "eq" { Op::Eq } else { Op::Hash };
+                let v = self.subst.fresh();
+                let ins = if op == Op::Eq {
+                    vec![v.clone(), v.clone()]
+                } else {
+                    vec![v.clone()]
+                };
+                self.pop_expect(n, &ins, loc)?;
+                let t = self.subst.resolve(&v);
+                if self.emit {
+                    if t.has_var() {
+                        return Err(self.err(
+                            codes::E_AMBIGUOUS_TYPE,
+                            format!(
+                                "the type `{n}` works on is not known here; add a stack assertion"
+                            ),
+                            loc,
+                        ));
+                    }
+                    self.hash_eq(op, &t, loc)?;
+                }
+                self.stack.push(Ty::I32);
+                return Ok(Flow::Normal);
+            }
             "array.new" => {
                 self.pop_expect(n, &[Ty::I32], loc)?;
                 let v = self.subst.fresh();

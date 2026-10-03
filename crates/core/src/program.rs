@@ -404,8 +404,11 @@ pub(crate) fn process_item(
     origin: Origin,
     p: &mut Program,
 ) -> Vec<WordId> {
-    // A definition named like a pending prelude template meets the template.
-    if let Item::Def { name, .. } | Item::Declare { name, .. } = &item {
+    // A definition named like a pending prelude template meets the
+    // template, and a test of one makes it.
+    if let Item::Def { name, .. } | Item::Declare { name, .. } | Item::Test { word: name, .. } =
+        &item
+    {
         ctx.lookup(name);
     }
     match item {
@@ -480,6 +483,28 @@ pub(crate) fn process_item(
                         loc,
                     )
                     .with_word(&name),
+                );
+                return vec![];
+            }
+            // A prelude generic word is made on first use, so a program that
+            // never uses it keeps its numbering. The REPL processes the
+            // prelude eagerly, which is where its templates are checked.
+            if generic
+                && !inferred
+                && origin == Origin::Library
+                && ctx.defer_library_generics
+                && !ctx.by_name.contains_key(&name)
+            {
+                ctx.lazy_words.insert(
+                    name.clone(),
+                    crate::check::LazyWord {
+                        ty: name.clone(),
+                        group: vec![name],
+                        effect,
+                        origin,
+                        loc,
+                        body: Some(body),
+                    },
                 );
                 return vec![];
             }
@@ -700,7 +725,7 @@ fn define_struct(
     origin: Origin,
     p: &mut Program,
 ) -> Vec<WordId> {
-    if let Some(d) = check_new_name(&name, &loc) {
+    if let Some(d) = check_type_name(&name, &loc) {
         p.diagnostics.push(d);
         return vec![];
     }
@@ -816,8 +841,13 @@ fn define_struct(
         ctx.structs[k].type_index = idx;
         idx
     };
+    let words = struct_words(&name, &params, &plain, idx);
+    if generic && origin == Origin::Library && ctx.defer_library_generics {
+        defer_generated(ctx, &name, words, origin, &loc);
+        return vec![];
+    }
     let mut ids = Vec::new();
-    for (w, effect, code) in struct_words(&name, &params, &plain, idx) {
+    for (w, effect, code) in words {
         let id = match ctx.by_name.get(&w) {
             Some(&id) => id,
             None => ctx.add_word(new_word(
@@ -847,6 +877,31 @@ fn define_struct(
         ids.push(id);
     }
     ids
+}
+
+/// Defer the generated words of a prelude generic type until first use
+/// (`Ctx::lookup`), so a program that never uses them keeps its numbering.
+fn defer_generated(
+    ctx: &mut Ctx,
+    ty: &str,
+    words: Vec<(String, Effect, Vec<I<'static>>)>,
+    origin: Origin,
+    loc: &Location,
+) {
+    let group: Vec<String> = words.iter().map(|(w, _, _)| w.clone()).collect();
+    for (w, effect, _) in words {
+        ctx.lazy_words.insert(
+            w,
+            crate::check::LazyWord {
+                ty: ty.to_string(),
+                group: group.clone(),
+                effect,
+                origin,
+                loc: loc.clone(),
+                body: None,
+            },
+        );
+    }
 }
 
 /// A generic type may name itself in its fields only applied to its own
@@ -962,6 +1017,15 @@ fn check_effect_types(ctx: &mut Ctx, e: &Effect, loc: &Location) -> Result<(), D
     Ok(())
 }
 
+/// A struct or union name: the syntax rules of a word name, but it may be a
+/// primitive's name, since types and words are separate namespaces.
+fn check_type_name(name: &str, loc: &Location) -> Option<Diagnostic> {
+    if prims::is_builtin(name) {
+        return None;
+    }
+    check_new_name(name, loc)
+}
+
 pub(crate) fn check_new_name(name: &str, loc: &Location) -> Option<Diagnostic> {
     if prims::is_builtin(name)
         || matches!(name, ":>" | "[" | "]" | "(" | ")" | ";" | ":" | "--" | "->")
@@ -1056,7 +1120,7 @@ fn define_union(
     origin: Origin,
     p: &mut Program,
 ) -> Vec<WordId> {
-    if let Some(d) = check_new_name(&name, &loc) {
+    if let Some(d) = check_type_name(&name, &loc) {
         p.diagnostics.push(d);
         return vec![];
     }
@@ -1156,19 +1220,7 @@ fn define_union(
     let def = ctx.unions[k].clone();
     let words = union_words(ctx, &def, idx, !generic);
     if generic && origin == Origin::Library && ctx.defer_library_generics {
-        let group: Vec<String> = words.iter().map(|(w, _, _)| w.clone()).collect();
-        for (w, effect, _) in words {
-            ctx.lazy_words.insert(
-                w,
-                crate::check::LazyWord {
-                    ty: name.clone(),
-                    group: group.clone(),
-                    effect,
-                    origin,
-                    loc: loc.clone(),
-                },
-            );
-        }
+        defer_generated(ctx, &name, words, origin, &loc);
         return vec![];
     }
     let mut ids = Vec::new();

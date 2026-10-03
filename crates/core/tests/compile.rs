@@ -835,3 +835,81 @@ fn prelude_option() {
     let f = functions(c.wasm.as_ref().unwrap());
     assert!(!f.iter().any(|n| n.starts_with("option.")), "{f:?}");
 }
+
+#[test]
+fn eq_and_hash_on_numbers() {
+    let c = ok(": same ( T T -- i32 ) eq ;\n: a ( -- i32 ) 1 2 same ;\n: b ( -- i32 ) 1.0 2.0 same ;\n: k ( T -- i32 ) hash ;\n: kk ( -- i32 ) 3 i64 k ;");
+    assert!(c.word("same<i32>").is_some());
+    assert!(c.word("same<f64>").is_some());
+    assert!(c.word("k<i64>").is_some());
+    let c = ok(": same2 eq ;");
+    assert_eq!(c.word("same2").unwrap().effect, "( T T -- i32 )");
+    assert_eq!(err(": f ( -- i32 ) 3 \"x\" eq ;"), "E_TYPE_MISMATCH");
+    ok(": g ( array T -- i32 ) 0 array.at hash ;");
+    ok(": h ( -- i32 ) 1 array.new ( array i32 ) 0 array.at hash ;");
+    ok(": s ( -- i32 ) \"a\" \"a\" eq ;");
+}
+
+#[test]
+fn eq_and_hash_helpers() {
+    let c = export("struct point  x: i32  y: f64\n: main ( -- ) 1 2.0 point.new 1 2.0 point.new eq i32.to-str println ;");
+    assert!(c.ok(), "{:?}", c.diagnostics);
+    let f = functions(c.wasm.as_ref().unwrap());
+    assert!(f.iter().any(|n| n == "eq<point>"), "{f:?}");
+    assert!(f.iter().any(|n| n == "point.x"), "{f:?}");
+    let c = export("struct point  x: i32  y: f64\n: main ( -- ) 3 3 eq i32.to-str println ;");
+    let f = functions(c.wasm.as_ref().unwrap());
+    assert!(
+        !f.iter().any(|n| n.starts_with("eq<") || n == "point.x"),
+        "{f:?}"
+    );
+    let c = ok("struct node  v: i32  next: option node\n: same ( node node -- i32 ) eq ;\n: h ( str -- i32 ) hash ;");
+    assert!(c.word("eq<node>").is_some());
+    assert!(c.word("eq<option node>").is_some());
+    assert!(c.word("hash<str>").unwrap().library);
+}
+
+#[test]
+fn type_names_may_be_primitive_names() {
+    // The prelude's `map K V` is one; `fold` is another primitive name.
+    let c = ok("struct fold K V  k: K  v: V\n: f ( -- str ) 3 \"x\" fold.new fold.v ;\n: g ( fold i32 str -- i32 ) fold.k ;\n: h ( array i32 -- i32 ) 0 [ i32.add ] fold ;\n: m ( array i32 -- array i32 ) [ 1 i32.add ] map ;\n: n ( -- map i32 str ) map.make ( map i32 str ) ;");
+    assert!(c.word("fold.new").is_some());
+    assert_eq!(err("struct i32  x: i32"), "E_SYNTAX");
+    assert_eq!(err("struct array  x: i32"), "E_SYNTAX");
+    assert_eq!(err("union u | dup"), "E_SYNTAX");
+}
+
+#[test]
+fn prelude_vec() {
+    let c = ok(": main ( -- ) ;");
+    let push = c.word("vec.push").expect("made at the end of the program");
+    assert!(push.library && push.generic);
+    let c = export(
+        ": main ( -- ) vec.make ( vec i32 ) :> v  v 3 vec.push  v 0 vec.at i32.to-str println ;",
+    );
+    assert!(c.ok(), "{:?}", c.diagnostics);
+    let f = functions(c.wasm.as_ref().unwrap());
+    assert!(f.iter().any(|n| n == "vec.push<i32>"), "{f:?}");
+    assert!(f.iter().any(|n| n == "vec.at<i32>"), "{f:?}");
+    let c = export(": main ( -- ) 3 i32.to-str println ;");
+    let f = functions(c.wasm.as_ref().unwrap());
+    assert!(
+        !f.iter()
+            .any(|n| n.starts_with("vec.") || n.starts_with("chunk.")),
+        "{f:?}"
+    );
+}
+
+#[test]
+fn prelude_map() {
+    let c = ok(": main ( -- ) ;");
+    let set = c.word("map.set").expect("made at the end of the program");
+    assert!(set.library && set.generic);
+    let c = export(": main ( -- ) map.make ( map str i32 ) :> m  m \"a\" 1 map.set  m map.len i32.to-str println ;");
+    assert!(c.ok(), "{:?}", c.diagnostics);
+    let f = functions(c.wasm.as_ref().unwrap());
+    assert!(f.iter().any(|n| n == "map.set<str,i32>"), "{f:?}");
+    let c = export(": main ( -- ) 3 i32.to-str println ;");
+    let f = functions(c.wasm.as_ref().unwrap());
+    assert!(!f.iter().any(|n| n.starts_with("map.")), "{f:?}");
+}

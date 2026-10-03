@@ -21,7 +21,7 @@ Tasks are taken from Rosetta Code **task descriptions** only. Every solution is 
 - `test` compares the stack exactly and does not look at console output. Test words that return values; keep `main` as the thin printing wrapper.
 - Idiomatic over clever. These are the programs the model will imitate.
 
-The files already in `examples/` (`hello`, `basics`, `strings`, `arrays`, `contract`, `files`, `http`, `ninep`, `wasi`, `generics`, `inferred`) are the core teaching set and stay alongside the tasks below.
+The files already in `examples/` (`hello`, `basics`, `strings`, `arrays`, `contract`, `files`, `http`, `ninep`, `wasi`, `generics`, `inferred`, and `collections`, which shows the prelude's `vec T` and `map K V` with struct keys compared by contents) are the core teaching set and stay alongside the tasks below.
 
 ## Task list
 
@@ -159,7 +159,7 @@ Append as they happen. Each entry: task, what was missing, workaround used, and 
 | Temperature conversion, RPN calculator | `f64.to-str` (no float formatting in the library) | `hundredths` (temperature) and `fixed ( f64 i32 -- str )` (RPN): scale by 10^d, `f64.nearest`, format the `i64` | Resolved: `f64.fixed ( f64 i32 -- str )` is in the prelude and both examples use it |
 | Sieve, insertion sort, binary search, 100 doors | Array literals (tests take literals only) | `digits ( str -- array i32 )` builds a test array from `"31415926"`; `array.to-str` (now in the prelude) turns a result into a comparable `str` | `digits` is still repeated in each file: shared test helpers need library structure (`ARCHITECTURE.md` open question 2) |
 | Luhn test | Index alongside `fold` | `times` with the index counted from the right | Minor; an indexed fold could be a library word |
-| Word frequency | A map type; a growable array | `array str` and `array i32` side by side with linear search (quadratic); capacity fixed at the most words the text could hold | Resolved by M4 structs: a binary search tree of `struct node`, children as arrays of 0 or 1 nodes, so lookup is logarithmic on typical text and nothing is sized up front. A map is still a candidate for the library once there is library structure |
+| Word frequency | A map type; a growable array | `array str` and `array i32` side by side with linear search (quadratic); capacity fixed at the most words the text could hold | Resolved by M4 structs: a binary search tree of `struct node`, children as arrays of 0 or 1 nodes, so lookup is logarithmic on typical text and nothing is sized up front. The prelude now has a `map str i32` (M9); the example keeps its tree as a worked example of recursive structs |
 | Tokenizer | Structs | Tokens three `i32`s apart in one array (kind, start, length); every reader must know the layout | Resolved by M4 structs: `struct token`, read through `token.kind`, `token.start` and `token.len` |
 | Function composition | Closures, or making a function at run time | `compose-apply` applies f after g; composition at definition time is just `double inc` | Expected. In a concatenative language static composition is juxtaposition, so the gap is only for compositions decided at run time |
 

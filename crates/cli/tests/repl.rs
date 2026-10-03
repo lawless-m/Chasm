@@ -329,3 +329,13 @@ fn union_echo() {
         serde_json::json!({"type": "shape", "value": "shape.circle{r: 1.5}"})
     );
 }
+
+#[test]
+fn vec_echo() {
+    let (ok, out, err) = repl(&[], "vec.make ( vec i32 )\ndup 3 vec.push\n");
+    assert!(ok, "{out}{err}");
+    assert_eq!(
+        last_stack(&out),
+        "(\nvec i32 vec{chunks: <32 elements>, count: 1}\n)"
+    );
+}

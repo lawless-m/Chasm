@@ -112,7 +112,8 @@ TCP; native only), `--no-file` (hides the host filesystem) and `--no-net` (hides
   union values as their variant, `shape.circle{r: 1.5}` or `shape.empty{}`
   (nested values to three levels, then `seg{...}`), and an unset struct
   as `null`. A value of an instantiated generic type shows under its applied
-  type: `option i32 option.some{v: 3}`. A stack holding a struct or union
+  type: `option i32 option.some{v: 3}`. A `vec` or `map` echoes as the
+  struct it is: `vec{chunks: <32 elements>, count: 1}`. A stack holding a struct or union
   value prints one entry per line, type then value, between `(` and `)`:
 
   ```
@@ -293,6 +294,8 @@ There is no `f32` literal: `1.5 f32.demote_f64`.
 | `2dup` | `( a b -- a b a b )` |
 | `2drop` | `( a b -- )` |
 
+`eq` and `hash` also work on any type (section 10d).
+
 These work on any type; `dup` on a `str` copies both halves.
 
 ## 6. Locals
@@ -412,6 +415,8 @@ The declaration generates ordinary words, listed by `chasm words` and seen by
   fields, `array point`.
 - Declaring a struct again with the same fields does nothing; changing its
   fields is `E_REDEFINE_EFFECT`, listing the words that use it.
+- A struct or union name may be a primitive's name (`map`), but not a type
+  keyword (`i32`, `str`, `array`, ...).
 - A struct can be named only after its declaration, so two structs cannot
   refer to each other (`E_UNKNOWN_TYPE`). The field names `new` and names
   ending in `!` are reserved.
@@ -523,6 +528,92 @@ The prelude declares `union option T | none | some  v: T`:
 : or-zero ( option i32 -- i32 )  none: [ 0 ] some: [ ] match ;
 test or-zero : 5 option.some or-zero -> 5
 ```
+
+## 10d. Equality, hashing and collections
+
+**`eq` and `hash`** work on any type, by contents:
+
+| Word | Effect |
+|---|---|
+| `eq` | `( a a -- i32 )` 1 when equal |
+| `hash` | `( a -- i32 )` equal values hash alike |
+
+| Type | Equal when |
+|---|---|
+| `i32` `i64` | same value |
+| `f32` `f64` | same bit pattern: NaN equals itself, `0.0` and `-0.0` differ |
+| `str` | same bytes |
+| `array T` | same length, elements equal in order |
+| a struct | every field equal, recursively |
+| a union | same variant, fields equal |
+| a function value | same slot |
+
+They work on a `T` inside a generic word, and need the type to be known
+(`E_AMBIGUOUS_TYPE`). A cyclic struct value makes them loop forever. The hash
+function itself may change between versions.
+
+**`vec T`**, a growable array whose storage never moves:
+
+| Word | Effect |
+|---|---|
+| `vec.make` | `( -- vec T )` fix `T` with an assertion: `vec.make ( vec i32 )` |
+| `vec.push` | `( vec T T -- )` |
+| `vec.len` | `( vec T -- i32 )` |
+| `vec.at` | `( vec T i32 -- T )` traps out of range |
+| `vec.at!` | `( vec T i32 T -- )` traps out of range |
+| `vec.pop` | `( vec T -- option T )` |
+| `vec.clear` | `( vec T -- )` length 0, storage kept for reuse |
+| `vec.to-array` | `( vec T -- array T )` a copy |
+| `vec.each` | `( vec T [ T -- ] -- )` |
+| `vec.fold` | `( vec T A [ A T -- A ] -- A )` |
+
+```
+: add ( i32 i32 -- i32 )  i32.add ;
+
+: squares ( i32 -- vec i32 )
+  :> n
+  vec.make ( vec i32 ) :> v
+  n [ :> i  v i i i32.mul vec.push ] times
+  v ;
+test vec.at : 4 squares 3 vec.at -> 9
+test vec.fold : 4 squares 0 'add vec.fold -> 14
+```
+
+`vec.each` and `vec.fold` take function values (`'add`): a quotation value
+takes no inputs and cannot use the word's locals. For a loop body that needs
+locals, use `vec.to-array [ ... ] each`.
+
+**`map K V`**, a hash map over `hash` and `eq`:
+
+| Word | Effect |
+|---|---|
+| `map.make` | `( -- map K V )` fix the types: `map.make ( map str i32 )` |
+| `map.set` | `( map K V K V -- )` insert or replace |
+| `map.get` | `( map K V K -- option V )` |
+| `map.has` | `( map K V K -- i32 )` |
+| `map.remove` | `( map K V K -- )` |
+| `map.len` | `( map K V -- i32 )` |
+| `map.keys` | `( map K V -- vec K )` in no particular order |
+| `map.each` | `( map K V [ K V -- ] -- )` in no particular order |
+
+```
+: or-zero ( option i32 -- i32 )  none: [ 0 ] some: [ ] match ;
+
+: tally ( map str i32 str -- )
+  :> w :> m
+  m w  m w map.get or-zero 1 i32.add  map.set ;
+```
+
+Keys compare by contents, so a struct makes a natural key: a fresh
+`3 4 pair.new` finds what was stored under another `3 4 pair.new`. Changing
+a key after inserting it loses it.
+
+- **Memory.** Collections live in linear memory, which is never freed: a
+  dropped vec or map stays allocated, and a map that grows abandons its old
+  arrays. Reuse a vec with `vec.clear` rather than making a fresh one per
+  step of a loop.
+- The other words named `vec.*`, `chunk.*` and `map.*` (`vec.new`,
+  `map.ks`, `map.find`, `map.put`, `map.rehash`, ...) are the implementation.
 
 ## 11. Functions as values
 
@@ -639,7 +730,7 @@ Library words:
 | `ls` | `( str -- i32 )` prints a directory, one entry per line |
 | `now` | `( -- i64 )` nanoseconds since the epoch |
 
-The prelude also declares `option T` (section 10c): `option.none ( -- option T )`,
+Collections (`vec T`, `map K V`) are in section 10d. The prelude also declares `option T` (section 10c): `option.none ( -- option T )`,
 `option.some ( T -- option T )`.
 
 ## 15. Diagnostic codes
@@ -662,7 +753,7 @@ The prelude also declares `option T` (section 10c): `option.none ( -- option T )
 | `E_UNREACHABLE` | code after `leave` or `trap` |
 | `E_LOCAL` | local bound twice, assigned while immutable, or named like a primitive |
 | `E_CAPTURE` | a quotation value uses a local (no closures) |
-| `E_AMBIGUOUS_TYPE` | an element type is never fixed, a generic word's or constructor's instantiation is not fixed, or `match` on a value whose type is not known |
+| `E_AMBIGUOUS_TYPE` | an element type is never fixed, a generic word's or constructor's instantiation is not fixed, or `match`, `hash` or `eq` on a value whose type is not known |
 | `E_DECLARE_MISMATCH` | definition or redeclaration differs from the declaration |
 | `E_REDEFINE_EFFECT` | redefinition changes an effect, redefines a primitive, or changes a struct's fields or a union's variants or a type's parameters; lists `dependants` |
 | `E_TEST_TYPE` | a test's expected literals do not match what its body leaves |
@@ -684,5 +775,7 @@ mount and directory records), `wasi` (a program for `build --wasi`), `generics` 
 `inferred` (effects left out), `structs` (structs, a list of `option node`
 links, arrays of structs), `unions` (shapes with `match` and `else:`, a
 recursive `list T`, `option`), `generic-structs` (`pair T U`, a generic word
-over it, a struct holding an `option`). Any of them can also be typed or piped into
+over it, a struct holding an `option`), `collections` (`vec` push, `at` and
+`fold`, a word count with `map str i32`, a map keyed by `pair i32 i32`,
+`vec.clear`). Any of them can also be typed or piped into
 `chasm repl`, e.g. `chasm repl < examples/basics.chasm`.

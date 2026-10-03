@@ -60,4 +60,9 @@ export async function structScenario(repl, assert) {
   await repl.step("struct node  v: i32  next: option node");
   r = await repl.step("drop 1 option.none ( i32 option node ) node.new option.some 2 swap node.new");
   assert.equal(top(r).value, "node{v: 2, next: option.some{v: node{v: 1, next: option{...}}}}", "nested union");
+
+  r = await repl.step("drop vec.make ( vec i32 )");
+  assert.ok(r.ok, JSON.stringify(r.diagnostics));
+  r = await repl.step("dup 3 vec.push");
+  assert.equal(JSON.stringify(top(r)), JSON.stringify({ type: "vec i32", value: "vec{chunks: <32 elements>, count: 1}" }), "vec echo");
 }

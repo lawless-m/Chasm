@@ -278,6 +278,8 @@ fn primitive_effect(name: &str) -> Option<String> {
         "array.slice" => "( array T i32 i32 -- array T )",
         "call" => "( ... [ ... -- ... ] -- ... ): calls a function value",
         "leave" => "exits the innermost loop",
+        "eq" => "( a a -- i32 ): equal by contents",
+        "hash" => "( a -- i32 ): a hash of the contents",
         "if" => "cond [ then ] [ else ] if",
         "when" => "cond [ body ] when",
         "unless" => "cond [ body ] unless",

@@ -41,7 +41,9 @@ headers natively and in the browser, 9p mounts, `chasm build --wasi`, and
 examples for each) and M7 (optional effects with inference, generic words
 with type variables monomorphised per use, `chasm infer --write`) and M8
 (sum types: `union` with `match`, generic structs and unions monomorphised
-per instantiation, `option T` in the prelude) are implemented: M0 to M8
+per instantiation, `option T` in the prelude) and M9 (collections: a
+growable `vec T` and a hash map `map K V` in the prelude, on the
+by-contents primitives `hash` and `eq`) are implemented: M0 to M9
 implemented.
 
 Licence: MIT.

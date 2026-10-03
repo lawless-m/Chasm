@@ -292,7 +292,7 @@ impl<'a> Parser<'a> {
     /// After `struct`: the name, then `field: type` pairs while the next token
     /// is a field label. No terminator.
     fn struct_item(&mut self) -> Result<Item, Diagnostic> {
-        let name = self.type_name("a struct name after `struct`", "a struct name")?;
+        let name = self.type_name("a struct name after `struct`", "a struct name", true)?;
         let n = name.text.as_str();
         let params = self.params(n)?;
         let fields = self.fields(n)?;
@@ -307,13 +307,13 @@ impl<'a> Parser<'a> {
     /// After `union`: the name, then one or more `| variant  field: type ...`
     /// groups. No terminator.
     fn union_item(&mut self) -> Result<Item, Diagnostic> {
-        let name = self.type_name("a union name after `union`", "a union name")?;
+        let name = self.type_name("a union name after `union`", "a union name", true)?;
         let n = name.text.as_str();
         let params = self.params(n)?;
         let mut variants: Vec<Variant> = Vec::new();
         while self.peek().is_some_and(|t| t.is("|")) {
             self.pos += 1;
-            let v = self.type_name("a variant name after `|`", "a variant name")?;
+            let v = self.type_name("a variant name after `|`", "a variant name", false)?;
             let vn = v.text.as_str();
             if vn == "else" || vn == "tag" || vn.contains('.') {
                 return Err(self.err(
@@ -373,13 +373,20 @@ impl<'a> Parser<'a> {
 
     /// A struct, union or variant name: lowercase, not a type keyword,
     /// number, primitive or punctuation.
-    fn type_name(&mut self, what: &str, kind: &str) -> Result<&'a Token, Diagnostic> {
+    /// A type may share a primitive word's name (`map`), since types and
+    /// words are separate namespaces; a variant may not.
+    fn type_name(
+        &mut self,
+        what: &str,
+        kind: &str,
+        type_name: bool,
+    ) -> Result<&'a Token, Diagnostic> {
         let name = self.name(what)?;
         let n = name.text.as_str();
         if TYPE_KEYWORDS.contains(&n)
             || n.starts_with('\'')
             || parse_number(n).is_some()
-            || crate::prims::is_builtin(n)
+            || (!type_name && crate::prims::is_builtin(n))
             || is_punct(n)
             || n == "|"
         {

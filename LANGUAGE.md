@@ -1,6 +1,6 @@
 # Chasm: Language Specification
 
-Status: draft v0.14 (M1 to M8 decisions recorded; see sections 12 to 19). Chasm source files use the `.chasm` extension. Companion to `ARCHITECTURE.md`. Sections marked **TBD** are not yet decided.
+Status: draft v0.15 (M1 to M9 decisions recorded; see sections 12 to 20). Chasm source files use the `.chasm` extension. Companion to `ARCHITECTURE.md`. Sections marked **TBD** are not yet decided.
 
 ## 1. Types
 
@@ -124,7 +124,7 @@ union shape
 union option T | none | some  v: T
 ```
 
-`struct name P...  field: type ...` and `union name P...  | variant  field: type ...  | variant ...`. Optional type parameters are uppercase-initial names listed between the name and the first field or first `|`; there is no terminator, as for `struct`. A union needs at least one variant, and a variant may have no fields. Variant names follow struct-name rules (lowercase-initial, not a primitive or type keyword) and may not be `else` or `tag`. Field names `new` and names ending in `!` are reserved, as for structs. A parameter, variant, or a field within one variant named twice is `E_SYNTAX`.
+`struct name P...  field: type ...` and `union name P...  | variant  field: type ...  | variant ...`. Optional type parameters are uppercase-initial names listed between the name and the first field or first `|`; there is no terminator, as for `struct`. A union needs at least one variant, and a variant may have no fields. A struct or union name may be the name of a primitive word (`map`), since types and words are separate namespaces, but not a type keyword (`i32`, `str`, `array`, ...). Variant names follow struct-name rules (lowercase-initial, not a primitive or type keyword) and may not be `else` or `tag`. Field names `new` and names ending in `!` are reserved, as for structs. A parameter, variant, or a field within one variant named twice is `E_SYNTAX`.
 
 A field type may name only the declared parameters; any other type variable is `E_UNKNOWN_TYPE`, naming the parameter list. A generic type may name itself in its fields only applied to exactly its own parameters in order (`tail: list T` inside `union list T`); any other self-application is `E_UNKNOWN_TYPE`. A non-generic struct or union may name itself directly, in `array`, or through a generic type declared above (`next: option node`). Struct and union names share one namespace, separate from words, and a type can be named only after its declaration.
 
@@ -162,6 +162,81 @@ Labelled arms are written directly before the word `match`, in any order, as `if
 
 **Prelude.** `union option T | none | some  v: T` is in the prelude; an optional value is an `option T`. Union and generic struct values are not test literals: tests compare through words.
 
+## 4d. Equality, hashing and collections
+
+**`eq` and `hash`.**
+
+| Word | Effect | Behaviour |
+|---|---|---|
+| `eq` | `( a a -- i32 )` | 1 when the two values are equal by contents, else 0. Both operands have one type. |
+| `hash` | `( a -- i32 )` | A hash of the contents: values `eq` reports equal hash alike. |
+
+Both are polymorphic primitives like `dup`, instantiated at each use. They may be used on a `T` inside a generic word and are resolved per instance; on a value whose type is not yet known they are `E_AMBIGUOUS_TYPE`. They work by contents:
+
+| Type | Equal when |
+|---|---|
+| `i32`, `i64` | same value |
+| `f32`, `f64` | same bit pattern: NaN equals itself, `0.0` differs from `-0.0` |
+| `str` | same bytes |
+| `array T` | same length and elements equal in order |
+| a struct | every field equal, recursively |
+| a union | same variant and its fields equal |
+| a function value | same table slot: two quotations with the same text are different values |
+
+`hash` follows the same structure. Its only promise is that equal values hash alike; the function itself is not a contract and may change between versions. A cyclic struct value makes `hash` and `eq` loop forever: there is no cycle detection. Numbers and function values compile to inline code; every other type gets a generated word per concrete type (`eq<point>`, `hash<array str>`), made on first use, listed by `words` as a library word and never reported dead.
+
+**`vec T`.** A growable array in the prelude:
+
+```
+struct chunk T  items: array T
+struct vec T  chunks: array chunk T  count: i32
+```
+
+Its storage is a list of chunks whose sizes double (1, 2, 4, ...), so storage never moves: element `i` is in chunk `31 - clz(i + 1)` at offset `i + 1 - 2^chunk`, found in constant time.
+
+| Word | Effect | Behaviour |
+|---|---|---|
+| `vec.make` | `( -- vec T )` | An empty vec. Needs a context that fixes `T`: `vec.make ( vec i32 )`. |
+| `vec.push` | `( vec T T -- )` | Append. |
+| `vec.len` | `( vec T -- i32 )` | The number of elements. |
+| `vec.at` | `( vec T i32 -- T )` | Read; traps `vec.at: index out of range`. |
+| `vec.at!` | `( vec T i32 T -- )` | Write; traps `vec.at!: index out of range`. |
+| `vec.pop` | `( vec T -- option T )` | Remove and return the last element, `option.none` when empty. |
+| `vec.clear` | `( vec T -- )` | Length to 0, chunks kept, for reuse. |
+| `vec.to-array` | `( vec T -- array T )` | A copy. |
+| `vec.each` | `( vec T [ T -- ] -- )` | Call the function value on each element in order. |
+| `vec.fold` | `( vec T A [ A T -- A ] -- A )` | Fold from the initial value. |
+
+The function arguments are function values (`'word`), since quotation values take no inputs and capture no locals; a loop body that needs the word's locals goes through `vec.to-array [ ... ] each`. The generated words of the two structs (`vec.new`, `vec.chunks`, `vec.count`, `chunk.*`) are an implementation detail; `vec.new` is the generated constructor, which is why the public one is `vec.make`.
+
+**`map K V`.** A hash map in the prelude, open addressing with linear probing over `hash` and `eq`:
+
+```
+struct map K V  ks: array K  vs: array V  used: array i32  count: i32  filled: i32
+```
+
+The capacity is a power of two from 8; `used` holds 0 for an empty slot, 1 for a live one and 2 for a removed one. Before an insert would take the filled slots past half the capacity, the map is rehashed into arrays twice as large.
+
+| Word | Effect | Behaviour |
+|---|---|---|
+| `map.make` | `( -- map K V )` | An empty map. Needs a context that fixes `K` and `V`: `map.make ( map str i32 )`. |
+| `map.set` | `( map K V K V -- )` | Insert or replace. |
+| `map.get` | `( map K V K -- option V )` | The value, or `option.none`. |
+| `map.has` | `( map K V K -- i32 )` | 1 when the key is present. |
+| `map.remove` | `( map K V K -- )` | Remove the key if present. |
+| `map.len` | `( map K V -- i32 )` | The number of keys. |
+| `map.keys` | `( map K V -- vec K )` | The keys, in no specified order. |
+| `map.each` | `( map K V [ K V -- ] -- )` | Call the function value on each entry, in no specified order. |
+| `map.find` | `( map K V K -- i32 )` | The probe the others use: the key's slot, or -1. |
+
+`map.put` (store a key known to be absent) and `map.rehash` (move every entry into arrays twice as large) are the implementation of `map.set`, as are the generated words of the struct (`map.new`, `map.ks`, ...).
+
+A key changed after insertion is lost: its hash no longer matches its slot.
+
+**Memory.** Collections live in linear memory, which is never freed (`FUTURE.md` section 4). A vec's growth abandons nothing, since chunks never move; a map's rehash abandons the old arrays; a dropped collection is never reclaimed. `vec.clear` is the way to reuse one.
+
+**REPL echo.** A vec or map value echoes as the struct it is: `vec{chunks: <32 elements>, count: 3}`.
+
 ## 5. Shuffle primitives
 
 Built-in polymorphic words. Their effects use type variables, resolved at each use against the stack (see `ARCHITECTURE.md` 5b). User words may be polymorphic too: their effects may name type variables, and each concrete use is compiled as its own instance (section 18).
@@ -178,6 +253,8 @@ Built-in polymorphic words. Their effects use type variables, resolved at each u
 | `-rot` | `( a b c -- c a b )` |
 | `2dup` | `( a b -- a b a b )` |
 | `2drop` | `( a b -- )` |
+| `eq` | `( a a -- i32 )`, by contents (section 4d) |
+| `hash` | `( a -- i32 )`, by contents (section 4d) |
 
 Shuffles act on checker types: `dup` on a `str` copies both lowered halves.
 
@@ -347,3 +424,15 @@ Recorded here so the spec matches the compiler. `docs/reference.md` is the user-
 6. **Byte identity.** Generic types and unused prelude unions put nothing in a module's type section until instantiated, so programs that use neither compile byte-identically to M7.
 7. **`option T` is in the prelude** and replaces the array-of-0-or-1 idiom for optional links; decision 15.9 (no null test; optional links as arrays of 0 or 1) is superseded by it.
 
+## 20. Decisions taken in M9
+
+1. **`eq` and `hash` are by-contents polymorphic primitives**, instantiated per use like `dup`: inline for numbers and function values, a generated word per concrete type otherwise. Floats compare by bit pattern. There is no cycle detection, and the hash function is not a contract.
+2. **`vec T` is a list of doubling chunks** in the prelude, so storage never moves and growth abandons nothing.
+3. **`map K V` is open addressing** with linear probing in the prelude, rehashed by doubling before the filled slots pass half the capacity.
+4. **`vec.make` and `map.make`** are the public constructors, since `.new` is the generated struct constructor.
+5. **Type names may be primitive names** (`map`): types and words are separate namespaces. Type keywords stay reserved.
+6. **Byte identity.** The prelude's generic structs and generic `:` words are made lazily, like `option` (decision 19.6), so programs that use none of vec, map, `eq` and `hash` compile byte-identically to M8.
+7. **The memory leak is accepted**: collections live in never-freed linear memory, and `vec.clear` is the reuse path. Moving storage to the collector is `FUTURE.md` section 4.
+8. **No compact echo**: vec and map values echo as structs.
+9. **No new diagnostic codes.**
+10. **Function arguments are function values** (`'word`): quotation values take no inputs, so `vec.each`, `vec.fold` and `map.each` take words.

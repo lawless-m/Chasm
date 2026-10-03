@@ -24,7 +24,9 @@ fn code(s: &mut Session, text: &str) -> String {
 
 fn session() -> Session {
     let (s, step) = Session::new(true, false, LITERALS_BASE);
-    assert!(step.ok());
+    // The REPL processes the prelude eagerly, so this is what checks the
+    // prelude's generic templates (whole programs make them lazily, unchecked).
+    assert!(step.ok(), "{:?}", step.diagnostics);
     validate(step.module.as_ref().unwrap()).unwrap();
     assert_eq!(step.installs.len() as u32, step.table_size);
     assert!(step.table_size > 10);
@@ -451,4 +453,20 @@ fn prelude_option_at_the_repl() {
         step.line.as_ref().unwrap().stack_after[0].to_string(),
         "option i32"
     );
+}
+
+#[test]
+fn eq_on_structs_at_the_repl() {
+    let mut s = session();
+    ok(&mut s, "struct point  x: i32  y: f64");
+    let step = ok(&mut s, "1 2.0 point.new 1 2.0 point.new eq");
+    assert_eq!(step.line.as_ref().unwrap().stack_after, vec![Ty::I32]);
+    assert!(step.installs.len() > 1, "the line and eq<point>");
+}
+
+#[test]
+fn vec_at_the_repl() {
+    let mut s = session();
+    let step = ok(&mut s, "vec.make ( vec i32 ) dup 3 vec.push vec.len");
+    assert_eq!(step.line.as_ref().unwrap().stack_after, vec![Ty::I32]);
 }

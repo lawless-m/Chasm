@@ -1,0 +1,72 @@
+# Collections: the prelude's growable `vec T` and hash map `map K V`, built
+# on `eq` and `hash`, which compare any value by contents.
+# Exercises: vec.make, vec.push, vec.at, vec.fold, vec.pop, vec.clear,
+# vec.to-array, map.make, map.set, map.get, map.has, map.remove, map.len,
+# struct keys, eq on structs.
+
+# The squares 0, 1, 4, ..., (n-1)^2.
+: squares ( i32 -- vec i32 )
+  :> n
+  vec.make ( vec i32 ) :> v
+  n [ :> i  v i i i32.mul vec.push ] times
+  v ;
+test vec.at : 5 squares 4 vec.at -> 16
+test vec.len : 5 squares vec.len -> 5
+
+: add ( i32 i32 -- i32 )  i32.add ;
+: sum ( vec i32 -- i32 )  0 'add vec.fold ;
+test sum : 4 squares sum -> 14
+
+: or0 ( option i32 -- i32 )  none: [ 0 ] some: [ ] match ;
+test vec.pop : 4 squares vec.pop or0 -> 9
+test vec.pop : 0 squares vec.pop or0 -> 0
+
+# One vec reused: `vec.clear` keeps its storage.
+: reuse ( -- i32 )
+  vec.make ( vec i32 ) :> v
+  10 [ v swap vec.push ] times
+  v vec.clear
+  3 [ v swap vec.push ] times
+  v vec.len ;
+test reuse : reuse -> 3
+
+test vec.to-array : 4 squares vec.to-array array.to-str -> "0 1 4 9"
+
+# A word count: split on spaces, count each word.
+: tally ( map str i32 str -- )
+  :> w :> m
+  m w  m w map.get or0 1 i32.add  map.set ;
+
+: count-words ( str -- map str i32 )
+  :> s
+  map.make ( map str i32 ) :> m
+  0 :> start!
+  s str.len [ :> i
+    s i str.byte-at 32 i32.eq [
+      i start i32.gt_u [ m  s start i start i32.sub str.slice  tally ] when
+      i 1 i32.add start! ] when ]
+  times
+  s str.len start i32.gt_u [ m  s start s str.len start i32.sub str.slice  tally ] when
+  m ;
+test count-words : "the cat the" count-words "the" map.get or0 -> 2
+test count-words : "the cat the" count-words map.len -> 2
+test count-words : "" count-words map.len -> 0
+
+# Keys compare by contents: a fresh `3 4 pair.new` finds what was stored
+# under another.
+struct pair T U  first: T  second: U
+
+: grid ( -- map pair i32 i32 str )
+  map.make ( map pair i32 i32 str ) :> g
+  g 3 4 pair.new "tree" map.set
+  g 0 0 pair.new "start" map.set
+  g ;
+test map.has : grid 3 4 pair.new map.has -> 1
+test map.has : grid 4 3 pair.new map.has -> 0
+test eq : 3 4 pair.new 3 4 pair.new eq -> 1
+test map.remove : grid :> g  g 3 4 pair.new map.remove  g 3 4 pair.new map.has -> 0
+
+: main ( -- )
+  "sum of the first 10 squares: " print 10 squares sum i32.to-str println
+  "times `the` appears: " print "the cat sat on the mat" count-words "the" map.get or0 i32.to-str println
+  "points on the grid: " print grid map.len i32.to-str println ;
