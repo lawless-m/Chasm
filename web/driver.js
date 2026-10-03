@@ -118,6 +118,7 @@ export class Repl {
     const tests = s.tests.map((t, i) => this.check(t, done.tests[i]));
     return {
       ok: !diagnostics.some((d) => d.severity === "error") && !trap && tests.every((t) => t.status === "pass"),
+      line: Boolean(s.line),
       diagnostics,
       defined: s.defined,
       forgotten: s.forgotten,

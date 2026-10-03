@@ -25,6 +25,31 @@ Cross-Origin-Embedder-Policy: require-corp
 `web/serve.py` does (stdlib only, port 8000, or the first argument). Any
 static host works if it sends both headers.
 
+## Saved program
+
+The page keeps the program in the browser's `localStorage` (key
+`chasm.program`): every chunk that defines, declares, tests, forgets or
+forces something without an error, in the order typed. Lines are not kept.
+On load the page replays the saved chunks into the fresh session, so a
+reload or a redeploy keeps your words but starts with an empty stack. A
+saved chunk that no longer checks (after a compiler change) is shown with
+its error and dropped.
+
+Two page commands, handled by `main.js` rather than the compiler:
+
+- `)program` lists the saved chunks, ready to copy into a `.chasm` file.
+- `)clear` forgets them and reloads the page.
+
+Up and Down in the input box step through the chunks you have entered,
+as in readline: Up from the first line of the box, Down from the last, so
+inside a multi-line chunk they still move the caret. Down past the newest
+entry brings back what you were typing. The history (500 chunks, repeats
+collapsed) is kept in `localStorage` too (key `chasm.history`) and survives
+`)clear`.
+
+`test/bridge.html` keeps nothing, so driving it does not touch the saved
+program.
+
 ## How it works
 
 - **Main thread** (`main.js`, `driver.js`): owns the compiler session
