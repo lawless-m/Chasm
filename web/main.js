@@ -42,7 +42,9 @@ function render(r) {
   }
   if (r.trap) print(r.trap.word ? `trap in \`${r.trap.word}\`: ${r.trap.message}\n` : `trap: ${r.trap.message}\n`, "err");
   const s = r.stack;
-  if (s.some((e) => e.value.startsWith(`${e.type}{`))) {
+  // A struct or union value (`point{..}`, `option.some{..}`) gets a line of
+  // its own, as in `chasm repl`.
+  if (s.some((e) => e.value.endsWith("}") && !e.value.startsWith('"'))) {
     print(`(\n${s.map((e) => `${e.type} ${e.value}\n`).join("")})\n`, "stack");
   } else {
     print(s.length ? `( ${s.map((e) => e.type).join(" ")} ) ${s.map((e) => e.value).join(" ")}\n` : "( )\n", "stack");
