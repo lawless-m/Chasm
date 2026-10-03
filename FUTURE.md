@@ -61,3 +61,41 @@ What a compiler needs that the language lacks today:
 - **Collected memory.** A compiler that runs and exits survives the bump allocator; one inside the REPL would want section 4's GC strings and arrays. An AST built from structs is collected already.
 
 The end state is the usual fixpoint: the Rust compiler builds the Chasm compiler, that compiler builds itself, and the two outputs are byte-identical. The browser REPL could then run a compiler written in Chasm.
+
+## 9. Concurrency: communicating processes
+
+CSP-style processes and channels, built on closures (section 3). Chasm has no globals, so if a closure captures its locals by value, a process reaches only what it is given: a channel captured by a process is its whole connection to the rest of the program. The language enforces "share by communicating" rather than asking for it.
+
+```
+chan.make ( chan action ) :> ch
+[ ch input tokenize-into ] spawn          # producer captures ch
+[ ch chan.recv ... ] spawn                # consumer captures ch
+```
+
+Names follow Limbo (`spawn`, `alt`, channels); types are written the Chasm way, `chan T` like `vec T`.
+
+- **Channels.** `chan T` is generic over `T`. `chan.send ( chan T T -- )` and `chan.recv ( chan T -- option T )` block the process, not the program.
+- **Alt.** Labelled arms in the shape of `match`: `a recv: [ ... ] b recv: [ ... ] alt`.
+- **Processes are green threads in one instance.** WasmGC references cannot cross threads until shared-everything threads ship, so a channel carrying a struct could not join two wasm threads.
+- **Switching.** Either the Wasm stack-switching proposal (continuations; check engine and browser support when the time comes) or Binaryen's Asyncify, which works in every engine today at a cost in code size and speed. Binaryen is already a dependency (M5).
+- **I/O.** The ring (`ARCHITECTURE.md` section 5d) already carries a `user` field on every entry. A scheduler can park a process on its pending completion and run another, so I/O becomes concurrent without changing the `host.*` words.
+- **Stopping.** Limbo has no close: programs send a sentinel (`nil`), keep a separate quit channel, or kill the process group through `/prog`, and with two senders the sentinels have to be counted by hand. Chasm follows Rust's `mpsc`: a channel counts its senders and closes itself when the last one is done.
+  - `chan.make` starts with one sender. `chan.sender ( chan T -- )` adds one, before the `spawn` that captures it.
+  - `chan.close` says "this sender is done". The channel closes when every sender has closed.
+  - `chan.recv` returns `option T`: `some` while values remain, `none` once the channel is closed and drained, matched like `map.get`.
+  - Sending on a closed channel traps, and so does closing it once more than it has senders.
+  - A forgotten `chan.close` leaves the reader waiting. When every process is blocked on a channel and none is waiting on the ring, the scheduler traps (`all processes blocked`, naming each process and the channel it waits on) rather than hanging. A process waiting on I/O is not blocked: its completion will wake it.
+  - `mpsc` closes when the last sender is dropped. Chasm has no drop (structs are collected), so the count is explicit.
+  - Killing a process could be a write to a namespace entry, as Inferno's `/prog/<pid>/ctl`, not a new word.
+
+```
+chan.make ( chan action ) :> ch
+ch chan.sender                                        # two senders
+[ ch file1 tokenize-into  ch chan.close ] spawn
+[ ch file2 tokenize-into  ch chan.close ] spawn
+[ [ 1 ] [ ch chan.recv  none: [ leave ] some: [ handle ] match ] while ] spawn
+```
+
+Open question:
+
+- **Sharing.** A struct, `vec` or `map` sent on a channel is a reference, so sender and receiver share it. The choices are to accept that (as Limbo and Go do), to copy on send, or to allow only immutable values (numbers, `str`, unions) on channels.
