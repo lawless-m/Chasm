@@ -13,12 +13,12 @@
 # A lower-case copy of n bytes of s from start.
 : lower-slice ( str i32 i32 -- str )
   :> n :> start :> s
-  n mem.alloc :> buf
+  n bytes.new :> buf
   n [ :> i
     s start i i32.add str.byte-at :> c
-    buf i i32.add  c 65 i32.ge_u c 90 i32.le_u i32.and [ c 32 i32.add ] [ c ] if  i32.store8
+    buf i  c 65 i32.ge_u c 90 i32.le_u i32.and [ c 32 i32.add ] [ c ] if  bytes.at!
   ] times
-  buf n str.from-raw ;
+  buf bytes.as-str ;
 test lower-slice : "Hello World" 6 5 lower-slice -> "world"
 
 # Byte-wise order: negative, zero or positive.

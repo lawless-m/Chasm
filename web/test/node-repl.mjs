@@ -124,6 +124,13 @@ try {
   r = await repl.step("drop 9 bytes.at");
   assert.equal(r.trap.message, "bytes.at: offset out of range");
 
+  r = await repl.step("drop drop 8 mem.alloc");
+  assert.equal(r.diagnostics[0].code, "E_RAW");
+  r = await repl.step("raw : cell ( -- i32 ) 8 mem.alloc i32.load ;");
+  assert.ok(r.ok, JSON.stringify(r.diagnostics));
+  r = await repl.step("drop drop drop cell");
+  assert.deepEqual(r.stack, n(0));
+
   console.log("node-repl.mjs ok");
   await worker.terminate();
 } catch (e) {

@@ -73,7 +73,7 @@ What `results` holds:
 | `unresolved` | `unresolved` (each `word`, `declared_effect`, `dependants`, `pending_tests`, `location`) |
 | `dead` | `has_roots`; `dead` (each `word`, `effect`, `location`) |
 | `infer` | `words` (each `name`, `effect`, `location`); `written` (files changed by `--write`) |
-| `words` | `words` (each `name`, `effect`, `inputs`, `outputs`, `resolved`, `failed`, `export`, `library`, `generated`, `generic`, `inferred`, `instance_of`, `location`) |
+| `words` | `words` (each `name`, `effect`, `inputs`, `outputs`, `resolved`, `failed`, `export`, `raw`, `library`, `generated`, `generic`, `inferred`, `instance_of`, `location`) |
 | `prims` | `primitives` (each `name`, `effect`) |
 | `deps` | `word`; `words` (each `word` and `kind`: `call` or `address-taken`) |
 | `used-by` | `word`; `words` (names) |
@@ -101,7 +101,7 @@ TCP; native only), `--no-file` (hides the host filesystem) and `--no-net` (hides
 
 `chasm repl` reads chunks from stdin and compiles and runs each at once.
 
-- A chunk that starts with `:`, `export`, `declare`, `test`, `struct` or
+- A chunk that starts with `:`, `export`, `raw`, `declare`, `test`, `struct` or
   `union` is processed
   exactly as in a file. Anything else is a **line**: it runs on the current
   stack, whose types are always known, and its effect is worked out from
@@ -237,6 +237,7 @@ A file is a sequence of top-level forms, processed **in order**:
 : name ( inputs -- outputs )  body ;          # define
 : name  body ;                                # define, with the effect inferred
 export : name ( inputs -- outputs )  body ;   # define and export from the module
+raw : name ( inputs -- outputs )  body ;      # define, reaching memory by address
 declare name ( inputs -- outputs )            # stub: a contract without a body
 test name : body -> expected-literals         # a test of `name`
 struct name P...  field: type ...             # a struct (section 10a, 10c)
@@ -252,6 +253,14 @@ union name P... | variant  field: type ... | ...   # a union (section 10b, 10c)
   if written (`chasm infer` shows what was inferred). Words that call
   themselves or each other, `export` words and `main` must write theirs
   (`E_NEEDS_EFFECT`).
+- **Raw words.** The words that reach memory by address (loads and stores,
+  `mem.alloc`, `memory.copy`, `memory.fill`, `str.addr`, `str.from-raw`,
+  `bytes.addr`, `bytes.from-raw`) are allowed only in the prelude and in a
+  word marked `raw : name ...` (`export raw :` also works); anywhere else,
+  tests and REPL lines included, they are `E_RAW`. The checked words
+  (`bytes`, `str`, arrays) cover ordinary programs. A `raw` word is called
+  like any other, and `chasm words` flags it `[raw]`, so every place that
+  touches memory directly is easy to find.
 
 ## 3. Types and effects
 
@@ -341,7 +350,7 @@ semantics (including traps on integer divide by zero):
 - `f32`/`f64`: `add sub mul div min max copysign abs neg ceil floor trunc nearest sqrt eq ne lt gt le ge`
 - Widening: `i64 ( i32 -- i64 )` sign-extends, exactly. It is the only conversion with a short name; lossy ones keep their wasm names so the reader sees how the value is cut.
 - Conversions: `i32.wrap_i64`, `i64.extend_i32_s`/`_u`, `iNN.trunc_fMM_s`/`_u`, `iNN.trunc_sat_fMM_s`/`_u`, `fNN.convert_iMM_s`/`_u`, `f32.demote_f64`, `f64.promote_f32`, `*.reinterpret_*`.
-- Memory: `i32.load` ... `i64.load32_u` take `( i32 -- T )`; stores take `( i32 T -- )` (address below value). Natural alignment, offset 0. `memory.size ( -- i32 )`, `memory.grow ( i32 -- i32 )`, `memory.copy ( dst src n -- )`, `memory.fill ( dst byte n -- )`.
+- Memory (raw words, section 2): `i32.load` ... `i64.load32_u` take `( i32 -- T )`; stores take `( i32 T -- )` (address below value). Natural alignment, offset 0. `memory.size ( -- i32 )`, `memory.grow ( i32 -- i32 )`, `memory.copy ( dst src n -- )`, `memory.fill ( dst byte n -- )`.
 
 Note there is no `i64.neg`: write `0 i64 x i64.sub`.
 
@@ -381,9 +390,9 @@ is `E_MATCH_ARM`; a variant without an arm, and no `else:`, is
 | `i32.to-str` `i64.to-str` | `( iNN -- str )` | decimal |
 | `f64.fixed` | `( f64 i32 -- str )` | rounded to that many decimals (ties to even); traps beyond the `i64` range |
 | `str.from-byte` | `( i32 -- str )` | a one-byte string |
-| `str.addr` | `( str -- i32 )` | low level: the address |
-| `str.from-raw` | `( i32 i32 -- str )` | low level: unchecked addr and length |
-| `mem.alloc` | `( i32 -- i32 )` | low level: zeroed bytes, 8-aligned, never freed |
+| `str.addr` | `( str -- i32 )` | raw (section 2): the address |
+| `str.from-raw` | `( i32 i32 -- str )` | raw: unchecked addr and length |
+| `mem.alloc` | `( i32 -- i32 )` | raw: zeroed bytes, 8-aligned, never freed |
 
 ## 9a. Byte buffers
 
@@ -400,8 +409,11 @@ past its end.
 | `bytes.slice` | `( bytes i32 i32 -- bytes )` | start, length; traps out of range; shares the buffer, no copy |
 | `bytes.to-str` | `( bytes -- str )` | a copy |
 | `bytes.as-str` | `( bytes -- str )` | the buffer itself, no copy: for a buffer you are finished with, as a later write shows through the string |
-| `bytes.addr` | `( bytes -- i32 )` | low level: the address |
-| `bytes.from-raw` | `( i32 i32 -- bytes )` | low level: unchecked addr and length |
+| `bytes.put` | `( bytes i32 str -- )` | copy a string in at an offset; traps unless it fits |
+| `bytes.u32-at` `bytes.u64-at` | `( bytes i32 -- i32 )` `( bytes i32 -- i64 )` | little-endian number at a byte offset; traps out of range |
+| `bytes.u32-at!` `bytes.u64-at!` | `( bytes i32 i32 -- )` `( bytes i32 i64 -- )` | offset, value; traps out of range |
+| `bytes.addr` | `( bytes -- i32 )` | raw (section 2): the address |
+| `bytes.from-raw` | `( i32 i32 -- bytes )` | raw: unchecked addr and length |
 
 `eq` and `hash` compare buffers by contents.
 
@@ -829,6 +841,7 @@ Collections (`vec T`, `map K V`) are in section 10d. The prelude also declares `
 | `E_INTERNAL` | compiler bug |
 | `E_FORGET` | `)forget` refused: the word is still used (lists `dependants`), or is a primitive, prelude, or struct- or union-generated word |
 | `E_NEEDS_EFFECT` | the effect must be written: the word is recursive or mutually recursive, exported, or `main`; or an exported word's effect has type variables |
+| `E_RAW` | a word that reaches memory by address (a load or store, `mem.alloc`, `memory.copy`, `memory.fill`, `str.addr`, `str.from-raw`, `bytes.addr`, `bytes.from-raw`) outside the prelude and outside a `raw` word |
 | `E_FORCE` | `)force` refused: a dependant no longer checks (lists `dependants`, then their errors), or the word is a primitive, prelude, or struct- or union-generated word |
 
 ## 16. Worked examples

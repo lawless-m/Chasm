@@ -379,6 +379,7 @@ impl Session {
                 }
             }
             Ok(ReplInput::Body(body)) => {
+                self.ctx.raw = false;
                 let name = format!("[line {}]", self.steps);
                 let loc = body.first().map(|n| n.loc.clone()).unwrap_or(Location {
                     file: file.clone(),
@@ -402,6 +403,7 @@ impl Session {
                             body: Some(out.compiled),
                             failed: false,
                             export: false,
+                            raw: false,
                             origin: Origin::User,
                             kind: WordKind::Line,
                             loc,
@@ -1156,7 +1158,7 @@ pub fn needs_more(text: &str) -> bool {
     let mut in_def = false;
     let mut depth = 0u32;
     for t in &toks {
-        if t.is(":") || t.is("export") {
+        if t.is(":") || t.is("export") || t.is("raw") {
             in_def = true;
         } else if t.is(";") {
             in_def = false;

@@ -219,6 +219,9 @@ fn hover(docs: &HashMap<String, String>, p: HoverParams) -> Option<Hover> {
             if w.export {
                 notes.push("export".into());
             }
+            if w.raw {
+                notes.push("raw: reaches memory by address".into());
+            }
             if w.inferred {
                 notes.push("inferred".into());
             }

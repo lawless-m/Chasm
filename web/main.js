@@ -106,7 +106,7 @@ function linkText() {
 function chunks(text) {
   const out = [[]];
   for (const line of text.split("\n")) {
-    if (/^(:|export|declare|test|struct|union)(\s|$)/.test(line)) out.push([]);
+    if (/^(:|export|raw|declare|test|struct|union)(\s|$)/.test(line)) out.push([]);
     out.at(-1).push(line);
   }
   return out.map((lines) => lines.join("\n").trim()).filter((c) => c);

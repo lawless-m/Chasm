@@ -54,8 +54,8 @@
 
 test bf : hello "" bf -> "Hello World!\n"
 test bf : ",[.,]" "cat" bf -> "cat"                      # echo the input
-test bf : "-." "" bf str.addr i32.load8_u -> 255         # cells wrap at 256
-test bf : "+[-]." "" bf str.addr i32.load8_u -> 0
+test bf : "-." "" bf 0 str.byte-at -> 255         # cells wrap at 256
+test bf : "+[-]." "" bf 0 str.byte-at -> 0
 test jumps : "[[]]" jumps 0 array.at -> 3
 
 # Runs hello world, then a program that upper-cases one line of input.

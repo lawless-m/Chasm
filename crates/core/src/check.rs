@@ -60,6 +60,8 @@ pub struct Word {
     /// The body failed to check (an error was reported).
     pub failed: bool,
     pub export: bool,
+    /// Marked `raw`: the body may reach memory by address.
+    pub raw: bool,
     pub origin: Origin,
     pub kind: WordKind,
     pub loc: Location,
@@ -124,6 +126,9 @@ pub struct Ctx {
     pub instances: HashMap<(WordId, Vec<Ty>), WordId>,
     /// The type parameters in force while an instance's body is compiled.
     pub type_params: HashMap<String, Ty>,
+    /// The body being compiled may use the raw memory words: it is the
+    /// prelude's, generated, or a word marked `raw`.
+    pub raw: bool,
 }
 
 /// A declared struct: its fields in order and its wasm type index.
@@ -217,6 +222,7 @@ impl Default for Ctx {
             defer_library_generics: false,
             instances: HashMap::new(),
             type_params: HashMap::new(),
+            raw: false,
         }
     }
 }
@@ -568,6 +574,7 @@ impl Ctx {
             body: None,
             failed: false,
             export: false,
+            raw: false,
             origin: Origin::Library,
             kind: WordKind::Instance,
             loc: loc.clone(),
@@ -594,8 +601,10 @@ impl Ctx {
             crate::parser::ReplInput::Body(b) => b,
             crate::parser::ReplInput::Items(..) => unreachable!("a generated body has no items"),
         };
-        let out = compile_body(self, &name, Mode::Declared(&effect), &body, loc, &[])
-            .map_err(internal)?;
+        let raw = std::mem::replace(&mut self.raw, true);
+        let out = compile_body(self, &name, Mode::Declared(&effect), &body, loc, &[]);
+        self.raw = raw;
+        let out = out.map_err(internal)?;
         let w = &mut self.words[id];
         w.body = Some(out.compiled);
         w.callees = out.callees;
@@ -617,6 +626,7 @@ impl Ctx {
                 body: None,
                 failed: false,
                 export: false,
+                raw: false,
                 origin: l.origin,
                 kind: WordKind::Named,
                 loc: l.loc,
@@ -756,6 +766,7 @@ pub fn instantiate(ctx: &mut Ctx, generic: WordId, args: &[Ty]) -> Result<WordId
         body: None,
         failed: false,
         export: false,
+        raw: false,
         origin: t.origin,
         kind: WordKind::Instance,
         loc: t.loc.clone(),
@@ -854,7 +865,11 @@ pub fn compile_instance(ctx: &mut Ctx, id: WordId) -> Result<(), Diagnostic> {
     let effect = ctx.words[id].effect.clone();
     let loc = ctx.words[generic].loc.clone();
     let saved = std::mem::replace(&mut ctx.type_params, map);
+    let template = &ctx.words[generic];
+    let raw = template.raw || template.origin == Origin::Library;
+    let saved_raw = std::mem::replace(&mut ctx.raw, raw);
     let out = compile_body(ctx, &name, Mode::Declared(&effect), &body, &loc, &[]);
+    ctx.raw = saved_raw;
     ctx.type_params = saved;
     let w = &mut ctx.words[id];
     match out {
@@ -1769,6 +1784,7 @@ impl<'c> Walker<'c> {
                         body: Some(out.compiled),
                         failed: false,
                         export: false,
+                        raw: false,
                         origin: Origin::User,
                         kind: WordKind::Quote,
                         loc: loc.clone(),
@@ -2510,6 +2526,13 @@ impl<'c> Walker<'c> {
             }
             return Ok(Flow::Normal);
         }
+        if prims::is_raw(n) && !self.ctx.raw {
+            return Err(self.err(
+                codes::E_RAW,
+                format!("`{n}` reaches memory by address: use it in a word marked `raw : ...`, or the checked words (`bytes`, `str`, arrays)"),
+                loc,
+            ));
+        }
         // Numeric and memory instructions.
         if let Some((ins, outs, instr)) = prims::numeric(n) {
             self.pop_expect(n, &ins, loc)?;
@@ -2836,6 +2859,7 @@ mod tests {
             }),
             failed: false,
             export: false,
+            raw: false,
             origin: Origin::User,
             kind: WordKind::Named,
             loc: Location::default(),
@@ -2879,6 +2903,7 @@ mod tests {
             }),
             failed: false,
             export: false,
+            raw: false,
             origin: Origin::User,
             kind: WordKind::Named,
             loc: Location::default(),

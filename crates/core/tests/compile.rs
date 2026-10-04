@@ -148,6 +148,7 @@ fn step_module_imports_memory_and_table() {
             body: None,
             failed: false,
             export: false,
+            raw: false,
             origin: Origin::User,
             kind: WordKind::Named,
             loc: Location::default(),
@@ -912,4 +913,26 @@ fn prelude_map() {
     let c = export(": main ( -- ) 3 i32.to-str println ;");
     let f = functions(c.wasm.as_ref().unwrap());
     assert!(!f.iter().any(|n| n.starts_with("map.")), "{f:?}");
+}
+
+#[test]
+fn raw_words_need_the_marker() {
+    assert_eq!(err(": f ( -- i32 ) 8 mem.alloc ;"), "E_RAW");
+    assert_eq!(err(": f ( i32 -- i32 ) i32.load ;"), "E_RAW");
+    assert_eq!(err(": f ( str -- i32 ) str.addr ;"), "E_RAW");
+    assert_eq!(err(": f ( -- [ -- i32 ] ) [ 8 mem.alloc ] ;"), "E_RAW");
+    assert_eq!(
+        err(": f ( -- i32 ) 1 ;\ntest f : 0 i32.load drop f -> 1"),
+        "E_RAW"
+    );
+    // `memory.size` takes and gives no address.
+    ok(": f ( -- i32 ) memory.size ;");
+    let c = ok("raw : peek ( i32 -- i32 ) i32.load8_u ;\n\
+        export raw : buf ( -- i32 ) 8 mem.alloc ;\n\
+        raw export : q ( -- [ -- i32 ] ) [ 8 mem.alloc ] ;\n\
+        : f ( -- i32 ) buf peek ;\ntest f : f -> 0");
+    assert!(c.word("peek").unwrap().raw && c.word("buf").unwrap().raw);
+    assert!(!c.word("f").unwrap().raw);
+    // The prelude's own words and generic instances are trusted.
+    ok(": f ( -- i32 ) \"a\" \"b\" str.concat str.len ;\n: g ( -- i32 ) vec.make ( vec i32 ) :> v  v 1 vec.push  v vec.len ;");
 }

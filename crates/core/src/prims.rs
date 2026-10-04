@@ -554,6 +554,29 @@ fn distance(a: &str, b: &str) -> usize {
     d[a.len()][b.len()]
 }
 
+/// Words that read or write memory by address: allowed only in the prelude
+/// and in words marked `raw`.
+pub fn is_raw(name: &str) -> bool {
+    if matches!(
+        name,
+        "mem.alloc"
+            | "memory.copy"
+            | "memory.fill"
+            | "str.addr"
+            | "str.from-raw"
+            | "bytes.addr"
+            | "bytes.from-raw"
+    ) {
+        return true;
+    }
+    match name.split_once('.') {
+        Some(("i32" | "i64" | "f32" | "f64", op)) => {
+            (op.starts_with("load") || op.starts_with("store")) && numeric(name).is_some()
+        }
+        _ => false,
+    }
+}
+
 /// Polymorphic array primitives and `call` are handled by the checker directly.
 pub fn is_builtin(name: &str) -> bool {
     numeric(name).is_some()

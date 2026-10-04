@@ -996,6 +996,9 @@ fn render(report: &J) -> (String, String) {
                 if w["export"].as_bool() == Some(true) {
                     flags.push("export".to_string());
                 }
+                if w["raw"].as_bool() == Some(true) {
+                    flags.push("raw".to_string());
+                }
                 if w["inferred"].as_bool() == Some(true) {
                     flags.push("inferred".to_string());
                 }

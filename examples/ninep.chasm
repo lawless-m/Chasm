@@ -3,24 +3,28 @@
 # is-dir, packed. Run against a 9P2000 server:
 #   chasm run examples/ninep.chasm --mount p=9p://host:564
 
-: record-len ( i32 -- i32 )  i32.load 13 i32.add ;
-: record-name ( i32 -- str )  :> r  r 4 i32.add r i32.load str.from-raw ;
-: record-size ( i32 -- i64 )  :> r  r 4 i32.add r i32.load i32.add i64.load ;
-: record-dir? ( i32 -- i32 )  :> r  r 12 i32.add r i32.load i32.add i32.load8_u ;
+: record-len ( bytes i32 -- i32 )  bytes.u32-at 13 i32.add ;
+: record-name ( bytes i32 -- str )
+  :> r :> b  b r 4 i32.add b r bytes.u32-at bytes.slice bytes.to-str ;
+: record-size ( bytes i32 -- i64 )
+  :> r :> b  b r 4 i32.add b r bytes.u32-at i32.add bytes.u64-at ;
+: record-dir? ( bytes i32 -- i32 )
+  :> r :> b  b r 12 i32.add b r bytes.u32-at i32.add bytes.at ;
 
 # One record built by hand, for the tests: name, size, is-dir.
-: make-record ( str i64 i32 -- i32 )
+: make-record ( str i64 i32 -- bytes )
   :> dir :> size :> name
-  name str.len 13 i32.add mem.alloc :> r
-  r name str.len i32.store
-  r 4 i32.add name str.addr name str.len memory.copy
-  r 4 i32.add name str.len i32.add size i64.store
-  r 12 i32.add name str.len i32.add dir i32.store8
+  name str.len :> n
+  n 13 i32.add bytes.new :> r
+  r 0 n bytes.u32-at!
+  r 4 name bytes.put
+  r 4 n i32.add size bytes.u64-at!
+  r 12 n i32.add dir bytes.at!
   r ;
-test record-name : "abc" 42 i64 0 make-record record-name -> "abc"
-test record-size : "abc" 42 i64 0 make-record record-size -> 42 i64
-test record-dir? : "sub" 0 i64 1 make-record record-dir? -> 1
-test record-len : "hello.txt" 6 i64 0 make-record record-len -> 22
+test record-name : "abc" 42 i64 0 make-record 0 record-name -> "abc"
+test record-size : "abc" 42 i64 0 make-record 0 record-size -> 42 i64
+test record-dir? : "sub" 0 i64 1 make-record 0 record-dir? -> 1
+test record-len : "hello.txt" 6 i64 0 make-record 0 record-len -> 22
 
 # The number of entries in a directory, or the error from opening it.
 : entries ( str -- i32 )
@@ -35,7 +39,7 @@ test record-len : "hello.txt" 6 i64 0 make-record record-len -> 22
     [ h buf host.read r!
       0 :> at!
       [ at r i32.lt_s ]
-      [ buf bytes.addr at i32.add record-len at i32.add at!  count 1 i32.add count! ]
+      [ buf at record-len at i32.add at!  count 1 i32.add count! ]
       while ]
     while
     h host.close drop

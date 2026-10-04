@@ -79,6 +79,8 @@ pub enum Item {
         effect: Option<Effect>,
         body: Body,
         export: bool,
+        /// `raw :`: the body may use the words that reach memory by address.
+        raw: bool,
         loc: Location,
     },
     Declare {

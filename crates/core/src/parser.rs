@@ -68,7 +68,7 @@ pub fn parse_repl_with(
     match toks.first() {
         None => Ok(ReplInput::Body(Vec::new())),
         Some(t)
-            if [":", "export", "declare", "test", "struct", "union"]
+            if [":", "export", "raw", "declare", "test", "struct", "union"]
                 .iter()
                 .any(|k| t.is(k)) =>
         {
@@ -154,7 +154,7 @@ pub fn parse_i64(text: &str) -> Option<Result<Lit, String>> {
     })
 }
 
-const TYPE_KEYWORDS: [&str; 6] = ["i32", "i64", "f32", "f64", "str", "array"];
+const TYPE_KEYWORDS: [&str; 7] = ["i32", "i64", "f32", "f64", "str", "bytes", "array"];
 
 fn is_punct(s: &str) -> bool {
     matches!(s, "(" | ")" | "[" | "]" | "--" | ";" | ":" | ":>" | "->")
@@ -228,16 +228,23 @@ impl<'a> Parser<'a> {
     }
 
     fn item(&mut self) -> Result<Item, Diagnostic> {
-        let t = self.next("a definition")?;
-        if t.is("export") {
-            let colon = self.next("`:` after `export`")?;
-            if !colon.is(":") {
-                return Err(self.err("expected `:` after `export`", self.loc(colon)));
+        let mut t = self.next("a definition")?;
+        // `export` and `raw` before `:`, in either order.
+        let (mut export, mut raw) = (false, false);
+        while (t.is("export") && !export) || (t.is("raw") && !raw) {
+            if t.is("export") {
+                export = true;
+            } else {
+                raw = true;
             }
-            return self.def(true);
+            let after = t.text.clone();
+            t = self.next("`:`")?;
+            if !(t.is(":") || t.is("export") || t.is("raw")) {
+                return Err(self.err(format!("expected `:` after `{after}`"), self.loc(t)));
+            }
         }
         if t.is(":") {
-            return self.def(false);
+            return self.def(export, raw);
         }
         if t.is("declare") {
             let name = self.name("a word name after `declare`")?;
@@ -456,7 +463,7 @@ impl<'a> Parser<'a> {
         parse_number(&t.text).map(|r| r.map_err(err))
     }
 
-    fn def(&mut self, export: bool) -> Result<Item, Diagnostic> {
+    fn def(&mut self, export: bool, raw: bool) -> Result<Item, Diagnostic> {
         let name = self.name("a word name after `:`")?;
         let effect = match self.peek() {
             Some(t) if t.is("(") => {
@@ -471,6 +478,7 @@ impl<'a> Parser<'a> {
             effect,
             body,
             export,
+            raw,
             loc: self.loc(name),
         })
     }

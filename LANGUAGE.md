@@ -39,7 +39,7 @@ The numeric primitive set is **exactly the wasm numeric instruction set**, under
 
 Semantics are wasm's, including traps (integer divide by zero, overflowing float-to-int conversion). The language adds no checks and no abstractions here; the language reference points at the wasm specification for each instruction.
 
-Comparisons return `i32` 0 or 1. Loads and stores take `i32` addresses with natural alignment and offset 0; stores take `( addr value -- )`. Explicit alignment/offset variants may come later.
+Comparisons return `i32` 0 or 1. Loads and stores take `i32` addresses with natural alignment and offset 0; stores take `( addr value -- )`. Explicit alignment/offset variants may come later. Loads and stores are raw words (section 8): only the prelude and words marked `raw` may use them.
 
 ## 4. Strings
 
@@ -240,7 +240,7 @@ A key changed after insertion is lost: its hash no longer matches its slot.
 
 ## 4e. Byte buffers
 
-A `bytes` is an `( addr len )` pair like a `str`, but mutable and not text: the buffer `host.read` fills. Its words check the length: `bytes.at`, `bytes.at!` and `bytes.slice` trap out of range, and `host.read` fills at most `bytes.len` bytes, so a read cannot overrun its buffer. `bytes.new ( i32 -- bytes )` allocates zeroed bytes; `bytes.to-str` copies; `bytes.as-str` gives the buffer itself as a string, without copying, for a buffer that is finished with. `bytes.len`, `bytes.addr` and `bytes.from-raw` are primitives; the rest is prelude. `eq` and `hash` compare by contents, as for `str`.
+A `bytes` is an `( addr len )` pair like a `str`, but mutable and not text: the buffer `host.read` fills. Its words check the length: `bytes.at`, `bytes.at!` and `bytes.slice` trap out of range, and `host.read` fills at most `bytes.len` bytes, so a read cannot overrun its buffer. `bytes.new ( i32 -- bytes )` allocates zeroed bytes; `bytes.to-str` copies; `bytes.as-str` gives the buffer itself as a string, without copying, for a buffer that is finished with. `bytes.put ( bytes i32 str -- )` copies a string in at an offset, and `bytes.u32-at`, `bytes.u64-at` and their `!` forms read and write little-endian numbers at a byte offset, for binary formats; all trap out of range. `bytes.len`, `bytes.addr` and `bytes.from-raw` are primitives; the rest is prelude. `eq` and `hash` compare by contents, as for `str`.
 
 ## 5. Shuffle primitives
 
@@ -323,6 +323,7 @@ test square : 3 square -> 9
 test parse-header : "abc" parse-header -> 3 0
 ```
 
+- `raw : name ( effect ) body ;` (or `export raw :`) defines a word whose body may use the **raw words**, the ones that reach memory by address: loads and stores, `mem.alloc`, `memory.copy`, `memory.fill`, `str.addr`, `str.from-raw`, `bytes.addr`, `bytes.from-raw`. Elsewhere, outside the prelude, they are `E_RAW`, tests and REPL lines included. Quotations inside a `raw` word may use them too. Being `raw` is not part of the effect: callers need no marking.
 - `: name ( effect ) body ;` defines a word; the effect immediately follows the name. The effect may be omitted, `: name body ;`, and is then inferred (section 18). Recursive and mutually recursive words, `export` words and `main` must write it.
 - `export : name ( effect ) body ;` additionally exports the word from the built module and makes it a reachability root. `main ( -- )` is the entry point for `run`.
 - `declare name ( effect )` creates a stub (see `ARCHITECTURE.md` 6).
@@ -445,4 +446,5 @@ Recorded here so the spec matches the compiler. `docs/reference.md` is the user-
 ## 21. Decisions taken after M9
 
 1. **`bytes`, and host words that cannot overrun.** `host.read` was `( i32 i32 i32 -- i32 )`, a bare address and a length that nothing tied to the allocation, so a length larger than the buffer silently wrote past it. It is now `( i32 bytes -- i32 )`, and `host.write` is `( i32 str -- i32 )`: the length travels with the address. Both lower to the same `i32 i32 i32` as before, so the ring, the hosts and the generated code are unchanged; only the checker's effects differ. `bytes` follows `str`: three primitives (`bytes.len`, `bytes.addr`, `bytes.from-raw`), the checked words in the prelude, trap messages named after the word. `bytes.to-str` copies, because a `str` is immutable by convention and the buffer is not; `bytes.as-str` shares instead, since memory is never freed and a copy per string built in a buffer adds up. It stays memory-safe (the string has the buffer's bounds); a later write to the buffer shows through the string, which is the caller's promise not to do. No new diagnostic codes.
-2. **The raw memory words stay open** (`mem.alloc`, loads and stores, `memory.copy`, `memory.fill`, `str.addr`, `str.from-raw`, `bytes.addr`, `bytes.from-raw`): user code may use them, and they are not checked. The ordinary path no longer needs them. Restricting them to the prelude is an option left for later.
+2. **The raw memory words are gated.** `mem.alloc`, loads and stores, `memory.copy`, `memory.fill`, `str.addr`, `str.from-raw`, `bytes.addr` and `bytes.from-raw` check nothing, so they are allowed only in the prelude (which is the trusted code to audit), in the generated `eq` and `hash` words, and in a word marked `raw :`; anywhere else they are `E_RAW`, a new code. `Ctx::raw` says whether the body being compiled may use them: `process_item` sets it per item from the origin and the marker, an instance takes it from its template, and a REPL line clears it. A word-level marker, not a file or command-line switch, so the unchecked code stays small and visible (`chasm words` flags it `[raw]`). `memory.size` and `memory.grow` stay open: they take and give no address. `bytes.put`, `bytes.u32-at`, `bytes.u64-at` and their stores were added so that no example needs `raw`; a binary format is read through them, checked.
+3. **`bytes.as-str` is not raw.** It shares the buffer with the string, but the string has the buffer's bounds, so it is memory-safe; only the immutability of `str` is at the caller's word.

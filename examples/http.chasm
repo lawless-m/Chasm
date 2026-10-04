@@ -25,7 +25,7 @@ test header : "Accept" "text/plain" header -> "Accept: text/plain\n"
   [ n r i32.add n!
     n buf bytes.len i32.eq [
       n 2 i32.mul bytes.new :> nb
-      nb bytes.addr buf bytes.addr n memory.copy
+      nb 0 buf bytes.as-str bytes.put
       nb buf!
     ] when ]
   while
