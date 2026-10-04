@@ -84,6 +84,7 @@ pre { margin: 0 0 16px; padding: 12px 14px; background: var(--panel); border: 1p
 table { border-collapse: collapse; font-size: 14px; }
 th, td { text-align: left; vertical-align: top; padding: 6px 10px; border-bottom: 1px solid var(--rule); }
 th { color: var(--dim); font-weight: 600; }
+td code { overflow-wrap: normal; }
 
 .words { width: 100%; }
 .words td:first-child { font-family: var(--mono); white-space: nowrap; }
