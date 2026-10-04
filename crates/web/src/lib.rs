@@ -91,6 +91,12 @@ pub mod api {
                 "types": t.types,
                 "location": t.location,
             })).collect::<Vec<_>>(),
+            "pending": step.pending.iter().map(|t| json!({
+                "word": t.word,
+                "expected_text": t.expected.iter().map(|v| v.to_string()).collect::<Vec<_>>(),
+                "location": t.location,
+            })).collect::<Vec<_>>(),
+            "tested": step.tested,
             "stack": names(stack),
             "refs_size": step.refs_size,
             "structs": structs,

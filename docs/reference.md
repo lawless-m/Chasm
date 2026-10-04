@@ -130,13 +130,20 @@ TCP; native only), `--no-file` (hides the host filesystem) and `--no-net` (hides
 - A line that traps prints `trap in `[line N]`: message` and leaves the
   stack as it was.
 - A line starting with `)` is a REPL command, not Chasm, so a file never
-  holds one: `)forget word`, `)force` and `)words`. `)forget word` removes a word and its tests and frees the name,
+  holds one: `)forget word`, `)force`, `)test` and `)words`. `)forget word` removes a word and its tests and frees the name,
   which can then be defined with any effect. It is refused (`E_FORGET`, with
   the `dependants`) while another word, a quotation in one, or another
   word's test uses it: forget those first, top-down. Primitives, prelude
   words and words a `struct` or `union` generated cannot be forgotten. A function value of
   a forgotten word already on the stack still runs the old code. Forgetting
   a generic word removes its instances too.
+- `)test` runs every test still in force and prints `PASS`, `FAIL` or
+  `PENDING` (the word has no body yet) for each, then
+  `N passed, M failed, K pending`. `)test word` runs only the tests of
+  `word` and of every word that uses it, directly or through other words,
+  quotations or instances: after redefining `word`, the tests its change
+  can break. Tests run in the session's shared instance with the console
+  not captured, unlike `chasm test`.
 - `)words` prints the program as it stands, ready to save as a file: each
   `struct` and `union`, each `declare` of a word still defined, the latest
   definition of each word (forgotten and replaced ones left out, every word

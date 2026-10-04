@@ -694,6 +694,7 @@ fn repl_report(o: Outcome, output: Vec<u8>) -> Report {
         "forced": o.forced.iter().map(|f| json!({ "name": f.name, "from": f.from, "to": f.to })).collect::<Vec<_>>(),
         "rechecked": o.rechecked,
         "listing": o.listing,
+        "tested": o.tested,
         "tests": o.tests.iter().map(|t| json!({
             "word": t.word,
             "status": t.status.as_str(),
@@ -1023,10 +1024,23 @@ fn render(report: &J) -> (String, String) {
                     listing
                 });
             }
+            let mut counts = [0; 3];
             for t in r["tests"].as_array().into_iter().flatten() {
-                if s(&t["status"]) == "pass" {
-                    out.push_str(&format!("PASS     {}\n", s(&t["word"])));
-                    continue;
+                match s(&t["status"]).as_str() {
+                    "pass" => {
+                        counts[0] += 1;
+                        out.push_str(&format!("PASS     {}\n", s(&t["word"])));
+                        continue;
+                    }
+                    "pending" => {
+                        counts[2] += 1;
+                        out.push_str(&format!(
+                            "PENDING  {}  (word has no body yet)\n",
+                            s(&t["word"])
+                        ));
+                        continue;
+                    }
+                    _ => counts[1] += 1,
                 }
                 let loc = &t["location"];
                 out.push_str(&format!(
@@ -1049,6 +1063,12 @@ fn render(report: &J) -> (String, String) {
                         s(&t["trap"]["message"])
                     ));
                 }
+            }
+            if r["tested"] == true {
+                out.push_str(&format!(
+                    "{} passed, {} failed, {} pending\n",
+                    counts[0], counts[1], counts[2]
+                ));
             }
             if let Some(t) = r.get("trap").filter(|t| !t.is_null()) {
                 match t["word"].as_str() {

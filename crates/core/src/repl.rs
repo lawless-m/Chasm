@@ -101,6 +101,11 @@ pub struct Step {
     pub rechecked: Vec<String>,
     /// The program as it stands, from a `)words` command.
     pub listing: Option<String>,
+    /// Tests a `)test` command selected whose word has no body: reported
+    /// pending, not run.
+    pub pending: Vec<TestRun>,
+    /// The step was a `)test` command; hosts print a summary.
+    pub tested: bool,
 }
 
 /// The session state a `)force` restores when it is refused.
@@ -435,16 +440,22 @@ impl Session {
         }
         let mut forgotten = Vec::new();
         let mut listing = None;
+        let mut tested = None;
         match text.split_whitespace().collect::<Vec<_>>().as_slice() {
             ["forget", name] => match self.forget(name, &loc) {
                 Ok(()) => forgotten.push(name.to_string()),
                 Err(d) => self.program.diagnostics.push(d),
             },
             ["words"] => listing = Some(self.listing()),
+            ["test"] => tested = Some(self.tests_of(None)),
+            ["test", name] => match self.tests_of(Some((name, &loc))) {
+                Ok(t) => tested = Some(Ok(t)),
+                Err(d) => self.program.diagnostics.push(d),
+            },
             _ => self.program.diagnostics.push(Diagnostic::error(
                 codes::E_SYNTAX,
                 format!(
-                    "unknown REPL command `){}`; the commands are `)forget word`, `)force` definitions and `)words`",
+                    "unknown REPL command `){}`; the commands are `)forget word`, `)force` definitions, `)test [word]` and `)words`",
                     text.trim()
                 ),
                 loc,
@@ -455,7 +466,86 @@ impl Session {
         let mut step = self.finish(heap_ptr, before, tests_before, Vec::new(), Vec::new(), None);
         step.forgotten = forgotten;
         step.listing = listing;
+        if let Some(Ok((run, pending))) = tested {
+            step.tests = run;
+            step.pending = pending;
+            step.tested = true;
+        }
         step
+    }
+
+    /// The tests in force for `)test`, split into those to run and those
+    /// pending (their word has no body). With a word: its own tests and the
+    /// tests of everything that reaches it, through calls, quotations and
+    /// instances.
+    #[allow(clippy::type_complexity)]
+    fn tests_of(
+        &self,
+        word: Option<(&str, &Location)>,
+    ) -> Result<(Vec<TestRun>, Vec<TestRun>), Diagnostic> {
+        let reaching = match word {
+            None => None,
+            Some((name, loc)) => {
+                let mut seen = HashSet::new();
+                match self.ctx.by_name.get(name) {
+                    Some(&id) => {
+                        // A generic word is reached through its instances.
+                        let mut todo: Vec<WordId> = std::iter::once(id)
+                            .chain(
+                                self.ctx
+                                    .instances
+                                    .iter()
+                                    .filter(|((t, _), _)| *t == id)
+                                    .map(|(_, &i)| i),
+                            )
+                            .collect();
+                        seen.extend(todo.iter().copied());
+                        while let Some(target) = todo.pop() {
+                            for (caller, w) in self.ctx.words.iter().enumerate() {
+                                if w.kind != WordKind::Line
+                                    && w.callees.iter().any(|&(c, _)| c == target)
+                                    && seen.insert(caller)
+                                {
+                                    todo.push(caller);
+                                }
+                            }
+                        }
+                    }
+                    None if crate::prims::is_builtin(name) => {}
+                    None => {
+                        return Err(Diagnostic::error(
+                            codes::E_UNDEFINED,
+                            format!(
+                                "unknown word `{name}`{}",
+                                crate::prims::suggest(
+                                    name,
+                                    self.ctx.by_name.keys().map(String::as_str)
+                                )
+                            ),
+                            loc.clone(),
+                        ))
+                    }
+                }
+                Some((name, seen))
+            }
+        };
+        let (mut run, mut pending) = (Vec::new(), Vec::new());
+        for t in &self.program.tests {
+            if self.forgotten_tests.contains(&t.index) {
+                continue;
+            }
+            if let Some((name, seen)) = &reaching {
+                if t.word != *name && !seen.contains(&self.program.test_words[t.index]) {
+                    continue;
+                }
+            }
+            if self.has_body(&t.word) {
+                run.push(self.test_run(t));
+            } else {
+                pending.push(self.test_run(t));
+            }
+        }
+        Ok((run, pending))
     }
 
     /// `)force`: change words' effects deliberately. The chunk's definitions
@@ -998,14 +1088,30 @@ impl Session {
             forced: Vec::new(),
             rechecked: Vec::new(),
             listing: None,
+            pending: Vec::new(),
+            tested: false,
+        }
+    }
+
+    fn has_body(&self, word: &str) -> bool {
+        match self.ctx.by_name.get(word) {
+            Some(&id) => self.ctx.words[id].body.is_some(),
+            None => true, // a primitive
+        }
+    }
+
+    fn test_run(&self, t: &crate::program::TestInfo) -> TestRun {
+        TestRun {
+            slot: self.program.test_words[t.index] as u32,
+            word: t.word.clone(),
+            expected: t.expected.clone(),
+            result_types: t.result_types.clone(),
+            types: names(&t.result_types),
+            location: t.location.clone(),
         }
     }
 
     fn tests_to_run(&self, tests_before: usize, built: &[WordId]) -> Vec<TestRun> {
-        let has_body = |word: &str| match self.ctx.by_name.get(word) {
-            Some(&id) => self.ctx.words[id].body.is_some(),
-            None => true, // a primitive
-        };
         let given_body: Vec<&str> = built
             .iter()
             .filter(|&&id| self.ctx.words[id].body.is_some())
@@ -1016,17 +1122,10 @@ impl Session {
             .iter()
             .filter(|t| !self.forgotten_tests.contains(&t.index))
             .filter(|t| {
-                (t.index >= tests_before && has_body(&t.word))
+                (t.index >= tests_before && self.has_body(&t.word))
                     || given_body.contains(&t.word.as_str())
             })
-            .map(|t| TestRun {
-                slot: self.program.test_words[t.index] as u32,
-                word: t.word.clone(),
-                expected: t.expected.clone(),
-                result_types: t.result_types.clone(),
-                types: names(&t.result_types),
-                location: t.location.clone(),
-            })
+            .map(|t| self.test_run(t))
             .collect()
     }
 }

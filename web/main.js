@@ -37,9 +37,17 @@ function render(r) {
       print(`PASS     ${t.word}\n`);
       continue;
     }
+    if (t.status === "pending") {
+      print(`PENDING  ${t.word}  (word has no body yet)\n`);
+      continue;
+    }
     print(`FAIL     ${t.word}\n    expected: ${t.expected.join(" ")}\n`, "err");
     if (t.actual) print(`    actual:   ${t.actual.join(" ")}\n`, "err");
     if (t.trap) print(`    trap in \`${t.trap.word}\`: ${t.trap.message}\n`, "err");
+  }
+  if (r.tested) {
+    const n = (s) => r.tests.filter((t) => t.status === s).length;
+    print(`${n("pass")} passed, ${n("fail")} failed, ${n("pending")} pending\n`);
   }
   if (r.trap) print(r.trap.word ? `trap in \`${r.trap.word}\`: ${r.trap.message}\n` : `trap: ${r.trap.message}\n`, "err");
   const s = r.stack;
@@ -174,7 +182,7 @@ async function main() {
     try {
       const r = await repl.step(text);
       render(r);
-      if (!r.line && r.listing == null && !r.diagnostics.some((d) => d.severity === "error")) {
+      if (!r.line && r.listing == null && !r.tested && !r.diagnostics.some((d) => d.severity === "error")) {
         program.push(text);
         save(program);
       }

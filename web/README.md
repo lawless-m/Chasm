@@ -43,7 +43,8 @@ Two page commands, handled by `main.js` rather than the compiler:
 
 `)words`, a compiler command, lists the program as it stands instead:
 the latest definition of each word still defined, ready to copy into a
-`.chasm` file (`docs/reference.md` section 1a). It is not saved.
+`.chasm` file (`docs/reference.md` section 1a). It is not saved, and
+neither is `)test` or `)test word`, which run the tests in force.
 
 Up and Down in the input box step through the chunks you have entered,
 as in readline: Up from the first line of the box, Down from the last, so

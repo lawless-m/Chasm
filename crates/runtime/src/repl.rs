@@ -57,7 +57,10 @@ pub struct Outcome {
     /// The program as it stands, from `)words`.
     pub listing: Option<String>,
     pub trap: Option<RunError>,
+    /// Tests run, then any pending ones.
     pub tests: Vec<ReplTestResult>,
+    /// The step was `)test`.
+    pub tested: bool,
     pub stack: Vec<StackEntry>,
     pub timing: Timing,
 }
@@ -294,6 +297,14 @@ impl NativeRepl {
                     location: t.location.clone(),
                 });
             }
+            tests.extend(step.pending.iter().map(|t| ReplTestResult {
+                word: t.word.clone(),
+                status: TestStatus::Pending,
+                expected: t.expected.clone(),
+                actual: None,
+                error: None,
+                location: t.location.clone(),
+            }));
         }
         if let (true, Some(line)) = (installed, &step.line) {
             let sp = self.read_u32(L::DATA_STACK_PTR);
@@ -321,6 +332,7 @@ impl NativeRepl {
             listing: step.listing,
             trap,
             tests,
+            tested: step.tested,
             stack: {
                 let structs = self.render_structs();
                 read_stack(

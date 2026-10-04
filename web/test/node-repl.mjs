@@ -93,6 +93,15 @@ try {
   r = await repl.step("test twice : 1.5 twice f64.add -> 3.0");
   assert.equal(r.tests[0].status, "pass");
 
+  r = await repl.step("declare stub ( -- i32 )");
+  r = await repl.step("test stub : stub -> 1");
+  r = await repl.step(")test twice");
+  assert.ok(r.tested && r.ok);
+  assert.deepEqual(r.tests.map((t) => [t.word, t.status]), [["twice", "pass"]]);
+  r = await repl.step(")test");
+  assert.deepEqual(r.tests.map((t) => [t.word, t.status]), [["twice", "pass"], ["stub", "pending"]]);
+  r = await repl.step(")forget stub");
+
   r = await repl.step(")words");
   assert.equal(
     r.listing,

@@ -116,8 +116,11 @@ export class Repl {
       }
     }
     const tests = s.tests.map((t, i) => this.check(t, done.tests[i]));
+    for (const t of s.pending) {
+      tests.push({ word: t.word, expected: t.expected_text, location: t.location, status: "pending", actual: null, trap: null });
+    }
     return {
-      ok: !diagnostics.some((d) => d.severity === "error") && !trap && tests.every((t) => t.status === "pass"),
+      ok: !diagnostics.some((d) => d.severity === "error") && !trap && tests.every((t) => t.status !== "fail"),
       line: Boolean(s.line),
       diagnostics,
       defined: s.defined,
@@ -126,6 +129,7 @@ export class Repl {
       rechecked: s.rechecked,
       listing: s.listing,
       tests,
+      tested: s.tested,
       trap,
       stack: await this.readStack(this.stackTypes),
     };

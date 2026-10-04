@@ -88,6 +88,24 @@ fn tests_run_at_once() {
     assert!(out.contains("PASS"), "{out}");
 }
 
+#[test]
+fn test_command_runs_the_tests_in_force() {
+    let input = "declare w ( i32 -- i32 )\ntest w : 5 w -> 10\n: quad ( i32 -- i32 ) w w ;\ntest quad : 1 quad -> 4\n: other ( -- i32 ) 7 ;\ntest other : other -> 7\n)test\n: w ( i32 -- i32 ) 2 i32.mul ;\n: w ( i32 -- i32 ) 3 i32.mul ;\n)test w\n)test nope\n";
+    let (ok, out, err) = repl(&[], input);
+    assert!(!ok, "failing tests and an unknown word are errors");
+    assert!(
+        out.contains(
+            "PASS     other\nPENDING  w  (word has no body yet)\n1 passed, 1 failed, 1 pending\n"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains("FAIL     quad  (<repl:4>:1)\n    expected: 4\n    actual:   9\n0 passed, 2 failed, 0 pending\n"),
+        "`)test w` reaches the test of a caller and leaves `other` out: {out}"
+    );
+    assert!(err.contains("unknown word `nope`"), "{err}");
+}
+
 const POINT: &str = "struct point  x: i32  y: f64\n";
 
 fn last_line(out: &str) -> &str {
