@@ -706,6 +706,35 @@ Modes: 0 read, 1 write (truncate), 2 append, 3 read-write. Errors: -1 not
 found, -2 permission, -3 not supported, -4 I/O error, -5 bad handle, -6
 malformed request; treat any negative as failure.
 
+A buffer is an address in linear memory and a length in bytes: get one
+with `mem.alloc ( i32 -- i32 )`, turn what `host.read` put there into a
+string with `str.from-raw ( addr len -- str )`, and give `host.write` a
+string's bytes with `str.addr` and `str.len`.
+
+```chasm
+# Print a file through a 64-byte buffer, a chunk at a time. Status is 0
+# at the end, or the error.
+: cat ( str -- i32 )
+  0 host.open :> h
+  h 0 i32.lt_s
+  [ h ]
+  [ 64 mem.alloc :> buf
+    0 :> n!
+    [ h buf 64 host.read n!  n 0 i32.gt_s ]
+    [ buf n str.from-raw print ]
+    while
+    h host.close drop
+    n ]
+  if ;
+
+: main ( -- )
+  "/dev/cons" 1 host.open :> out
+  "the hostname: " :> s
+  out s str.addr s str.len host.write drop
+  "/file/etc/hostname" cat
+  0 i32.lt_s [ "could not read it (the browser REPL has no /file)" println ] when ;
+```
+
 | Path | |
 |---|---|
 | `/dev/cons` | console (stdin and stdout) |
