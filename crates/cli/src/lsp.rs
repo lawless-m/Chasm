@@ -256,7 +256,7 @@ fn hover(docs: &HashMap<String, String>, p: HoverParams) -> Option<Hover> {
 }
 
 /// A primitive's effect as written in `docs/reference.md`.
-fn primitive_effect(name: &str) -> Option<String> {
+pub(crate) fn primitive_effect(name: &str) -> Option<String> {
     use chasm_core::{prims, types::names};
     if let Some((inputs, outputs, _)) = prims::numeric(name) {
         return Some(effect(&names(&inputs), &names(&outputs)));
@@ -290,6 +290,7 @@ fn primitive_effect(name: &str) -> Option<String> {
         "map" => "arr [ T -- U ] map: leaves array U",
         "filter" => "arr [ T -- i32 ] filter: leaves array T",
         "fold" => "arr init [ U T -- U ] fold: leaves U",
+        "match" => "value v1: [ ... ] v2: [ ... ] else: [ ... ] match",
         _ => return None,
     };
     Some(fixed.to_string())

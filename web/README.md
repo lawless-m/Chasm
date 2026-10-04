@@ -25,6 +25,10 @@ Cross-Origin-Embedder-Policy: require-corp
 `web/serve.py` does (stdlib only, port 8000, or the first argument). Any
 static host works if it sends both headers.
 
+On a host that cannot send them, `coi.js` registers the service worker
+`coi-sw.js`, which adds the two headers to every response, and reloads the
+page once. It does nothing when the page is already cross-origin isolated.
+
 ## Saved program
 
 The page keeps the program in the browser's `localStorage` (key
@@ -34,6 +38,14 @@ On load the page replays the saved chunks into the fresh session, so a
 reload or a redeploy keeps your words but starts with an empty stack. A
 saved chunk that no longer checks (after a compiler change) is shown with
 its error and dropped.
+
+A link can carry an example: `#code=<base64url>` in the URL holds the
+UTF-8 text of a `.chasm` file. After the saved program is replayed, the
+page splits that text into chunks and runs each as if typed: a chunk
+begins at every line that starts, at column 0, with `:`, `export`,
+`declare`, `test`, `struct` or `union`, and every other line continues the
+chunk before it. Loaded chunks go into the Up/Down history but are not
+saved; what you type afterwards is saved as usual.
 
 Two page commands, handled by `main.js` rather than the compiler:
 

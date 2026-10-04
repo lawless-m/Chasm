@@ -43,3 +43,9 @@ jobs:
           for f in examples/*.chasm; do
             cargo run -q -p chasm-cli -- test "$f"
           done
+      - name: Markdown package
+        run: python3 -m pip install markdown
+      - name: Docs examples
+        run: cargo build -p chasm-cli && CHASM=target/debug/chasm python3 site/check.py
+      - name: Site build
+        run: CHASM=target/debug/chasm python3 site/build.py

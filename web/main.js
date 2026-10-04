@@ -85,6 +85,54 @@ function save(chunks, key = SAVED) {
   }
 }
 
+// The example in a `#code=<base64url>` fragment, as UTF-8 text.
+function linkText() {
+  const b64 = location.hash.slice("#code=".length).replace(/-/g, "+").replace(/_/g, "/");
+  const bytes = Uint8Array.from(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4)), (c) => c.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
+// Split a file into chunks: one begins at every line starting, at column 0,
+// with a top-level keyword; every other line continues the current chunk.
+function chunks(text) {
+  const out = [[]];
+  for (const line of text.split("\n")) {
+    if (/^(:|export|declare|test|struct|union)(\s|$)/.test(line)) out.push([]);
+    out.at(-1).push(line);
+  }
+  return out.map((lines) => lines.join("\n").trim()).filter((c) => c);
+}
+
+// Run the example a link carries. It goes into the history but not into the
+// saved program: loaded code is not saved.
+async function loadLink(repl, history) {
+  let failure = null;
+  let hasMain = false;
+  const list = chunks(linkText());
+  for (const text of list) {
+    print(text.replace(/^/gm, "> ") + "\n", "echo");
+    const r = await repl.step(text);
+    render(r);
+    if (history.at(-1) !== text) {
+      history.push(text);
+      history.splice(0, history.length - HISTORY_MAX);
+      save(history, HISTORY);
+    }
+    hasMain ||= r.defined.some((d) => d.name === "main");
+    if (!r.ok) {
+      failure ??=
+        r.diagnostics.find((d) => d.severity === "error")?.message ??
+        r.trap?.message ??
+        r.tests.find((t) => t.status === "fail")?.word;
+    }
+  }
+  print(
+    `loaded ${list.length} chunks from the link; they are not saved${hasMain ? "; type main to run it" : ""}\n`,
+    "hint",
+  );
+  console.log(failure == null ? "link ok" : "link FAIL " + failure);
+}
+
 async function main() {
   if (!crossOriginIsolated) {
     print(
@@ -125,10 +173,11 @@ async function main() {
     print(`restored ${program.length} chunks from this browser; )program lists them, )clear forgets them\n`, "hint");
   }
   save(program);
+  const history = loadSaved(HISTORY);
+  if (location.hash.startsWith("#code=")) await loadLink(repl, history);
   input.disabled = false;
   input.focus();
 
-  const history = loadSaved(HISTORY);
   let at = history.length; // history.length is the line being typed
   let draft = "";
   input.addEventListener("keydown", (e) => {

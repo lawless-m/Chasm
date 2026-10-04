@@ -22,7 +22,9 @@ $ cargo run -p chasm-cli -- repl
 `chasm repl` is interactive: type definitions and lines, see the stack after
 each, redefine words live.
 
+- https://lawless-m.github.io/Chasm/: the documentation site (guided tour, reference, word index and the browser REPL)
 - `docs/reference.md`: how to write Chasm (start here)
+- `docs/tour/`: the guided tour for newcomers
 - `ARCHITECTURE.md`: goals, runtime, milestones, decisions
 - `LANGUAGE.md`: the v1 language specification
 - `FUTURE.md`: what is deliberately not v1

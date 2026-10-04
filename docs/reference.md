@@ -18,6 +18,7 @@ chasm run    FILE...          # build and run `main ( -- )` (--opt: also wasm-op
 chasm test   FILE...          # run the `test` lines
 chasm unresolved FILE...      # declared words with no body yet
 chasm words  FILE...          # every word and its effect
+chasm prims                   # every primitive and its effect
 chasm deps WORD FILE...       # what WORD calls (--all for transitive)
 chasm used-by WORD FILE...    # what calls WORD
 chasm dead   FILE...          # words `main` and `export` words never reach
@@ -73,6 +74,7 @@ What `results` holds:
 | `dead` | `has_roots`; `dead` (each `word`, `effect`, `location`) |
 | `infer` | `words` (each `name`, `effect`, `location`); `written` (files changed by `--write`) |
 | `words` | `words` (each `name`, `effect`, `inputs`, `outputs`, `resolved`, `failed`, `export`, `library`, `generated`, `generic`, `inferred`, `instance_of`, `location`) |
+| `prims` | `primitives` (each `name`, `effect`) |
 | `deps` | `word`; `words` (each `word` and `kind`: `call` or `address-taken`) |
 | `used-by` | `word`; `words` (names) |
 | `repl` | one report per chunk; see section 1a |
@@ -174,7 +176,7 @@ TCP; native only), `--no-file` (hides the host filesystem) and `--no-net` (hides
   `results.forced`, `results.rechecked`, `results.listing` (`)words`; otherwise null),
   `results.tests`, `results.trap`, `results.stack` and `results.timing`.
 
-```
+```chasm-repl
 > : sq ( i32 -- i32 ) dup i32.mul ;
 ok: sq ( i32 -- i32 )
 ( )
@@ -198,7 +200,7 @@ ok: cube ( i32 -- i32 ) (inferred)
 
 Changing an effect with `)force`:
 
-```
+```chasm-repl
 > : f ( -- i32 ) 1 ;
 ok: f ( -- i32 )
 ( )
@@ -231,7 +233,7 @@ The same REPL runs in the browser; see `web/README.md`.
 
 A file is a sequence of top-level forms, processed **in order**:
 
-```
+```chasm fragment
 : name ( inputs -- outputs )  body ;          # define
 : name  body ;                                # define, with the effect inferred
 export : name ( inputs -- outputs )  body ;   # define and export from the module
@@ -270,7 +272,7 @@ A name starting with an uppercase letter is a **type variable**: `T`, `U`,
 `Elem`, in effects, `array T`, `[ T -- T ]` and stack assertions. A word whose
 effect has one is **generic**:
 
-```
+```chasm
 : twice ( T -- T T )  dup ;
 : first ( array T -- T )  0 array.at ;
 ```
@@ -314,7 +316,7 @@ These work on any type; `dup` on a `str` copies both halves.
 
 Beyond three or so values, bind names instead of shuffling:
 
-```
+```chasm
 : sum-to ( i32 -- i32 )
   :> n            # pop into immutable local n
   0 :> acc!       # pop into mutable local acc
@@ -398,13 +400,13 @@ is `E_MATCH_ARM`; a variant without an arm, and no `else:`, is
 | `fold` | `arr init [ U T -- U ] fold` → `U` |
 | `array.to-str` | `( array i32 -- str )` elements in decimal, space-separated |
 
-```
+```chasm
 : sum ( array i32 -- i32 )  0 [ i32.add ] fold ;
 ```
 
 ## 10a. Structs
 
-```
+```chasm
 struct point  x: i32  y: f64
 ```
 
@@ -444,7 +446,7 @@ storage, and a write through the slice is visible in the original.
 **Optional links.** There is no null test. A link that may be absent is the
 prelude's `option T` (section 10c), matched with `none:` and `some:`:
 
-```
+```chasm
 struct node  v: i32  next: option node
 
 : sum ( option node -- i32 )
@@ -453,7 +455,7 @@ struct node  v: i32  next: option node
 
 ## 10b. Unions
 
-```
+```chasm
 union shape
   | circle  r: f64
   | rect    w: f64  h: f64
@@ -476,7 +478,7 @@ Union fields cannot be written: build a new value instead.
 **match.** Labelled arms written directly before `match`, in any order, as
 `if` takes its quotations:
 
-```
+```chasm fragment
 : area ( shape -- f64 )
   circle: [ :> r  r r f64.mul 3.14 f64.mul ]
   rect:   [ f64.mul ]
@@ -508,7 +510,7 @@ Union fields cannot be written: build a new value instead.
 
 Type parameters follow the name; a field may use them:
 
-```
+```chasm
 struct pair T U  first: T  second: U
 union list T | nil | cons  head: T  tail: list T
 ```
@@ -536,7 +538,7 @@ The prelude declares `union option T | none | some  v: T`:
 `option.none ( -- option T )`, `option.some ( T -- option T )`, matched with
 `none:` and `some:`:
 
-```
+```chasm
 : or-zero ( option i32 -- i32 )  none: [ 0 ] some: [ ] match ;
 test or-zero : 5 option.some or-zero -> 5
 ```
@@ -579,7 +581,7 @@ function itself may change between versions.
 | `vec.each` | `( vec T [ T -- ] -- )` |
 | `vec.fold` | `( vec T A [ A T -- A ] -- A )` |
 
-```
+```chasm
 : add ( i32 i32 -- i32 )  i32.add ;
 
 : squares ( i32 -- vec i32 )
@@ -608,7 +610,7 @@ locals, use `vec.to-array [ ... ] each`.
 | `map.keys` | `( map K V -- vec K )` in no particular order |
 | `map.each` | `( map K V [ K V -- ] -- )` in no particular order |
 
-```
+```chasm
 : or-zero ( option i32 -- i32 )  none: [ 0 ] some: [ ] match ;
 
 : tally ( map str i32 str -- )
@@ -629,7 +631,7 @@ a key after inserting it loses it.
 
 ## 11. Functions as values
 
-```
+```chasm
 : twice ( i32 [ i32 -- i32 ] -- i32 )  :> f  f call f call ;
 : inc ( i32 -- i32 )  1 i32.add ;
 test twice : 5 'inc twice -> 7
@@ -649,7 +651,7 @@ test twice : 5 'inc twice -> 7
 A parenthesised list of types without `--` inside a body asserts the
 **whole** stack at that point, top rightmost:
 
-```
+```chasm
 : hypot ( f64 f64 -- f64 )
   dup f64.mul      ( f64 f64 )
   swap dup f64.mul ( f64 f64 )
@@ -661,7 +663,7 @@ Inside a generic word they may name its type variables: `( array T )`.
 
 ## 13. Contracts and tests
 
-```
+```chasm
 declare parse-int ( str -- i32 )
 test parse-int : "1234" parse-int -> 1234
 

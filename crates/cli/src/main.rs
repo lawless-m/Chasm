@@ -103,6 +103,11 @@ enum Cmd {
     },
     /// List every word with its effect.
     Words(Common),
+    /// List every primitive with its effect.
+    Prims {
+        #[arg(long)]
+        json: bool,
+    },
     /// What a word calls.
     Deps {
         /// The word.
@@ -657,6 +662,22 @@ fn exec(cli: Cli) -> (Report, bool) {
             };
             (r, json)
         }
+        Cmd::Prims { json } => {
+            let primitives: Vec<J> = chasm_core::prims::names()
+                .map(|name| {
+                    let effect = lsp::primitive_effect(name)
+                        .unwrap_or_else(|| panic!("primitive `{name}` has no effect"));
+                    json!({ "name": name, "effect": effect })
+                })
+                .collect();
+            let r = Report {
+                command: "prims",
+                ok: true,
+                diagnostics: vec![],
+                results: json!({ "primitives": primitives }),
+            };
+            (r, json)
+        }
         Cmd::Deps { word, common, all } => {
             let json = common.json;
             let r = graph_query("deps", &word, &common, |comp| {
@@ -958,6 +979,11 @@ fn render(report: &J) -> (String, String) {
                 out.push_str(&format!("{} {}\n", s(&w["word"]), s(&w["effect"])));
             }
         }
+        "prims" => {
+            for p in r["primitives"].as_array().into_iter().flatten() {
+                out.push_str(&format!("{} {}\n", s(&p["name"]), s(&p["effect"])));
+            }
+        }
         "words" => {
             for w in r["words"].as_array().into_iter().flatten() {
                 let mut flags = Vec::new();
@@ -1158,6 +1184,7 @@ fn main() -> ExitCode {
                 Some("dead") => "dead",
                 Some("infer") => "infer",
                 Some("words") => "words",
+                Some("prims") => "prims",
                 Some("deps") => "deps",
                 Some("used-by") => "used-by",
                 Some("repl") => "repl",
