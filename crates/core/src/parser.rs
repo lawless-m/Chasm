@@ -534,6 +534,7 @@ impl<'a> Parser<'a> {
             "f32" => Ty::F32,
             "f64" => Ty::F64,
             "str" => Ty::Str,
+            "bytes" => Ty::Bytes,
             "array" => {
                 let elem = self.ty()?;
                 if matches!(elem, Ty::Array(_)) {

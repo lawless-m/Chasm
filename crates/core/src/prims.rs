@@ -224,15 +224,19 @@ pub fn shuffle(name: &str) -> Option<(usize, &'static [usize])> {
 
 /// Non-numeric primitives with fixed effects and custom code.
 pub fn special(name: &str) -> Option<(Vec<Ty>, Vec<Ty>)> {
-    use Ty::{Str, I32};
+    use Ty::{Bytes, Str, I32};
     Some(match name {
         "str.len" => (vec![Str], vec![I32]),
         "str.addr" => (vec![Str], vec![I32]),
         "str.from-raw" => (vec![I32, I32], vec![Str]),
+        "bytes.len" => (vec![Bytes], vec![I32]),
+        "bytes.addr" => (vec![Bytes], vec![I32]),
+        "bytes.from-raw" => (vec![I32, I32], vec![Bytes]),
         "mem.alloc" => (vec![I32], vec![I32]),
         "trap" => (vec![Str], vec![]),
         "host.open" => (vec![Str, I32], vec![I32]),
-        "host.read" | "host.write" => (vec![I32, I32, I32], vec![I32]),
+        "host.read" => (vec![I32, Bytes], vec![I32]),
+        "host.write" => (vec![I32, Str], vec![I32]),
         "host.close" => (vec![I32], vec![I32]),
         _ => return None,
     })
@@ -417,6 +421,9 @@ pub fn names() -> impl Iterator<Item = &'static str> {
         "str.len",
         "str.addr",
         "str.from-raw",
+        "bytes.len",
+        "bytes.addr",
+        "bytes.from-raw",
         "mem.alloc",
         "trap",
         "host.open",

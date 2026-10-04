@@ -40,7 +40,7 @@ REPL = "index.html main.js compiler.js driver.js ring.js worker.js worker-core.j
 # The word index: (anchor, heading) in page order. A word goes by the part
 # of its name before the first `.`; names without one go by these lists.
 GROUPS = [("stack", "Stack"), ("control", "Control")]
-GROUPS += [(p, p) for p in ("i32", "i64", "f32", "f64", "memory", "str", "array", "host")]
+GROUPS += [(p, p) for p in ("i32", "i64", "f32", "f64", "memory", "str", "bytes", "array", "host")]
 GROUPS += [("console", "Console and files"), ("option", "option"), ("vec", "vec"), ("map", "map")]
 GROUPS += [("implementation", "Implementation"), ("other", "Other")]
 UNDOTTED = {

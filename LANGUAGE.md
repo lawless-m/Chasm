@@ -11,6 +11,7 @@ Status: draft v0.15 (M1 to M9 decisions recorded; see sections 12 to 20). Chasm 
 | `f32` | `f32` | |
 | `f64` | `f64` | |
 | `str` | `i32 i32` (addr, byte length) | Checker-level type with a fixed, documented lowering. See section 4. |
+| `bytes` | `i32 i32` (addr, byte length) | A mutable byte buffer that carries its length. See section 4e. |
 | `array T` | `i32 i32` (addr, element count); for a struct `T`, `(ref null $T_array) i32 i32` (GC array, start, count) | `T` is any type in this table except `array`. See sections 4a and 4b. |
 | struct name | `(ref null $name)` | A declared struct: a reference to a WasmGC struct. See section 4b. |
 | union name | `(ref null $name)` | A declared union: a reference to one of its variants, WasmGC subtypes of the union's type. See section 4c. |
@@ -237,6 +238,10 @@ A key changed after insertion is lost: its hash no longer matches its slot.
 
 **REPL echo.** A vec or map value echoes as the struct it is: `vec{chunks: <32 elements>, count: 3}`.
 
+## 4e. Byte buffers
+
+A `bytes` is an `( addr len )` pair like a `str`, but mutable and not text: the buffer `host.read` fills. Its words check the length: `bytes.at`, `bytes.at!` and `bytes.slice` trap out of range, and `host.read` fills at most `bytes.len` bytes, so a read cannot overrun its buffer. `bytes.new ( i32 -- bytes )` allocates zeroed bytes; `bytes.to-str` copies; `bytes.as-str` gives the buffer itself as a string, without copying, for a buffer that is finished with. `bytes.len`, `bytes.addr` and `bytes.from-raw` are primitives; the rest is prelude. `eq` and `hash` compare by contents, as for `str`.
+
 ## 5. Shuffle primitives
 
 Built-in polymorphic words. Their effects use type variables, resolved at each use against the stack (see `ARCHITECTURE.md` 5b). User words may be polymorphic too: their effects may name type variables, and each concrete use is compiled as its own instance (section 18).
@@ -338,7 +343,7 @@ test parse-header : "abc" parse-header -> 3 0
 
 ## 10. I/O
 
-Four host imports, specified in `ARCHITECTURE.md` 5d: `host.open`, `host.read`, `host.write`, `host.close`. All other I/O is a path in the namespace.
+Four host imports, specified in `ARCHITECTURE.md` 5d: `host.open ( str i32 -- i32 )`, `host.read ( i32 bytes -- i32 )`, `host.write ( i32 str -- i32 )`, `host.close ( i32 -- i32 )`. All other I/O is a path in the namespace.
 
 **Modes** for `host.open`: `0` read, `1` write (truncate), `2` append, `3` read-write. **Error codes** are negative `i32`: `-1` not found, `-2` permission, `-3` not supported on this host, `-4` I/O error, `-5` bad handle, `-6` malformed request. Further codes may be added; programs should treat any negative value as failure.
 
@@ -436,3 +441,8 @@ Recorded here so the spec matches the compiler. `docs/reference.md` is the user-
 8. **No compact echo**: vec and map values echo as structs.
 9. **No new diagnostic codes.**
 10. **Function arguments are function values** (`'word`): quotation values take no inputs, so `vec.each`, `vec.fold` and `map.each` take words.
+
+## 21. Decisions taken after M9
+
+1. **`bytes`, and host words that cannot overrun.** `host.read` was `( i32 i32 i32 -- i32 )`, a bare address and a length that nothing tied to the allocation, so a length larger than the buffer silently wrote past it. It is now `( i32 bytes -- i32 )`, and `host.write` is `( i32 str -- i32 )`: the length travels with the address. Both lower to the same `i32 i32 i32` as before, so the ring, the hosts and the generated code are unchanged; only the checker's effects differ. `bytes` follows `str`: three primitives (`bytes.len`, `bytes.addr`, `bytes.from-raw`), the checked words in the prelude, trap messages named after the word. `bytes.to-str` copies, because a `str` is immutable by convention and the buffer is not; `bytes.as-str` shares instead, since memory is never freed and a copy per string built in a buffer adds up. It stays memory-safe (the string has the buffer's bounds); a later write to the buffer shows through the string, which is the caller's promise not to do. No new diagnostic codes.
+2. **The raw memory words stay open** (`mem.alloc`, loads and stores, `memory.copy`, `memory.fill`, `str.addr`, `str.from-raw`, `bytes.addr`, `bytes.from-raw`): user code may use them, and they are not checked. The ordinary path no longer needs them. Restricting them to the prelude is an option left for later.

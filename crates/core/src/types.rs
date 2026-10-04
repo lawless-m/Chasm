@@ -11,6 +11,9 @@ pub enum Ty {
     F32,
     F64,
     Str,
+    /// `bytes`: a mutable byte buffer, lowered like `str` to `i32 i32`
+    /// (address, length).
+    Bytes,
     /// `array T`: lowered to `i32 i32` (address, element count).
     Array(Box<Ty>),
     /// `[ effect ]`: a function table index.
@@ -121,26 +124,26 @@ impl Ty {
                 Ty::Struct(..) => vec![index(e, true), ValType::I32, ValType::I32],
                 _ => vec![ValType::I32, ValType::I32],
             },
-            Ty::Str => vec![ValType::I32, ValType::I32],
+            Ty::Str | Ty::Bytes => vec![ValType::I32, ValType::I32],
         }
     }
 
     /// The number of wasm values the type occupies.
     pub fn width(&self) -> u32 {
         match self {
-            Ty::Str => 2,
+            Ty::Str | Ty::Bytes => 2,
             Ty::Array(e) if matches!(e.as_ref(), Ty::Struct(..)) => 3,
             Ty::Array(_) => 2,
             _ => 1,
         }
     }
 
-    /// Size in bytes as an array element (natural size; `str` is two `i32`s).
+    /// Size in bytes as an array element (natural size; `str` and `bytes` are two `i32`s).
     /// Never used for structs: arrays of structs are GC arrays with no byte layout.
     pub fn elem_size(&self) -> u32 {
         match self {
             Ty::I32 | Ty::F32 | Ty::Quot(_) | Ty::Var(_) | Ty::Param(_) | Ty::Struct(..) => 4,
-            Ty::I64 | Ty::F64 | Ty::Str | Ty::Array(_) => 8,
+            Ty::I64 | Ty::F64 | Ty::Str | Ty::Bytes | Ty::Array(_) => 8,
         }
     }
 
@@ -231,6 +234,7 @@ impl fmt::Display for Ty {
             Ty::F32 => write!(f, "f32"),
             Ty::F64 => write!(f, "f64"),
             Ty::Str => write!(f, "str"),
+            Ty::Bytes => write!(f, "bytes"),
             Ty::Array(t) => write!(f, "array {t}"),
             Ty::Quot(e) => {
                 write!(f, "[")?;

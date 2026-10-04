@@ -190,6 +190,13 @@ pub(crate) fn values(tys: &[Ty], vals: &[Val], mem: &[u8]) -> Vec<Value> {
                 out.push(Value::Str(String::from_utf8_lossy(bytes).into_owned()));
                 i += 1;
             }
+            Ty::Bytes => {
+                out.push(Value::Opaque(format!(
+                    "<{} bytes>",
+                    vals[i + 1].unwrap_i32() as u32
+                )));
+                i += 1;
+            }
             _ => out.push(Value::I32(vals[i].unwrap_i32())),
         }
         i += 1;

@@ -1,5 +1,5 @@
 //! The Chasm source of the generated `eq` and `hash` words for types that are
-//! not compared inline: `str`, arrays, structs and unions. Each is a body
+//! not compared inline: `str`, `bytes`, arrays, structs and unions. Each is a body
 //! for the effect `( t t -- i32 )` or `( t -- i32 )`, built from primitives,
 //! the type's generated readers and `eq`/`hash` on its parts.
 
@@ -12,21 +12,25 @@ const SEED: i32 = 17;
 /// The body of `eq<t>` or `hash<t>`.
 pub fn helper_source(ctx: &Ctx, op: Op, t: &Ty) -> String {
     match (op, t) {
-        (Op::Eq, Ty::Str) => "\
+        (Op::Eq, Ty::Str | Ty::Bytes) => format!(
+            "\
 :> b :> a
-a str.len b str.len i32.eq :> r!
-r [ a str.len [ :> i
-  a str.addr i i32.add i32.load8_u  b str.addr i i32.add i32.load8_u  i32.ne
+a {p}.len b {p}.len i32.eq :> r!
+r [ a {p}.len [ :> i
+  a {p}.addr i i32.add i32.load8_u  b {p}.addr i i32.add i32.load8_u  i32.ne
   [ 0 r! leave ] when ] times ] when
-r"
-        .into(),
+r",
+            p = t
+        ),
         // FNV-1a over the bytes.
-        (Op::Hash, Ty::Str) => "\
+        (Op::Hash, Ty::Str | Ty::Bytes) => format!(
+            "\
 :> s
 0x811C9DC5 :> h!
-s str.len [ :> i  h  s str.addr i i32.add i32.load8_u  i32.xor  0x01000193 i32.mul h! ] times
-h"
-        .into(),
+s {p}.len [ :> i  h  s {p}.addr i i32.add i32.load8_u  i32.xor  0x01000193 i32.mul h! ] times
+h",
+            p = t
+        ),
         (Op::Eq, Ty::Array(_)) => "\
 :> b :> a
 a array.len b array.len i32.eq :> r!

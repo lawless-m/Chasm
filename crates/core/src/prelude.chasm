@@ -1,6 +1,7 @@
 # Chasm prelude: library words written in Chasm, compiled with every program.
 #
-# Built on the primitives only. Strings are ( addr len ) pairs; see
+# Built on the primitives only. Strings and byte buffers are ( addr len )
+# pairs; see
 # LANGUAGE.md section 4. I/O is four host words over a namespace; see
 # LANGUAGE.md section 10.
 
@@ -134,12 +135,51 @@
   ] times
   out ;
 
+# ---------------------------------------------------------------- bytes
+# A byte buffer that knows its length, so a read cannot run past its end.
+
+: bytes.new ( i32 -- bytes )
+  :> n
+  n 0 i32.lt_s [ "bytes.new: negative length" trap ] when
+  n mem.alloc n bytes.from-raw ;
+
+: bytes.at ( bytes i32 -- i32 )
+  :> i :> b
+  i b bytes.len i32.ge_u [ "bytes.at: offset out of range" trap ] when
+  b bytes.addr i i32.add i32.load8_u ;
+
+: bytes.at! ( bytes i32 i32 -- )
+  :> v :> i :> b
+  i b bytes.len i32.ge_u [ "bytes.at!: offset out of range" trap ] when
+  b bytes.addr i i32.add v i32.store8 ;
+
+# Start and length; shares the buffer, no copy.
+: bytes.slice ( bytes i32 i32 -- bytes )
+  :> n :> start :> b
+  start b bytes.len i32.gt_u
+  n b bytes.len start i32.sub i32.gt_u i32.or
+  [ "bytes.slice: range out of bounds" trap ] when
+  b bytes.addr start i32.add n bytes.from-raw ;
+
+# A copy, so later writes to the buffer leave the string alone.
+: bytes.to-str ( bytes -- str )
+  :> b
+  b bytes.len mem.alloc :> p
+  p b bytes.addr b bytes.len memory.copy
+  p b bytes.len str.from-raw ;
+
+# The buffer itself as a string, no copy: for a buffer that is finished
+# with. A later write to the buffer shows through the string.
+: bytes.as-str ( bytes -- str )
+  :> b
+  b bytes.addr b bytes.len str.from-raw ;
+
 # ---------------------------------------------------------------- I/O
 
 : print ( str -- )
   :> s
   "/dev/cons" 1 host.open :> h
-  h s str.addr s str.len host.write drop
+  h s host.write drop
   h host.close drop ;
 
 : println ( str -- )  print "\n" print ;
@@ -152,7 +192,7 @@
   cap mem.alloc :> buf!
   0 :> n!
   0 :> eof!
-  [ h buf n i32.add 1 host.read 1 i32.lt_s
+  [ h buf n i32.add 1 bytes.from-raw host.read 1 i32.lt_s
     [ 1 eof! 0 ]
     [ buf n i32.add i32.load8_u 10 i32.ne ]
     if ]
@@ -179,7 +219,7 @@
     cap mem.alloc :> buf!
     0 :> n!
     0 :> r!
-    [ h buf n i32.add cap n i32.sub host.read r!  r 0 i32.gt_s ]
+    [ h buf n i32.add cap n i32.sub bytes.from-raw host.read r!  r 0 i32.gt_s ]
     [ n r i32.add n!
       n cap i32.eq [
         cap 2 i32.mul mem.alloc :> nb
@@ -203,7 +243,7 @@
   [ 0 :> n!
     1 :> r!
     [ n s str.len i32.lt_u  r 0 i32.gt_s i32.and ]
-    [ h s str.addr n i32.add s str.len n i32.sub host.write r!
+    [ h s str.addr n i32.add s str.len n i32.sub str.from-raw host.write r!
       r 0 i32.gt_s [ n r i32.add n! ] when ]
     while
     h host.close drop
@@ -226,7 +266,7 @@
   [ h ]
   [ 4096 mem.alloc :> buf
     0 :> r!
-    [ h buf 4096 host.read r!  r 0 i32.gt_s ]
+    [ h buf 4096 bytes.from-raw host.read r!  r 0 i32.gt_s ]
     [ 0 :> off!
       [ off r i32.lt_s ]
       [ buf off i32.add :> rec
@@ -247,7 +287,7 @@
 : now ( -- i64 )
   "/dev/time" 0 host.open :> h
   8 mem.alloc :> buf
-  h buf 8 host.read drop
+  h buf 8 bytes.from-raw host.read drop
   h host.close drop
   buf i64.load ;
 

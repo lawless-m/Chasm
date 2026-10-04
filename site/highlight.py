@@ -10,7 +10,7 @@ import html
 import re
 
 KEYWORDS = {":", ";", "export", "declare", "test", "struct", "union", "->", ":>"}
-TYPES = {"i32", "i64", "f32", "f64", "str", "array", "vec", "map", "option"}
+TYPES = {"i32", "i64", "f32", "f64", "str", "bytes", "array", "vec", "map", "option"}
 NUMBER = re.compile(r"-?(0x[0-9a-fA-F]+|\d+(\.\d+)?([eE][-+]?\d+)?)$")
 TOKEN = re.compile(r"\s+|\S+")
 

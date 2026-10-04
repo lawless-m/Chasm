@@ -112,8 +112,8 @@ One interface for everything, in the Plan 9 spirit: **four words over a namespac
 | Word | Effect | Notes |
 |---|---|---|
 | `host.open` | `( str i32 -- i32 )` | Path and mode; returns a handle, or a negative error code. |
-| `host.read` | `( i32 i32 i32 -- i32 )` | Handle, buffer address, length; returns bytes read, 0 at end, negative on error. |
-| `host.write` | `( i32 i32 i32 -- i32 )` | Same shape. |
+| `host.read` | `( i32 bytes -- i32 )` | Handle and a buffer that carries its length; returns bytes read (at most that length), 0 at end, negative on error. |
+| `host.write` | `( i32 str -- i32 )` | Handle and the bytes to write; returns bytes written. |
 | `host.close` | `( i32 -- i32 )` | |
 
 These are the only host imports. **Everything else is a path.** Adding a capability means adding a path, not a word.

@@ -59,7 +59,7 @@ const PROGRAM: &str = r#"
   "hello from wasi" println
   "/file/in.txt" read-file drop print
   "/file/out.txt" 1 host.open :> h
-  h "written" str.addr 7 host.write drop
+  h "written" host.write drop
   h host.close drop
   now 0 i64 i64.gt_s [ "time ok" ] [ "time bad" ] if println
   "/dev/nope" 0 host.open i32.to-str println ;

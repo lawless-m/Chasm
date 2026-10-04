@@ -1207,14 +1207,16 @@ pub fn read_stack(
                 let Some(len) = slot(i + 2) else { break };
                 Value::Opaque(format!("<{} elements>", lo(len)))
             }
-            Ty::Str | Ty::Array(_) => {
+            Ty::Str | Ty::Bytes | Ty::Array(_) => {
                 let Some(b) = slot(i + 1) else { break };
                 let (addr, n) = (lo(a) as usize, lo(b) as usize);
-                if matches!(t, Ty::Str) {
-                    let bytes = mem.get(addr..addr.saturating_add(n)).unwrap_or(&[]);
-                    Value::Str(String::from_utf8_lossy(bytes).into_owned())
-                } else {
-                    Value::Opaque(format!("<{n} elements>"))
+                match t {
+                    Ty::Str => {
+                        let bytes = mem.get(addr..addr.saturating_add(n)).unwrap_or(&[]);
+                        Value::Str(String::from_utf8_lossy(bytes).into_owned())
+                    }
+                    Ty::Bytes => Value::Opaque(format!("<{n} bytes>")),
+                    _ => Value::Opaque(format!("<{n} elements>")),
                 }
             }
             Ty::Quot(_) => Value::Opaque(format!("#{}", lo(a))),

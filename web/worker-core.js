@@ -62,6 +62,8 @@ export function attach(post, onMessage) {
       if (f.type === "str") {
         const a = vals[0] >>> 0;
         v = decoder.decode(new Uint8Array(memory.buffer).slice(a, a + (vals[1] >>> 0)));
+      } else if (f.type === "bytes") {
+        v = { bytes: vals[1] >>> 0 };
       } else if (f.type.startsWith("array ")) {
         v = { elements: (f.type.slice(6) in structs ? vals[2] : vals[1]) >>> 0 };
       } else if (f.type.startsWith("[")) {

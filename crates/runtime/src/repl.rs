@@ -460,6 +460,7 @@ impl Reader<'_> {
                     let bytes = data.get(a..a.saturating_add(n)).unwrap_or(&[]);
                     Value::Str(String::from_utf8_lossy(bytes).into_owned())
                 }
+                Ty::Bytes => Value::Opaque(format!("<{} bytes>", int(get(scope, w + 1)) as u32)),
                 Ty::Array(e) => {
                     let at = if matches!(e.as_ref(), Ty::Struct(..)) {
                         w + 2

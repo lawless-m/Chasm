@@ -21,7 +21,7 @@ Tasks are taken from Rosetta Code **task descriptions** only. Every solution is 
 - `test` compares the stack exactly and does not look at console output. Test words that return values; keep `main` as the thin printing wrapper.
 - Idiomatic over clever. These are the programs the model will imitate.
 
-The files already in `examples/` (`hello`, `basics`, `strings`, `arrays`, `contract`, `files`, `http`, `ninep`, `wasi`, `generics`, `inferred`, and `collections`, which shows the prelude's `vec T` and `map K V` with struct keys compared by contents) are the core teaching set and stay alongside the tasks below.
+The files already in `examples/` (`hello`, `basics`, `strings`, `arrays`, `contract`, `files`, `bytes`, `http`, `ninep`, `wasi`, `generics`, `inferred`, and `collections`, which shows the prelude's `vec T` and `map K V` with struct keys compared by contents) are the core teaching set and stay alongside the tasks below.
 
 ## Task list
 

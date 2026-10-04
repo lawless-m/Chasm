@@ -385,6 +385,26 @@ is `E_MATCH_ARM`; a variant without an arm, and no `else:`, is
 | `str.from-raw` | `( i32 i32 -- str )` | low level: unchecked addr and length |
 | `mem.alloc` | `( i32 -- i32 )` | low level: zeroed bytes, 8-aligned, never freed |
 
+## 9a. Byte buffers
+
+A `bytes` is a mutable buffer that carries its length, as a `str` does: it
+is what `host.read` fills (section 14), and it cannot be read or written
+past its end.
+
+| Word | Effect | Notes |
+|---|---|---|
+| `bytes.new` | `( i32 -- bytes )` | zeroed; traps on a negative length |
+| `bytes.len` | `( bytes -- i32 )` | |
+| `bytes.at` | `( bytes i32 -- i32 )` | the byte at an offset; traps out of range |
+| `bytes.at!` | `( bytes i32 i32 -- )` | offset, byte; traps out of range |
+| `bytes.slice` | `( bytes i32 i32 -- bytes )` | start, length; traps out of range; shares the buffer, no copy |
+| `bytes.to-str` | `( bytes -- str )` | a copy |
+| `bytes.as-str` | `( bytes -- str )` | the buffer itself, no copy: for a buffer you are finished with, as a later write shows through the string |
+| `bytes.addr` | `( bytes -- i32 )` | low level: the address |
+| `bytes.from-raw` | `( i32 i32 -- bytes )` | low level: unchecked addr and length |
+
+`eq` and `hash` compare buffers by contents.
+
 ## 10. Arrays
 
 | Word | Effect |
@@ -698,18 +718,18 @@ Four host words over a namespace of paths:
 | Word | Effect |
 |---|---|
 | `host.open` | `( str i32 -- i32 )` path, mode → handle or negative error |
-| `host.read` | `( i32 i32 i32 -- i32 )` handle, buffer, length → bytes, 0 at end, or error |
-| `host.write` | `( i32 i32 i32 -- i32 )` |
+| `host.read` | `( i32 bytes -- i32 )` handle, buffer → bytes read (at most the buffer's length), 0 at end, or error |
+| `host.write` | `( i32 str -- i32 )` handle, string → bytes written, or error |
 | `host.close` | `( i32 -- i32 )` |
 
 Modes: 0 read, 1 write (truncate), 2 append, 3 read-write. Errors: -1 not
 found, -2 permission, -3 not supported, -4 I/O error, -5 bad handle, -6
 malformed request; treat any negative as failure.
 
-A buffer is an address in linear memory and a length in bytes: get one
-with `mem.alloc ( i32 -- i32 )`, turn what `host.read` put there into a
-string with `str.from-raw ( addr len -- str )`, and give `host.write` a
-string's bytes with `str.addr` and `str.len`.
+`host.read` fills a `bytes` buffer (section 9a) and never more than its
+length; take the part it filled with `bytes.slice` and make a string of it
+with `bytes.to-str` (a copy) or `bytes.as-str` (no copy, when the buffer is
+not written again). `host.write` takes a string.
 
 ```chasm
 # Print a file through a 64-byte buffer, a chunk at a time. Status is 0
@@ -718,10 +738,10 @@ string's bytes with `str.addr` and `str.len`.
   0 host.open :> h
   h 0 i32.lt_s
   [ h ]
-  [ 64 mem.alloc :> buf
+  [ 64 bytes.new :> buf
     0 :> n!
-    [ h buf 64 host.read n!  n 0 i32.gt_s ]
-    [ buf n str.from-raw print ]
+    [ h buf host.read n!  n 0 i32.gt_s ]
+    [ buf 0 n bytes.slice bytes.to-str print ]
     while
     h host.close drop
     n ]
@@ -729,8 +749,7 @@ string's bytes with `str.addr` and `str.len`.
 
 : main ( -- )
   "/dev/cons" 1 host.open :> out
-  "the hostname: " :> s
-  out s str.addr s str.len host.write drop
+  out "the hostname: " host.write drop
   "/file/etc/hostname" cat
   0 i32.lt_s [ "could not read it (the browser REPL has no /file)" println ] when ;
 ```
@@ -816,7 +835,7 @@ Collections (`vec T`, `map K V`) are in section 10d. The prelude also declares `
 
 See `examples/`: `hello`, `basics` (words, loops, tests), `strings`,
 `arrays` (combinators, functions as values), `contract` (declare first),
-`files` (the namespace), `http` (requests with headers), `ninep` (a 9p
+`files` (the namespace), `bytes` (byte buffers and reading in chunks), `http` (requests with headers), `ninep` (a 9p
 mount and directory records), `wasi` (a program for `build --wasi`), `generics` (generic words),
 `inferred` (effects left out), `structs` (structs, a list of `option node`
 links, arrays of structs), `unions` (shapes with `match` and `else:`, a

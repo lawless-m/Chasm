@@ -2520,15 +2520,15 @@ impl<'c> Walker<'c> {
         if let Some((ins, outs)) = prims::special(n) {
             self.pop_expect(n, &ins, loc)?;
             match n {
-                "str.len" => {
+                "str.len" | "bytes.len" => {
                     let mut ta = TempAlloc::default();
                     let t = self.temp(&mut ta, ValType::I32);
                     self.op(I::LocalSet(t));
                     self.op(I::Drop);
                     self.op(I::LocalGet(t));
                 }
-                "str.addr" => self.op(I::Drop),
-                "str.from-raw" => {}
+                "str.addr" | "bytes.addr" => self.op(I::Drop),
+                "str.from-raw" | "bytes.from-raw" => {}
                 "mem.alloc" => self.op(I::Call(FN_ALLOC)),
                 "trap" => {
                     let (wa, wl) = self.ctx.intern_str(&self.name.clone());

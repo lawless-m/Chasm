@@ -26,17 +26,17 @@ fn chasm(args: &[&str]) -> (bool, String, String) {
 const PROGRAM: &str = r#"
 : drain ( i32 -- str i32 )
   :> h
-  4096 mem.alloc :> buf
-  h buf 4096 host.read :> n
+  4096 bytes.new :> buf
+  h buf host.read :> n
   h host.close drop
-  n 0 i32.lt_s [ "" n ] [ buf n str.from-raw 0 ] if ;
+  n 0 i32.lt_s [ "" n ] [ buf 0 n bytes.slice bytes.to-str 0 ] if ;
 
 : post ( str str -- str i32 )
   :> req :> path
   path 3 host.open :> h
   h 0 i32.lt_s
   [ "" h ]
-  [ h req str.addr req str.len host.write drop  h drain ]
+  [ h req host.write drop  h drain ]
   if ;
 
 : main ( -- )
