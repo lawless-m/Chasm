@@ -27,12 +27,12 @@ function float(x, single) {
 
 
 export class Repl {
-  constructor({ compiler, memory, worker, onOutput }) {
+  constructor({ compiler, memory, worker, onOutput, storage }) {
     this.c = compiler;
     this.L = compiler.layout;
     this.memory = memory;
     this.worker = worker;
-    this.host = new Namespace(this.L, { onOutput });
+    this.host = new Namespace(this.L, storage ? { onOutput, storage } : { onOutput });
     this.stackTypes = [];
     this.structs = {};
     this.pending = null;

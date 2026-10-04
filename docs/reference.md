@@ -714,6 +714,7 @@ malformed request; treat any negative as failure.
 | `/mnt/<name>/...` | a directory mounted with `--mount name=DIR`, or a 9p server mounted with `--mount name=9p://host:port`; under a 9p mount, writing to a missing file creates it |
 | `/net/http/<host>[:port]/<path>` | an HTTP request; in the browser REPL it goes through `fetch`, so a server on another origin must allow CORS |
 | `/net/https/<host>[:port]/<path>` | the same over TLS |
+| `/local/<name>` | browser REPL only: a file kept in the page's local storage, across visits; `<name>` is one path segment; reading `/local` gives directory records |
 
 **HTTP requests.** What a program writes to a `/net/http` handle is the rest
 of the request after its first line: `Name: value` header lines, an empty
@@ -741,6 +742,8 @@ Library words:
 | `print` / `println` | `( str -- )` |
 | `read-line` | `( -- str i32 )` line without newline; flag 0 at end of input |
 | `read-file` | `( str -- str i32 )` path → contents, status (0 or error) |
+| `write-file` | `( str str -- i32 )` contents, path → status; replaces the file |
+| `copy` | `( str str -- i32 )` from, to → status: `"/net/https/example.com/" "/local/page" copy` |
 | `ls` | `( str -- i32 )` prints a directory, one entry per line |
 | `now` | `( -- i64 )` nanoseconds since the epoch |
 

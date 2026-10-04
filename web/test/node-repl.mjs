@@ -110,6 +110,14 @@ try {
       "\ntest twice : 1.5 twice f64.add -> 3.0\n",
   );
 
+  output = "";
+  r = await repl.step('drop "kept\\n" "/local/g" write-file "/local/g" "/local/h" copy "/local/h" read-file drop print "/local" ls');
+  assert.ok(r.ok, JSON.stringify(r.diagnostics));
+  assert.deepEqual(r.stack, [...n(0), ...n(0), ...n(0)]);
+  assert.equal(output, "kept\ng\nh\n");
+  r = await repl.step('drop drop drop "/local/none" "/local/x" copy');
+  assert.deepEqual(r.stack, n(-1));
+
   console.log("node-repl.mjs ok");
   await worker.terminate();
 } catch (e) {

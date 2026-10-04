@@ -193,6 +193,30 @@
     r 0 i32.lt_s [ r ] [ 0 ] if ]
   if ;
 
+# Write a string to a namespace path, replacing what was there, e.g.
+# "hello" "/local/greeting". Status is 0 on success or a negative error code.
+: write-file ( str str -- i32 )
+  :> path :> s
+  path 1 host.open :> h
+  h 0 i32.lt_s
+  [ h ]
+  [ 0 :> n!
+    1 :> r!
+    [ n s str.len i32.lt_u  r 0 i32.gt_s i32.and ]
+    [ h s str.addr n i32.add s str.len n i32.sub host.write r!
+      r 0 i32.gt_s [ n r i32.add n! ] when ]
+    while
+    h host.close drop
+    r 0 i32.lt_s [ r ] [ r 0 i32.eq [ -4 ] [ 0 ] if ] if ]
+  if ;
+
+# Copy one namespace path to another, e.g.
+# "/net/https/example.com/input" "/local/input". Status as read-file.
+: copy ( str str -- i32 )
+  :> to
+  read-file :> r
+  r 0 i32.lt_s [ drop r ] [ to write-file ] if ;
+
 # Print the entries of a directory, one per line (directories get a
 # trailing "/"). Status is 0 on success or a negative error code.
 : ls ( str -- i32 )

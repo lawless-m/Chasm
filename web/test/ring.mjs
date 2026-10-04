@@ -58,4 +58,35 @@ assert.equal(await submit(L.OP_READ, t, 0x300200, 8), 0);
 assert.equal(await submit(L.OP_CLOSE, t, 0, 0), 0);
 assert.equal(await submit(L.OP_CLOSE, t, 0, 0), L.E_BAD_HANDLE);
 
+// `/local`: blobs in the namespace's Storage (in memory here).
+const open = async (path, mode) => submit(L.OP_OPEN, 0x300000, put(0x300000, path), mode);
+const read = async (h) => {
+  const n = await submit(L.OP_READ, h, 0x300200, 64);
+  return n < 0 ? n : new TextDecoder().decode(u8.slice(0x300200, 0x300200 + n));
+};
+assert.equal(await open("/local/a", L.MODE_READ), L.E_NOT_FOUND);
+assert.equal(await open("/local/x/y", L.MODE_WRITE), L.E_NOT_FOUND);
+const w = await open("/local/a", L.MODE_WRITE);
+assert.equal(await read(w), L.E_PERMISSION);
+assert.equal(await submit(L.OP_WRITE, w, 0x300100, put(0x300100, "hel")), 3);
+assert.equal(await submit(L.OP_WRITE, w, 0x300100, put(0x300100, "lo")), 2);
+await submit(L.OP_CLOSE, w, 0, 0);
+const ap = await open("/local/a", L.MODE_APPEND);
+assert.equal(await submit(L.OP_WRITE, ap, 0x300100, put(0x300100, "!")), 1);
+const r = await open("/local/a", L.MODE_READ);
+assert.equal(await submit(L.OP_WRITE, r, 0x300100, 1), L.E_PERMISSION);
+assert.equal(await read(r), "hello!");
+assert.equal(await read(r), "");
+assert.equal(ns.storage.getItem("chasm/local/a"), "hello!");
+assert.equal(await open("/local/b", L.MODE_WRITE) >= 3, true);
+assert.equal(await open("/local", L.MODE_WRITE), L.E_PERMISSION);
+const d = await open("/local", L.MODE_READ);
+const n = await submit(L.OP_READ, d, 0x300200, 64);
+assert.equal(n, 2 * (13 + 1));
+assert.equal(dv.getUint32(0x300200, true), 1);
+assert.equal(u8[0x300204], "a".charCodeAt(0));
+assert.equal(dv.getBigUint64(0x300205, true), 6n);
+assert.equal(u8[0x300200 + 14 + 4], "b".charCodeAt(0));
+assert.equal(await submit(L.OP_READ, d, 0x300200, 64), 0);
+
 console.log("ring.mjs ok");

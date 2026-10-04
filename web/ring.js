@@ -7,13 +7,38 @@ const decoder = new TextDecoder();
 // TextDecoder refuses views of a SharedArrayBuffer, so decode a copy.
 const decode = (u8) => decoder.decode(u8.slice());
 
+// `/local/<name>` is the item `chasm/local/<name>` of a Storage (the page's
+// localStorage), its bytes kept as a string of char codes 0 to 255.
+const LOCAL = "chasm/local/";
+
+const toBinary = (u8) => {
+  let s = "";
+  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000));
+  return s;
+};
+const fromBinary = (s) => Uint8Array.from(s, (c) => c.charCodeAt(0));
+
+/// A Storage kept in memory, for hosts without localStorage.
+export function memoryStorage() {
+  const m = new Map();
+  return {
+    get length() {
+      return m.size;
+    },
+    key: (i) => [...m.keys()][i] ?? null,
+    getItem: (k) => (m.has(k) ? m.get(k) : null),
+    setItem: (k, v) => void m.set(k, String(v)),
+  };
+}
+
 /// The browser namespace: `/dev/cons` (output only; reads see end of
-/// input), `/dev/time`, and `/net/http` and `/net/https` through `fetch`.
-/// Everything else is not found.
+/// input), `/dev/time`, `/net/http` and `/net/https` through `fetch`, and
+/// `/local`, blobs in a Storage. Everything else is not found.
 export class Namespace {
-  constructor(layout, { onOutput }) {
+  constructor(layout, { onOutput, storage = memoryStorage() }) {
     this.L = layout;
     this.onOutput = onOutput;
+    this.storage = storage;
     this.handles = new Map();
     this.next = 3;
   }
@@ -32,7 +57,53 @@ export class Namespace {
       return mode === L.MODE_READ ? this.add({ kind: "time", done: false }) : L.E_PERMISSION;
     }
     if (path.startsWith("/net/")) return this.openNet(path.slice(5));
+    if (path === "/local" || path === "/local/") {
+      return mode === L.MODE_READ ? this.add({ kind: "dir", records: this.localRecords() }) : L.E_PERMISSION;
+    }
+    if (path.startsWith("/local/")) return this.openLocal(path.slice(7), mode);
     return L.E_NOT_FOUND;
+  }
+
+  // One flat directory: a name is a single path segment.
+  openLocal(name, mode) {
+    const L = this.L;
+    if (!name || name.includes("/")) return L.E_NOT_FOUND;
+    const key = LOCAL + name;
+    const have = this.storage.getItem(key);
+    if (have === null && mode === L.MODE_READ) return L.E_NOT_FOUND;
+    const data = have === null || mode === L.MODE_WRITE ? new Uint8Array(0) : fromBinary(have);
+    const h = { kind: "local", key, mode, data, pos: mode === L.MODE_APPEND ? data.length : 0 };
+    if (mode !== L.MODE_READ && !this.save(h)) return L.E_IO;
+    return this.add(h);
+  }
+
+  save(h) {
+    try {
+      this.storage.setItem(h.key, toBinary(h.data));
+      return true;
+    } catch {
+      return false; // over quota
+    }
+  }
+
+  // Directory records for `/local`, by name: u32 name length, name, u64
+  // size, u8 is-dir.
+  localRecords() {
+    const enc = new TextEncoder();
+    const names = [];
+    for (let i = 0; i < this.storage.length; i++) {
+      const k = this.storage.key(i);
+      if (k?.startsWith(LOCAL)) names.push(k.slice(LOCAL.length));
+    }
+    return names.sort().map((n) => {
+      const name = enc.encode(n);
+      const rec = new Uint8Array(13 + name.length);
+      const dv = new DataView(rec.buffer);
+      dv.setUint32(0, name.length, true);
+      rec.set(name, 4);
+      dv.setBigUint64(4 + name.length, BigInt(this.storage.getItem(LOCAL + n).length), true);
+      return rec;
+    });
   }
 
   // `/net/http/<host>[:port]/<path>` or `/net/https/...`.
@@ -103,6 +174,23 @@ export class Namespace {
     if (!h) return this.L.E_BAD_HANDLE;
     if (h.kind === "cons") return 0;
     if (h.kind === "http") return this.readHttp(h, buf);
+    if (h.kind === "local") {
+      if (h.mode === this.L.MODE_WRITE || h.mode === this.L.MODE_APPEND) return this.L.E_PERMISSION;
+      const n = Math.min(buf.length, h.data.length - h.pos);
+      buf.set(h.data.subarray(h.pos, h.pos + n));
+      h.pos += n;
+      return n;
+    }
+    if (h.kind === "dir") {
+      // Whole records only.
+      let n = 0;
+      while (h.records.length && n + h.records[0].length <= buf.length) {
+        const rec = h.records.shift();
+        buf.set(rec, n);
+        n += rec.length;
+      }
+      return n === 0 && h.records.length ? this.L.E_IO : n;
+    }
     if (h.done) return 0;
     if (buf.length < 8) return this.L.E_IO;
     const ns = BigInt(Date.now()) * 1000000n;
@@ -127,6 +215,18 @@ export class Namespace {
       if (h.body !== null) return this.L.E_PERMISSION;
       h.written.push(buf.slice());
       return buf.length;
+    }
+    if (h.kind === "local") {
+      if (h.mode === this.L.MODE_READ) return this.L.E_PERMISSION;
+      const end = h.pos + buf.length;
+      if (end > h.data.length) {
+        const grown = new Uint8Array(end);
+        grown.set(h.data);
+        h.data = grown;
+      }
+      h.data.set(buf, h.pos);
+      h.pos = end;
+      return this.save(h) ? buf.length : this.L.E_IO;
     }
     if (h.kind !== "cons") return this.L.E_PERMISSION;
     this.onOutput(decode(buf));

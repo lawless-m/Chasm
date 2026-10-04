@@ -115,6 +115,13 @@ Node API, so the node checks below exercise the same code the page runs.
 CORS. There is no `/file` and there are no mounts: those paths return not
 found.
 
+`/local/<name>` is a flat directory of files in the page's `localStorage`,
+item `chasm/local/<name>`, the bytes kept as a string of char codes 0 to 255.
+They outlast the tab. Every mode works; each write is saved at once, and a
+write past the storage quota is -4. Reading `/local` gives directory
+records. `"/net/https/host/path" "/local/name" copy` fetches a file once and
+keeps it.
+
 ## Checks
 
 Run from the repository root after `build.sh`:

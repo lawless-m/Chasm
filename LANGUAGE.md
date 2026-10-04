@@ -344,7 +344,7 @@ Four host imports, specified in `ARCHITECTURE.md` 5d: `host.open`, `host.read`, 
 
 **Directory records**, as returned by reading a directory handle, each record in order: `u32` name byte length, name bytes (UTF-8), `u64` size, `u8` is-dir flag. Records are packed with no padding. A read may return any whole number of records; a partial record is never returned.
 
-Library words built on this, shipped with the language: `print`, `read-line`, `read-file`, `ls`, `now`.
+Library words built on this, shipped with the language: `print`, `read-line`, `read-file`, `write-file`, `copy`, `ls`, `now`.
 
 ## 11. Open items
 
@@ -356,8 +356,8 @@ Library words built on this, shipped with the language: `print`, `read-line`, `r
 Recorded here so the spec matches the compiler. `docs/reference.md` is the user-facing summary.
 
 1. **Low-level primitives** added so that library code can be written in Chasm: `str.addr ( str -- i32 )`, `str.from-raw ( i32 i32 -- str )` (unchecked), `mem.alloc ( i32 -- i32 )` (bump, zeroed, 8-byte aligned), and `trap ( str -- )`, which stops the program with a message.
-2. **Prelude.** `str.byte-at`, `str.slice`, `str.eq`, `str.concat`, `str.cp-at` are library words written in Chasm on top of those primitives, compiled with every program. So are `str.boundary? ( str i32 -- i32 )`, `i32.to-str`, `i64.to-str`, `f64.fixed`, `str.from-byte`, `array.to-str`, `print`, `println`, `read-line`, `read-file`, `ls` and `now`. `chasm words` lists them.
-3. **Library word effects.** `read-line ( -- str i32 )` (flag 0 at end of input), `read-file ( str -- str i32 )` (namespace path; status 0 or an error code), `ls ( str -- i32 )` (prints entries; status), `now ( -- i64 )` (nanoseconds since the Unix epoch).
+2. **Prelude.** `str.byte-at`, `str.slice`, `str.eq`, `str.concat`, `str.cp-at` are library words written in Chasm on top of those primitives, compiled with every program. So are `str.boundary? ( str i32 -- i32 )`, `i32.to-str`, `i64.to-str`, `f64.fixed`, `str.from-byte`, `array.to-str`, `print`, `println`, `read-line`, `read-file`, `write-file`, `copy`, `ls` and `now`. `chasm words` lists them.
+3. **Library word effects.** `read-line ( -- str i32 )` (flag 0 at end of input), `read-file ( str -- str i32 )` (namespace path; status 0 or an error code), `write-file ( str str -- i32 )` (contents, path; replaces the file; status), `copy ( str str -- i32 )` (from, to; status), `ls ( str -- i32 )` (prints entries; status), `now ( -- i64 )` (nanoseconds since the Unix epoch).
 4. **`/dev/time`** reads 8 bytes: a little-endian `u64` of nanoseconds since the Unix epoch, then end of file.
 5. **Divergence.** `leave` and `trap` end the quotation they appear in; code after them is `E_UNREACHABLE`. A branch that diverges need not match the other branch, and a `when` body that diverges is accepted.
 6. **`until`** runs its body, then its condition, and repeats until the condition is non-zero.

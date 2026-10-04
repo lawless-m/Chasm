@@ -85,6 +85,15 @@ function save(chunks, key = SAVED) {
   }
 }
 
+// The Storage behind `/local`; with storage blocked, `/local` lives in memory.
+function localStorageOrNone() {
+  try {
+    return window.localStorage ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // The example in a `#code=<base64url>` fragment, as UTF-8 text.
 function linkText() {
   const b64 = location.hash.slice("#code=".length).replace(/-/g, "+").replace(/_/g, "/");
@@ -156,6 +165,7 @@ async function main() {
       onMessage: (h) => worker.addEventListener("message", (e) => h(e.data)),
     },
     onOutput: (t) => print(t, "program"),
+    storage: localStorageOrNone(),
   });
   await repl.ready;
   print("Chasm REPL. Type a definition or a line; Enter runs it.\n", "hint");
