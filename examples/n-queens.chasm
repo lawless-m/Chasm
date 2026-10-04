@@ -6,13 +6,16 @@
 : safe? ( array i32 i32 i32 -- i32 )
   :> c :> r :> q
   1 :> ok!
-  r [ :> i
+  r
+  [
+    :> i
     q i array.at :> qc
     qc c i32.eq                              # same column
     qc c i32.sub  r i i32.sub  i32.eq  i32.or  # same diagonal
     c qc i32.sub  r i i32.sub  i32.eq  i32.or  # same anti-diagonal
     [ 0 ok! leave ] when
-  ] times
+  ]
+  times
   ok ;
 
 # Completions of a board whose rows 0 to r-1 are already placed.
@@ -20,13 +23,18 @@
   :> n :> r :> q
   r n i32.eq
   [ 1 ]
-  [ 0 :> count!
-    n [ :> c
+  [
+    0 :> count!
+    n
+    [
+      :> c
       q r c safe?
       [ q r c array.at!  q r 1 i32.add n solve  count i32.add count! ]
       when
-    ] times
-    count ]
+    ]
+    times
+    count
+  ]
   if ;
 
 : queens ( i32 -- i32 )

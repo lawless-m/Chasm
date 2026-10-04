@@ -23,10 +23,38 @@ chasm deps WORD FILE...       # what WORD calls (--all for transitive)
 chasm used-by WORD FILE...    # what calls WORD
 chasm dead   FILE...          # words `main` and `export` words never reach
 chasm infer  FILE...          # inferred effects of un-annotated words (--write inserts them)
+chasm fmt    FILE...          # format in place (--check: change nothing, fail if unformatted)
 chasm build  FILE... -o out.wasm  # optimised with Binaryen (--no-opt to skip; --wasi: WASI preview1 module)
 chasm repl                    # interactive; reads chunks from stdin
 chasm lsp                     # language server over stdio (docs/editors.md)
 ```
+
+`chasm fmt` keeps your line breaks and any gap of two or more spaces (a
+phrase break or a lined-up column) and fixes the rest:
+
+- A quotation that spans lines gets `[` and `]` on lines of their own, its
+  contents indented one level, and the word after the `]` (the
+  combinator) on the next line; a `match` label keeps its `[`
+  (`none: [`). A quotation on one line is left alone.
+- Items start in column 0, the rest of an item is indented 2, plus 2 for
+  each open quotation; comment lines between items go to column 0.
+- Single spaces inside `( ... )` and in a definition's header
+  (`export raw : name (`); runs of blank lines become one.
+
+```chasm fragment
+: count ( str -- i32 )
+  0 :> n!
+  [
+    read-line nip
+  ]
+  [ n 1 i32.add n! ]
+  while
+  n ;
+```
+
+It refuses (`E_INTERNAL`) rather than write a file whose tokens or comments
+would change. `examples/` and `bench/` are kept formatted (`cargo test`
+checks).
 
 A program is the files you name, in order; there is no include form. To use
 a library, name it first: `chasm test lib.chasm prog.chasm`. A pipeline
@@ -750,13 +778,15 @@ not written again). `host.write` takes a string.
   0 host.open :> h
   h 0 i32.lt_s
   [ h ]
-  [ 64 bytes.new :> buf
+  [
+    64 bytes.new :> buf
     0 :> n!
     [ h buf host.read n!  n 0 i32.gt_s ]
     [ buf 0 n bytes.slice bytes.to-str print ]
     while
     h host.close drop
-    n ]
+    n
+  ]
   if ;
 
 : main ( -- )

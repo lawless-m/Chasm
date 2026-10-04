@@ -37,11 +37,15 @@ blocks, and both must leave the same stack, or the checker reports
 ```chasm
 : fizz ( i32 -- str )
   :> n
-  n 15 i32.rem_s i32.eqz [ "FizzBuzz" ] [
-    n 3 i32.rem_s i32.eqz [ "Fizz" ] [
+  n 15 i32.rem_s i32.eqz [ "FizzBuzz" ]
+  [
+    n 3 i32.rem_s i32.eqz [ "Fizz" ]
+    [
       n 5 i32.rem_s i32.eqz [ "Buzz" ] [ n i32.to-str ] if
-    ] if
-  ] if ;
+    ]
+    if
+  ]
+  if ;
 
 test fizz : 3 fizz -> "Fizz"
 test fizz : 5 fizz -> "Buzz"

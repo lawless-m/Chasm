@@ -10,10 +10,13 @@
   :> n
   n array.new ( array i32 ) :> a
   12345 :> x!
-  n [ :> i
+  n
+  [
+    :> i
     x 1103515245 i32.mul 12345 i32.add 0x7FFFFFFF i32.and x!
     a i x array.at!
-  ] times
+  ]
+  times
   a ;
 
 : main ( -- )

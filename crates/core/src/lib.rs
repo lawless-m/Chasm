@@ -9,6 +9,7 @@
 pub mod ast;
 pub mod check;
 pub mod diag;
+pub mod fmt;
 pub mod graph;
 pub mod hasheq;
 pub mod infer;

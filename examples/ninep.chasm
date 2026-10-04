@@ -32,18 +32,22 @@ test record-len : "hello.txt" 6 i64 0 make-record 0 record-len -> 22
   path 0 host.open :> h
   h 0 i32.lt_s
   [ h ]
-  [ 4096 bytes.new :> buf
+  [
+    4096 bytes.new :> buf
     0 :> count!
     1 :> r!
     [ r 0 i32.gt_s ]
-    [ h buf host.read r!
+    [
+      h buf host.read r!
       0 :> at!
       [ at r i32.lt_s ]
       [ buf at record-len at i32.add at!  count 1 i32.add count! ]
-      while ]
+      while
+    ]
     while
     h host.close drop
-    count ]
+    count
+  ]
   if ;
 test entries : "/mnt/none" entries -> -1
 

@@ -6,13 +6,19 @@
 : grid-sum ( i32 i32 i32 -- i32 )
   :> max :> h :> w
   0 :> total!
-  h [ :> r
+  h
+  [
+    :> r
     1.2 r f64.convert_i32_s 2.4 f64.mul h f64.convert_i32_s f64.div f64.sub :> cy
-    w [ :> c
+    w
+    [
+      :> c
       -2.0 c f64.convert_i32_s 3.0 f64.mul w f64.convert_i32_s f64.div f64.add :> cx
       total cx cy max escape i32.add total!
-    ] times
-  ] times
+    ]
+    times
+  ]
+  times
   total ;
 
 : main ( -- )

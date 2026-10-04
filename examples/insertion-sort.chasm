@@ -10,14 +10,17 @@
 
 : insertion-sort ( array i32 -- )
   :> a
-  a array.len [ :> i
+  a array.len
+  [
+    :> i
     a i array.at :> x
     i :> j!
     [ j 0 i32.gt_s [ a j 1 i32.sub array.at x i32.gt_s ] [ 0 ] if ]
     [ a j  a j 1 i32.sub array.at  array.at!  j 1 i32.sub j! ]
     while
     a j x array.at!
-  ] times ;
+  ]
+  times ;
 test insertion-sort : "31415926" digits dup insertion-sort array.to-str -> "1 1 2 3 4 5 6 9"
 test insertion-sort : "987654321" digits dup insertion-sort array.to-str -> "1 2 3 4 5 6 7 8 9"
 test insertion-sort : "7" digits dup insertion-sort array.to-str -> "7"

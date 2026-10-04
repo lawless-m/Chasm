@@ -15,18 +15,23 @@
   a array.len 1 i32.sub :> hi
   a hi array.at :> pivot
   0 :> store!
-  hi [ :> i
+  hi
+  [
+    :> i
     a i array.at pivot i32.lt_s [ a i store swap-at  store 1 i32.add store! ] when
-  ] times
+  ]
+  times
   a store hi swap-at
   store ;
 
 : quicksort ( array i32 -- )
   :> a
   a array.len 1 i32.gt_s
-  [ a partition :> p
+  [
+    a partition :> p
     a 0 p array.slice quicksort
-    a p 1 i32.add  a array.len p i32.sub 1 i32.sub  array.slice quicksort ]
+    a p 1 i32.add  a array.len p i32.sub 1 i32.sub  array.slice quicksort
+  ]
   when ;
 
 # Test helper: an array from a digit string.
@@ -41,18 +46,24 @@
   :> n
   n array.new ( array i32 ) :> a
   12345 :> x!
-  n [ :> i
+  n
+  [
+    :> i
     x 1103515245 i32.mul 12345 i32.add 0x7FFFFFFF i32.and x!
     a i  x 16 i32.shr_u 1000 i32.rem_u  array.at!
-  ] times
+  ]
+  times
   a ;
 
 : sorted? ( array i32 -- i32 )
   :> a
   1 :> ok!
-  a array.len 1 i32.sub [ :> i
+  a array.len 1 i32.sub
+  [
+    :> i
     a i array.at  a i 1 i32.add array.at  i32.gt_s [ 0 ok! leave ] when
-  ] times
+  ]
+  times
   ok ;
 
 test quicksort : "31415926" digits dup quicksort array.to-str -> "1 1 2 3 4 5 6 9"

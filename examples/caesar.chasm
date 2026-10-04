@@ -6,10 +6,12 @@
   :> k :> b
   b 65 i32.ge_u  b 90 i32.le_u  i32.and
   [ b 65 i32.sub k i32.add 26 i32.rem_u 65 i32.add ]
-  [ b 97 i32.ge_u  b 122 i32.le_u  i32.and
+  [
+    b 97 i32.ge_u  b 122 i32.le_u  i32.and
     [ b 97 i32.sub k i32.add 26 i32.rem_u 97 i32.add ]
     [ b ]
-    if ]
+    if
+  ]
   if ;
 test shift-byte : 65 3 shift-byte -> 68     # A -> D
 test shift-byte : 122 1 shift-byte -> 97    # z -> a

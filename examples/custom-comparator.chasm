@@ -6,14 +6,17 @@
 
 : sort-by ( array T [ T T -- i32 ] -- )
   :> cmp :> a
-  a array.len [ :> i
+  a array.len
+  [
+    :> i
     a i array.at :> x
     i :> j!
     [ j 0 i32.gt_s [ a j 1 i32.sub array.at x cmp call 0 i32.gt_s ] [ 0 ] if ]
     [ a j  a j 1 i32.sub array.at  array.at!  j 1 i32.sub j! ]
     while
     a j x array.at!
-  ] times ;
+  ]
+  times ;
 
 # -1, 0 or 1. (a - b would overflow for values far apart.)
 : ascending ( i32 i32 -- i32 )  :> b :> a  a b i32.gt_s  a b i32.lt_s  i32.sub ;

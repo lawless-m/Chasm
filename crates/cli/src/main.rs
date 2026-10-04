@@ -101,6 +101,18 @@ enum Cmd {
         #[arg(long)]
         write: bool,
     },
+    /// Format source files in place: one layout, keeping the line breaks.
+    Fmt {
+        /// Source files (.chasm).
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+        /// Change nothing; fail if a file is not formatted.
+        #[arg(long)]
+        check: bool,
+        /// Print the machine-readable JSON report.
+        #[arg(long)]
+        json: bool,
+    },
     /// List every word with its effect.
     Words(Common),
     /// List every primitive with its effect.
@@ -623,6 +635,48 @@ fn exec(cli: Cli) -> (Report, bool) {
             };
             (r, json)
         }
+        Cmd::Fmt { files, check, json } => {
+            let mut results = Vec::new();
+            let mut diagnostics = Vec::new();
+            for f in &files {
+                let name = f.display().to_string();
+                let io = |e: std::io::Error| {
+                    Diagnostic::error(
+                        "E_IO",
+                        format!("cannot read or write `{name}`: {e}"),
+                        Location::default(),
+                    )
+                };
+                let text = match std::fs::read_to_string(f) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        diagnostics.push(io(e));
+                        continue;
+                    }
+                };
+                match chasm_core::fmt::format(&name, &text) {
+                    Err(d) => diagnostics.push(d),
+                    Ok(out) => {
+                        let changed = out != text;
+                        if changed && !check {
+                            if let Err(e) = std::fs::write(f, &out) {
+                                diagnostics.push(io(e));
+                                continue;
+                            }
+                        }
+                        results.push(json!({ "file": name, "changed": changed }));
+                    }
+                }
+            }
+            let unformatted = check && results.iter().any(|r| r["changed"] == J::Bool(true));
+            let r = Report {
+                command: "fmt",
+                ok: diagnostics.is_empty() && !unformatted,
+                results: json!({ "files": results, "check": check }),
+                diagnostics,
+            };
+            (r, json)
+        }
         Cmd::Dead(c) => {
             let json = c.json;
             let r = match load(&c, false, false, false) {
@@ -962,6 +1016,15 @@ fn render(report: &J) -> (String, String) {
             }
             for f in strs(&r["written"]) {
                 out.push_str(&format!("wrote {f}\n"));
+            }
+        }
+        "fmt" => {
+            let check = r["check"] == J::Bool(true);
+            for f in r["files"].as_array().into_iter().flatten() {
+                if f["changed"] == J::Bool(true) {
+                    let what = if check { "not formatted" } else { "formatted" };
+                    out.push_str(&format!("{what}: {}\n", s(&f["file"])));
+                }
             }
         }
         "dead" => {

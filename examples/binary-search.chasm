@@ -13,10 +13,12 @@
   a array.len 1 i32.sub :> hi!
   -1 :> found!
   [ lo hi i32.le_s ]
-  [ hi lo i32.sub 1 i32.shr_s lo i32.add :> mid   # lo + (hi - lo) / 2
+  [
+    hi lo i32.sub 1 i32.shr_s lo i32.add :> mid   # lo + (hi - lo) / 2
     a mid array.at :> v
     v x i32.eq [ mid found! leave ] when
-    v x i32.lt_s [ mid 1 i32.add lo! ] [ mid 1 i32.sub hi! ] if ]
+    v x i32.lt_s [ mid 1 i32.add lo! ] [ mid 1 i32.sub hi! ] if
+  ]
   while
   found ;
 test binary-search : "13579" digits 1 binary-search -> 0

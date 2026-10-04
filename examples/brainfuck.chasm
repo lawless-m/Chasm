@@ -11,17 +11,22 @@
   p str.len array.new ( array i32 ) :> jump
   p str.len array.new ( array i32 ) :> open
   0 :> sp!
-  p str.len [ :> i
+  p str.len
+  [
+    :> i
     p i str.byte-at :> c
     c 91 i32.eq [ open sp i array.at!  sp 1 i32.add sp! ] when      # [
     c 93 i32.eq                                                     # ]
-    [ sp i32.eqz [ "unmatched ] at " i i32.to-str str.concat trap ] when
+    [
+      sp i32.eqz [ "unmatched ] at " i i32.to-str str.concat trap ] when
       sp 1 i32.sub sp!
       open sp array.at :> o
       jump o i array.at!
-      jump i o array.at! ]
+      jump i o array.at!
+    ]
     when
-  ] times
+  ]
+  times
   sp [ "unmatched [" trap ] when
   jump ;
 
@@ -32,7 +37,8 @@
   0 :> ptr!  0 :> pc!  0 :> pos!
   "" :> out!
   [ pc p str.len i32.lt_u ]
-  [ p pc str.byte-at :> c
+  [
+    p pc str.byte-at :> c
     tape ptr array.at :> v
     c 62 i32.eq [ ptr 1 i32.add ptr! ] when                                  # >
     c 60 i32.eq [ ptr 1 i32.sub ptr! ] when                                  # <
@@ -40,12 +46,15 @@
     c 45 i32.eq [ tape ptr  v 1 i32.sub 255 i32.and  array.at! ] when        # -
     c 46 i32.eq [ out v str.from-byte str.concat out! ] when                      # .
     c 44 i32.eq                                                              # , (0 at end)
-    [ tape ptr  pos in str.len i32.lt_u [ in pos str.byte-at ] [ 0 ] if  array.at!
-      pos 1 i32.add pos! ]
+    [
+      tape ptr  pos in str.len i32.lt_u [ in pos str.byte-at ] [ 0 ] if  array.at!
+      pos 1 i32.add pos!
+    ]
     when
     c 91 i32.eq  v i32.eqz     i32.and [ jump pc array.at pc! ] when        # [ on 0: skip
     c 93 i32.eq  v 0 i32.ne    i32.and [ jump pc array.at pc! ] when        # ] on non-0: back
-    pc 1 i32.add pc! ]
+    pc 1 i32.add pc!
+  ]
   while
   out ;
 

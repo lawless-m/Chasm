@@ -7,10 +7,12 @@
   :> max :> cy :> cx
   0.0 :> x!  0.0 :> y!  0 :> k!
   [ k max i32.lt_s  x x f64.mul y y f64.mul f64.add 4.0 f64.le  i32.and ]
-  [ x x f64.mul y y f64.mul f64.sub cx f64.add :> nx
+  [
+    x x f64.mul y y f64.mul f64.sub cx f64.add :> nx
     2.0 x f64.mul y f64.mul cy f64.add y!
     nx x!
-    k 1 i32.add k! ]
+    k 1 i32.add k!
+  ]
   while
   k ;
 test escape : 0.0 0.0 50 escape -> 50       # the origin is in the set
@@ -29,10 +31,13 @@ test shade : 0 50 shade -> " "
   :> r
   1.2 r f64.convert_i32_s 2.4 f64.mul 39.0 f64.div f64.sub :> cy
   "" :> out!
-  78 [ :> c
+  78
+  [
+    :> c
     -2.0 c f64.convert_i32_s 3.0 f64.mul 77.0 f64.div f64.add :> cx
     out cx cy 50 escape 50 shade str.concat out!
-  ] times
+  ]
+  times
   out ;
 test row : 0 row str.len -> 78
 

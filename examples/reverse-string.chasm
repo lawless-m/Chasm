@@ -8,11 +8,13 @@
   n bytes.new :> buf
   0 :> i!
   [ i n i32.lt_u ]
-  [ s i str.cp-at :> len drop
+  [
+    s i str.cp-at :> len drop
     buf  n i i32.sub len i32.sub   # destination: mirrored offset
     s i len str.slice              # the codepoint
     bytes.put
-    i len i32.add i! ]
+    i len i32.add i!
+  ]
   while
   buf bytes.as-str ;
 test reverse : "asdf" reverse -> "fdsa"

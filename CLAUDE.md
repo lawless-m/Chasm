@@ -19,6 +19,7 @@ Rust workspace. Read `docs/reference.md` before writing `.chasm` code;
 
 ```
 cargo fmt --all
+cargo run -q -p chasm-cli -- fmt examples/*.chasm bench/*.chasm
 cargo clippy --all-targets -- -D warnings
 cargo test                                    # needs Binaryen's wasm-opt 121+ on the path
 cargo build -p chasm-core --target wasm32-unknown-unknown

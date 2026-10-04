@@ -41,10 +41,16 @@ test vec.to-array : 4 squares vec.to-array array.to-str -> "0 1 4 9"
   :> s
   map.make ( map str i32 ) :> m
   0 :> start!
-  s str.len [ :> i
-    s i str.byte-at 32 i32.eq [
+  s str.len
+  [
+    :> i
+    s i str.byte-at 32 i32.eq
+    [
       i start i32.gt_u [ m  s start i start i32.sub str.slice  tally ] when
-      i 1 i32.add start! ] when ]
+      i 1 i32.add start!
+    ]
+    when
+  ]
   times
   s str.len start i32.gt_u [ m  s start s str.len start i32.sub str.slice  tally ] when
   m ;

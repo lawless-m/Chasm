@@ -14,10 +14,13 @@
 : lower-slice ( str i32 i32 -- str )
   :> n :> start :> s
   n bytes.new :> buf
-  n [ :> i
+  n
+  [
+    :> i
     s start i i32.add str.byte-at :> c
     buf i  c 65 i32.ge_u c 90 i32.le_u i32.and [ c 32 i32.add ] [ c ] if  bytes.at!
-  ] times
+  ]
+  times
   buf bytes.as-str ;
 test lower-slice : "Hello World" 6 5 lower-slice -> "world"
 
@@ -47,17 +50,22 @@ struct node  word: str  count: i32  first: i32  left: option node  right: option
   root :> cur!
   -1 :> added!
   [ added 0 i32.lt_s ]
-  [ w cur node.word str.cmp :> c
+  [
+    w cur node.word str.cmp :> c
     c 0 i32.eq
     [ cur  cur node.count 1 i32.add  node.count!  0 added! ]
-    [ c 0 i32.lt_s [ cur node.left ] [ cur node.right ] if
+    [
+      c 0 i32.lt_s [ cur node.left ] [ cur node.right ] if
       none: [
         w 1 seq none none node.new option.some :> leaf
         c 0 i32.lt_s [ cur leaf node.left! ] [ cur leaf node.right! ] if
-        1 added! ]
+        1 added!
+      ]
       some: [ cur! ]
-      match ]
-    if ]
+      match
+    ]
+    if
+  ]
   while
   added ;
 
@@ -65,10 +73,12 @@ struct node  word: str  count: i32  first: i32  left: option node  right: option
 : collect ( option node array node i32 -- i32 )
   :> at :> out
   none: [ at ]
-  some: [ :> n
+  some: [
+    :> n
     n node.left out at collect :> at2
     out at2 n array.at!
-    n node.right out at2 1 i32.add collect ]
+    n node.right out at2 1 i32.add collect
+  ]
   match ;
 
 : top-words ( str i32 -- str )
@@ -77,34 +87,44 @@ struct node  word: str  count: i32  first: i32  left: option node  right: option
   0 :> used!
   0 :> i!
   [ i s str.len i32.lt_u ]
-  [ s i str.byte-at letter?
-    [ i :> start
+  [
+    s i str.byte-at letter?
+    [
+      i :> start
       [ i s str.len i32.lt_u [ s i str.byte-at letter? ] [ 0 ] if ] [ i 1 i32.add i! ] while
       s start i start i32.sub lower-slice :> w
       root
       none: [ w 1 used none none node.new option.some root!  1 used! ]
       some: [ w used insert used i32.add used! ]
-      match ]
+      match
+    ]
     [ i 1 i32.add i! ]
-    if ]
+    if
+  ]
   while
   used array.new ( array node ) :> nodes
   root nodes 0 collect drop
   "" :> out!
-  k used i32.gt_u [ used ] [ k ] if [ :> r
+  k used i32.gt_u [ used ] [ k ] if
+  [
+    :> r
     0 :> best!
-    used [ :> j
+    used
+    [
+      :> j
       nodes j array.at :> a
       nodes best array.at :> b
       a node.count b node.count i32.gt_s
       a node.count b node.count i32.eq  a node.first b node.first i32.lt_s  i32.and
       i32.or [ j best! ] when
-    ] times
+    ]
+    times
     nodes best array.at :> win
     r 0 i32.ne [ out " " str.concat out! ] when
     out  win node.word str.concat  ":" str.concat  win node.count i32.to-str str.concat  out!
     win -1 node.count!                          # taken
-  ] times
+  ]
+  times
   out ;
 test top-words : "The cat and the hat; the BAT and a cat!" 3 top-words -> "the:3 cat:2 and:2"
 test top-words : "x y" 10 top-words -> "x:1 y:1"

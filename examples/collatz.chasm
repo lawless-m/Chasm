@@ -6,7 +6,8 @@
   :> n!
   1 i64 :> len!
   [ n 1 i64 i64.ne ]
-  [ n 2 i64 i64.rem_u 0 i64 i64.eq
+  [
+    n 2 i64 i64.rem_u 0 i64 i64.eq
     [ n 2 i64 i64.div_u n! ]
     [ n 3 i64 i64.mul 1 i64 i64.add n! ]
     if
@@ -25,13 +26,16 @@ test collatz-length : 27 i64 collatz-length -> 112 i64
   :> limit
   0 :> num!
   0 i64 :> max-len!
-  limit 1 i32.sub [ :> i              # 1 to limit - 1
+  limit 1 i32.sub
+  [
+    :> i              # 1 to limit - 1
     i 1 i32.add :> n
     n i64 collatz-length :> len
     len max-len i64.gt_s
     [ n num! len max-len! ]
     when
-  ] times
+  ]
+  times
   num max-len ;
 
 test longest-collatz : 100 longest-collatz -> 97 119 i64

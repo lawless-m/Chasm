@@ -7,11 +7,15 @@
   n 1 i32.add array.new ( array i32 ) :> composite
   2 :> p!
   [ p p i32.mul n i32.le_u ]
-  [ composite p array.at i32.eqz
-    [ p p i32.mul :> m!
+  [
+    composite p array.at i32.eqz
+    [
+      p p i32.mul :> m!
       [ m n i32.le_u ] [ composite m 1 array.at!  m p i32.add m! ] while
-    ] when
-    p 1 i32.add p! ]
+    ]
+    when
+    p 1 i32.add p!
+  ]
   while
   n 1 i32.add array.new ( array i32 ) :> all
   all array.len [ :> i  all i i array.at! ] times

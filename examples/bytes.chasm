@@ -33,14 +33,16 @@ test shared : shared -> "ZB"
   0 host.open :> h
   h 0 i32.lt_s
   [ h ]
-  [ 16 bytes.new :> buf
+  [
+    16 bytes.new :> buf
     0 :> total!
     0 :> r!
     [ h buf host.read r!  r 0 i32.gt_s ]
     [ total r i32.add total! ]
     while
     h host.close drop
-    r 0 i32.lt_s [ r ] [ total ] if ]
+    r 0 i32.lt_s [ r ] [ total ] if
+  ]
   if ;
 test size : "/mnt/none/x" size -> -1
 

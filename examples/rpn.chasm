@@ -22,14 +22,18 @@ test pow : 5.0 0.0 pow -> 1.0
   0 :> frac!            # digits after the point
   0 :> point!
   [ i t str.len i32.lt_u ]
-  [ t i str.byte-at :> c
+  [
+    t i str.byte-at :> c
     c 46 i32.eq
     [ point [ "two points in " t str.concat trap ] when  1 point! ]
-    [ c 48 i32.lt_u  c 57 i32.gt_u  i32.or [ "not a number: " t str.concat trap ] when
+    [
+      c 48 i32.lt_u  c 57 i32.gt_u  i32.or [ "not a number: " t str.concat trap ] when
       v 10.0 f64.mul  c 48 i32.sub f64.convert_i32_s  f64.add v!
-      point [ frac 1 i32.add frac! ] when ]
+      point [ frac 1 i32.add frac! ] when
+    ]
     if
-    i 1 i32.add i! ]
+    i 1 i32.add i!
+  ]
   while
   v  10.0 frac f64.convert_i32_s pow  f64.div :> mag
   neg [ mag f64.neg ] [ mag ] if ;
@@ -40,28 +44,44 @@ test parse-num : "2.5" parse-num -> 2.5
 : op? ( str -- i32 )
   :> t
   t str.len 1 i32.eq
-  [ t 0 str.byte-at :> c
-    c 43 i32.eq  c 45 i32.eq i32.or  c 42 i32.eq i32.or  c 47 i32.eq i32.or  c 94 i32.eq i32.or ]
+  [
+    t 0 str.byte-at :> c
+    c 43 i32.eq  c 45 i32.eq i32.or  c 42 i32.eq i32.or  c 47 i32.eq i32.or  c 94 i32.eq i32.or
+  ]
   [ 0 ]
   if ;
 
 : apply ( f64 f64 i32 -- f64 )
   :> c :> b :> a
-  c 43 i32.eq [ a b f64.add ] [
-  c 45 i32.eq [ a b f64.sub ] [
-  c 42 i32.eq [ a b f64.mul ] [
-  c 47 i32.eq [ a b f64.div ] [
-                a b pow ] if ] if ] if ] if ;
+  c 43 i32.eq [ a b f64.add ]
+  [
+    c 45 i32.eq [ a b f64.sub ]
+    [
+      c 42 i32.eq [ a b f64.mul ]
+      [
+        c 47 i32.eq [ a b f64.div ]
+        [
+          a b pow
+        ]
+        if
+      ]
+      if
+    ]
+    if
+  ]
+  if ;
 
 # Push a number, or pop two and push the result; returns the new depth.
 : token ( array f64 i32 str -- i32 )
   :> t :> sp :> st
   t op?
-  [ sp 2 i32.lt_s [ "not enough operands for " t str.concat trap ] when
+  [
+    sp 2 i32.lt_s [ "not enough operands for " t str.concat trap ] when
     st sp 2 i32.sub
     st sp 2 i32.sub array.at  st sp 1 i32.sub array.at  t 0 str.byte-at  apply
     array.at!
-    sp 1 i32.sub ]
+    sp 1 i32.sub
+  ]
   [ st sp t parse-num array.at!  sp 1 i32.add ]
   if ;
 
@@ -71,12 +91,16 @@ test parse-num : "2.5" parse-num -> 2.5
   0 :> sp!
   0 :> i!
   [ i s str.len i32.lt_u ]
-  [ s i str.byte-at 32 i32.eq
+  [
+    s i str.byte-at 32 i32.eq
     [ i 1 i32.add i! ]
-    [ i :> start
+    [
+      i :> start
       [ i s str.len i32.lt_u [ s i str.byte-at 32 i32.ne ] [ 0 ] if ] [ i 1 i32.add i! ] while
-      st sp  s start i start i32.sub str.slice  token sp! ]
-    if ]
+      st sp  s start i start i32.sub str.slice  token sp!
+    ]
+    if
+  ]
   while
   sp 1 i32.ne [ "expected one result, have " sp i32.to-str str.concat trap ] when
   st 0 array.at ;

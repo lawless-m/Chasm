@@ -2,8 +2,8 @@
 # Rosetta Code: Temperature_conversion. Exercises: f64 arithmetic, rounding,
 # formatting with f64.fixed.
 
-: kelvin>celsius    ( f64 -- f64 )  273.15 f64.sub ;
-: kelvin>rankine    ( f64 -- f64 )  1.8 f64.mul ;
+: kelvin>celsius ( f64 -- f64 )  273.15 f64.sub ;
+: kelvin>rankine ( f64 -- f64 )  1.8 f64.mul ;
 : kelvin>fahrenheit ( f64 -- f64 )  kelvin>rankine 459.67 f64.sub ;
 
 # Tests compare exactly, so results are compared as text rounded by the

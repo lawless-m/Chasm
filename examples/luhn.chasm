@@ -6,14 +6,17 @@
   :> s
   s str.len :> n
   0 :> sum!
-  n [ :> i                                     # i counts from the right
+  n
+  [
+    :> i                                     # i counts from the right
     s n 1 i32.sub i i32.sub str.byte-at 48 i32.sub :> d
     i 1 i32.and
     [ d 2 i32.mul :> dd  dd 9 i32.gt_u [ dd 9 i32.sub ] [ dd ] if ]
     [ d ]
     if
     sum i32.add sum!
-  ] times
+  ]
+  times
   sum 10 i32.rem_u i32.eqz ;
 test luhn? : "49927398716" luhn? -> 1
 test luhn? : "49927398717" luhn? -> 0

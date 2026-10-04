@@ -498,3 +498,29 @@ fn generic_unions_run() {
     assert_eq!(out, "6\n");
     let _ = std::fs::remove_file(f);
 }
+
+#[test]
+fn examples_and_benchmarks_are_formatted() {
+    let mut files = Vec::new();
+    for dir in ["examples", "bench"] {
+        for entry in std::fs::read_dir(root().join(dir)).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) == Some("chasm") {
+                files.push(
+                    path.strip_prefix(root())
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .to_string(),
+                );
+            }
+        }
+    }
+    let mut args = vec!["fmt", "--check"];
+    args.extend(files.iter().map(String::as_str));
+    let (ok, out, err) = chasm(&args);
+    assert!(
+        ok,
+        "run `chasm fmt examples/*.chasm bench/*.chasm`:\n{out}{err}"
+    );
+}

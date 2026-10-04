@@ -16,9 +16,11 @@ test i64.to-str : -9223372036854775808 i64 i64.to-str -> "-9223372036854775808"
   0 :> i!
   0 :> n!
   [ i s str.len i32.lt_u ]
-  [ s i str.cp-at :> len drop
+  [
+    s i str.cp-at :> len drop
     i len i32.add i!
-    n 1 i32.add n! ]
+    n 1 i32.add n!
+  ]
   while
   n ;
 test cp-count : "naïve café" cp-count -> 10

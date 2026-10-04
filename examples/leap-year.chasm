@@ -5,7 +5,8 @@
   :> y
   y 400 i32.rem_u 0 i32.eq
   [ 1 ]
-  [ y 100 i32.rem_u 0 i32.eq
+  [
+    y 100 i32.rem_u 0 i32.eq
     [ 0 ]
     [ y 4 i32.rem_u 0 i32.eq ]
     if
