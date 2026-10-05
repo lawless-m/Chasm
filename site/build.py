@@ -28,7 +28,7 @@ import markdown
 from highlight import highlight, highlight_repl
 
 OUT = "tmp/site"
-GITHUB = "https://github.com/lawless-m/Chasm"
+GITHUB = "https://github.com/lawless-m/Whackford"
 WACK = os.environ.get("WACK", "target/release/wack")
 KINDS = {"wack": "wack", "wack fragment": "fragment", "wack-repl": "repl"}
 # Internal names that must never be published, split so this file passes its own scan.

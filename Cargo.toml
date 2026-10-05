@@ -6,7 +6,7 @@ members = ["crates/core", "crates/runtime", "crates/cli", "crates/web"]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/lawless-m/Chasm"
+repository = "https://github.com/lawless-m/Whackford"
 
 [workspace.dependencies]
 wack-core = { path = "crates/core" }

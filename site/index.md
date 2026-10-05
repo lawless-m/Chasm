@@ -16,4 +16,4 @@ test square : 3 square -> 9
 - [Reference](reference.html): every form, primitive and diagnostic
 - [Words](words.html): each word with its effect
 - [REPL](repl/): try it in the browser
-- [GitHub](https://github.com/lawless-m/Chasm): the source
+- [GitHub](https://github.com/lawless-m/Whackford): the source

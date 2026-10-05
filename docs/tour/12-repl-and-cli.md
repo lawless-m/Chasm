@@ -84,4 +84,4 @@ prints a machine-readable report in place of the text.
 
 - The [reference](../reference.md): every form, primitive and diagnostic.
 - The Words page of this site: each word with its effect.
-- The [examples](https://github.com/lawless-m/Chasm/tree/main/examples) on GitHub: complete programs, each with tests.
+- The [examples](https://github.com/lawless-m/Whackford/tree/main/examples) on GitHub: complete programs, each with tests.

@@ -22,7 +22,7 @@ $ cargo run -p wack-cli -- repl
 `wack repl` is interactive: type definitions and lines, see the stack after
 each, redefine words live.
 
-- https://lawless-m.github.io/Chasm/: the documentation site (guided tour, reference, word index and the browser REPL)
+- https://lawless-m.github.io/Whackford/: the documentation site (guided tour, reference, word index and the browser REPL)
 - `docs/reference.md`: how to write Whackford (start here)
 - `docs/tour/`: the guided tour for newcomers
 - `ARCHITECTURE.md`: goals, runtime, milestones, decisions
