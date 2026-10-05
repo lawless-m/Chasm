@@ -1,4 +1,4 @@
-// Port of `quicksort` in examples/quicksort.chasm and `wide` in bench/quicksort.chasm.
+// Port of `quicksort` in examples/quicksort.wack and `wide` in bench/quicksort.wack.
 function swapAt(a, i, j) {
   const t = a[i];
   a[i] = a[j];

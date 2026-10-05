@@ -1,4 +1,4 @@
-# Chasm: Example Corpus and Benchmark
+# Whackford: Example Corpus and Benchmark
 
 Status: draft v0.3. The programs live in `examples/`.
 
@@ -6,15 +6,15 @@ Status: draft v0.3. The programs live in `examples/`.
 
 One set of programs does three jobs:
 
-1. **Acceptance suite** for the compiler: every file in `examples/` must check and pass its tests at every milestone. `crates/cli/tests/examples.rs` enforces this, running `chasm check` and `chasm test` on each file separately (passing several files to one command compiles them as one program).
-2. **Example corpus**: the main way a model (or a person) learns idiomatic Chasm, since the language is in no training data.
-3. **Benchmark** for how well Claude Code writes Chasm, tracked over time.
+1. **Acceptance suite** for the compiler: every file in `examples/` must check and pass its tests at every milestone. `crates/cli/tests/examples.rs` enforces this, running `wack check` and `wack test` on each file separately (passing several files to one command compiles them as one program).
+2. **Example corpus**: the main way a model (or a person) learns idiomatic Whackford, since the language is in no training data.
+3. **Benchmark** for how well Claude Code writes Whackford, tracked over time.
 
-Tasks are taken from Rosetta Code **task descriptions** only. Every solution is written fresh for Chasm.
+Tasks are taken from Rosetta Code **task descriptions** only. Every solution is written fresh for Whackford.
 
 ## Conventions
 
-- One file per task: `examples/<task>.chasm`, lower-case, hyphens.
+- One file per task: `examples/<task>.wack`, lower-case, hyphens.
 - Tests inline, using `test` lines, so the file is self-checking. Prefer tests over printed output where the task allows it; where output is the task, test the words that build the output and keep `main` thin.
 - Each file begins with a `#` comment giving the task, the Rosetta Code task name, and which features it exercises.
 - No feature beyond what the compiler has. If a task cannot be done cleanly without a missing feature, say so in the file header and record it under "Walls hit".
@@ -140,9 +140,9 @@ Written in our own words so the doc stands alone. Rosetta Code pages are `https:
 
 Run at the end of each milestone and whenever the examples directory grows substantially.
 
-1. Give Claude Code **only** the task statement, `docs/reference.md` (how to write Chasm), `LANGUAGE.md`, and the `examples/` directory as it stood before this task was added. Not the existing solution.
-2. It writes the file, including tests, and loops on `chasm check` and `chasm test` until they pass or it gives up.
-3. Record per task: passed or not, number of checker rounds, number of test rounds, and which diagnostic codes it hit (`chasm check --json` gives the codes).
+1. Give Claude Code **only** the task statement, `docs/reference.md` (how to write Whackford), `LANGUAGE.md`, and the `examples/` directory as it stood before this task was added. Not the existing solution.
+2. It writes the file, including tests, and loops on `wack check` and `wack test` until they pass or it gives up.
+3. Record per task: passed or not, number of checker rounds, number of test rounds, and which diagnostic codes it hit (`wack check --json` gives the codes).
 4. Keep the results in `docs/benchmark.md` as a table with one row per task per run, dated.
 
 What to watch:

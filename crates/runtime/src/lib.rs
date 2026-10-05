@@ -1,12 +1,12 @@
-//! Chasm host runtime.
+//! Whackford host runtime.
 //!
 //! The compiled module talks to its host through one doorbell import,
-//! `chasm.ring_enter`, and a submission/completion ring in linear memory
-//! (layout in `chasm_core::layout`). [`service_ring`] drains the ring against
+//! `wack.ring_enter`, and a submission/completion ring in linear memory
+//! (layout in `wack_core::layout`). [`service_ring`] drains the ring against
 //! any [`Host`]; [`namespace::NativeHost`] is the native namespace, and
 //! [`native`] runs modules with wasmtime.
 
-use chasm_core::layout as L;
+use wack_core::layout as L;
 
 pub mod namespace;
 #[cfg(feature = "native")]
@@ -87,7 +87,7 @@ pub fn service_ring(mem: &mut [u8], host: &mut dyn Host) {
     }
 }
 
-/// Read the trap message cells a Chasm `trap` leaves behind, if any.
+/// Read the trap message cells a Whackford `trap` leaves behind, if any.
 pub fn trap_info(mem: &[u8]) -> Option<(String, String)> {
     let get = |a: u32, l: u32| -> Option<String> {
         let r = range(mem, rd(mem, a) as i32, rd(mem, l) as i32)?;

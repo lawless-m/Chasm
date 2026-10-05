@@ -1,7 +1,7 @@
 # A 9p file server mounted into the namespace, and the directory records
 # every directory read returns: u32 name length, the name, u64 size, u8
 # is-dir, packed. Run against a 9P2000 server:
-#   chasm run examples/ninep.chasm --mount p=9p://host:564
+#   wack run examples/ninep.wack --mount p=9p://host:564
 
 : record-len ( bytes i32 -- i32 )  bytes.u32-at 13 i32.add ;
 : record-name ( bytes i32 -- str )

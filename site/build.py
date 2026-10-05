@@ -3,7 +3,7 @@
 
 Pages: index.html from site/index.md, reference.html from docs/reference.md,
 tour/index.html and one tour/<name>.html per docs/tour/*.md, words.html from
-the compiler's own lists (`chasm prims`, `chasm words`), and the browser
+the compiler's own lists (`wack prims`, `wack words`), and the browser
 REPL copied from web/ to repl/. Every page is poured into
 site/template.html; site/style.css is copied alongside.
 
@@ -29,13 +29,13 @@ from highlight import highlight, highlight_repl
 
 OUT = "tmp/site"
 GITHUB = "https://github.com/lawless-m/Chasm"
-CHASM = os.environ.get("CHASM", "target/release/chasm")
-KINDS = {"chasm": "chasm", "chasm fragment": "fragment", "chasm-repl": "repl"}
+WACK = os.environ.get("WACK", "target/release/wack")
+KINDS = {"wack": "wack", "wack fragment": "fragment", "wack-repl": "repl"}
 # Internal names that must never be published, split so this file passes its own scan.
 FORBIDDEN = ("rams" + "den", "vs" + "prod")
-BUILD = "RUSTUP_TOOLCHAIN=1.99.0 cargo build --release -p chasm-cli"
-EMPTY = "tmp/site-build/empty.chasm"
-REPL = "index.html main.js compiler.js driver.js ring.js worker.js worker-core.js coi.js coi-sw.js chasm_web.wasm".split()
+BUILD = "RUSTUP_TOOLCHAIN=1.99.0 cargo build --release -p wack-cli"
+EMPTY = "tmp/site-build/empty.wack"
+REPL = "index.html main.js compiler.js driver.js ring.js worker.js worker-core.js coi.js coi-sw.js wack_web.wasm".split()
 
 # The word index: (anchor, heading) in page order. A word goes by the part
 # of its name before the first `.`; names without one go by these lists.
@@ -69,7 +69,7 @@ def render_code(info, text, root):
         return f'<pre data-kind="other"><code>{html.escape(text)}</code></pre>'
     body = highlight_repl(text) if kind == "repl" else highlight(text)
     link = ""
-    if kind == "chasm":
+    if kind == "wack":
         b64 = base64.urlsafe_b64encode(text.encode()).rstrip(b"=").decode()
         link = f'<a class="try" href="{root}repl/#code={b64}">Try it</a>'
     return f'<div class="code" data-kind="{kind}">{link}<pre><code>{body}</code></pre></div>'
@@ -85,7 +85,7 @@ def cut_code(text, root):
             fence = (indent, stripped[3:].strip(), [])
         elif fence is not None and stripped.rstrip() == "```":
             indent, info, body = fence
-            token = f"CHASMCODE{len(blocks)}X"
+            token = f"WACKCODE{len(blocks)}X"
             blocks[token] = render_code(info, "\n".join(body) + "\n", root)
             lines.append(" " * indent + token)
             fence = None
@@ -115,12 +115,12 @@ def title_of(text, fallback):
 
 
 def compiler(*args):
-    """The `results` of one `chasm ... --json` report."""
-    if not os.path.isfile(CHASM):
-        sys.exit(f"{CHASM} not found: run `{BUILD}`")
-    run = subprocess.run([CHASM, *args, "--json"], capture_output=True, text=True)
+    """The `results` of one `wack ... --json` report."""
+    if not os.path.isfile(WACK):
+        sys.exit(f"{WACK} not found: run `{BUILD}`")
+    run = subprocess.run([WACK, *args, "--json"], capture_output=True, text=True)
     if run.returncode != 0:
-        sys.exit(f"`{CHASM} {' '.join(args)}` failed:\n{run.stdout}{run.stderr}")
+        sys.exit(f"`{WACK} {' '.join(args)}` failed:\n{run.stdout}{run.stderr}")
     return json.loads(run.stdout)["results"]
 
 
@@ -146,7 +146,7 @@ def words_page():
     body = [
         "<h1>Words</h1>",
         "<p>Every primitive and prelude word with its effect, generated from the compiler: the effects are "
-        'as <code>chasm prims</code> and <code>chasm words</code> print them. The <a href="reference.html">'
+        'as <code>wack prims</code> and <code>wack words</code> print them. The <a href="reference.html">'
         "reference</a> explains what the words do.</p>",
     ]
     shown = []
@@ -190,8 +190,8 @@ def nav(root, current, tour, sections, groups):
 
 def copy_repl():
     """Publish the browser REPL (web/) under repl/."""
-    if not os.path.isfile("web/chasm_web.wasm"):
-        sys.exit("web/chasm_web.wasm not found: run `RUSTUP_TOOLCHAIN=1.99.0 sh web/build.sh`")
+    if not os.path.isfile("web/wack_web.wasm"):
+        sys.exit("web/wack_web.wasm not found: run `RUSTUP_TOOLCHAIN=1.99.0 sh web/build.sh`")
     os.makedirs(f"{OUT}/repl")
     for name in REPL:
         shutil.copy(f"web/{name}", f"{OUT}/repl/{name}")
@@ -218,7 +218,7 @@ def main():
 
     # (output path, title, body class, Markdown text)
     pages = [
-        ("index.html", "Chasm", "landing", read("site/index.md")),
+        ("index.html", "Whackford", "landing", read("site/index.md")),
         ("reference.html", None, "", read("docs/reference.md")),
     ]
     listing = "".join(f"1. [{title}]({name}.html)\n" for name, title in tour)
@@ -239,7 +239,7 @@ def main():
     for path, title, cls, root, body in rendered:
         page = template
         fields = {
-            "{title}": html.escape(title if path == "index.html" else f"{title} · Chasm"),
+            "{title}": html.escape(title if path == "index.html" else f"{title} · Whackford"),
             "{class}": cls,
             "{nav}": nav(root, path, tour, sections, groups),
             "{root}": root,

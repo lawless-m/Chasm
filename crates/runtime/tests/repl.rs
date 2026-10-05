@@ -1,8 +1,8 @@
-use chasm_core::repl::StackEntry;
-use chasm_core::Value;
-use chasm_runtime::namespace::{Config, Console};
-use chasm_runtime::native::TestStatus;
-use chasm_runtime::repl::{NativeRepl, Outcome};
+use wack_core::repl::StackEntry;
+use wack_core::Value;
+use wack_runtime::namespace::{Config, Console};
+use wack_runtime::native::TestStatus;
+use wack_runtime::repl::{NativeRepl, Outcome};
 
 fn repl() -> NativeRepl {
     NativeRepl::new(

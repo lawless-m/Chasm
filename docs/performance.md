@@ -1,6 +1,6 @@
-# Chasm: Run Speed
+# Whackford: Run Speed
 
-How fast compiled Chasm runs, against the same algorithms in Rust and
+How fast compiled Whackford runs, against the same algorithms in Rust and
 JavaScript. `python3 bench/run.py --record` runs the set and appends a dated
 section here.
 
@@ -13,16 +13,16 @@ section here.
   typed arrays.
 - Every program times its own work with its clock (`now`, `Instant`,
   `process.hrtime`) and prints a checksum and the nanoseconds. Start-up and
-  compilation are not counted: `chasm run` compiles the module with wasmtime
+  compilation are not counted: `wack run` compiles the module with wasmtime
   first. The checksums of the three must agree, or the run stops.
 - Each figure is the median of five runs.
-- Chasm runs through `chasm run`: whole-program compilation with direct
+- Whackford runs through `wack run`: whole-program compilation with direct
   calls, under wasmtime with Cranelift. Arrays are bounds-checked in all
   three languages.
 
 | Task | Work | Checksum |
 |---|---|---|
-| sieve | primes below 10,000,000 (`examples/sieve.chasm`) | 664579 primes |
+| sieve | primes below 10,000,000 (`examples/sieve.wack`) | 664579 primes |
 | mandelbrot | escape counts over a 1200 x 800 grid, at most 200 iterations | total of the counts |
 | n-queens | solutions of 12 queens, recursive backtracking | 14200 |
 | quicksort | Lomuto quicksort of 1,000,000 pseudo-random 31-bit integers | the middle element |
@@ -33,7 +33,7 @@ section here.
 
 commit 9f7428d; rustc 1.99.0 (b940084d7 2026-09-28); node v20.19.6; AMD Ryzen 5 5500; median of 5 runs.
 
-| Task | Chasm ms | Rust ms | JS ms | Chasm / Rust | Chasm / JS |
+| Task | Whackford ms | Rust ms | JS ms | Whackford / Rust | Whackford / JS |
 |---|---:|---:|---:|---:|---:|
 | sieve | 93.7 | 78.7 | 206.9 | 1.19 | 0.45 |
 | mandelbrot | 115.9 | 106.6 | 111.3 | 1.09 | 1.04 |
@@ -44,7 +44,7 @@ commit 9f7428d; rustc 1.99.0 (b940084d7 2026-09-28); node v20.19.6; AMD Ryzen 5 
 
 commit 7e201b8; rustc 1.99.0 (b940084d7 2026-09-28); node v20.19.6; AMD Ryzen 5 5500; median of 5 runs.
 
-| Task | Chasm ms | Rust ms | JS ms | Chasm / Rust | Chasm / JS |
+| Task | Whackford ms | Rust ms | JS ms | Whackford / Rust | Whackford / JS |
 |---|---:|---:|---:|---:|---:|
 | sieve | 95.8 | 79.7 | 208.9 | 1.20 | 0.46 |
 | mandelbrot | 116.5 | 108.2 | 113.0 | 1.08 | 1.03 |
@@ -56,7 +56,7 @@ After M5: dead words are left out of the module and `run` does not use
 
 ## Binaryen under wasmtime
 
-`wasm-opt` 133 at each level, applied to the module `chasm run` executes
+`wasm-opt` 133 at each level, applied to the module `wack run` executes
 (median of five, ms, 2026-10-02):
 
 | `wasm-opt` | sieve | mandelbrot | n-queens | quicksort |
@@ -75,7 +75,7 @@ quicksort and costs sieve and mandelbrot. `build` still uses `-O3` for size;
 
 ## Ring servicing
 
-`bench/ring.chasm` makes 200,000 one-byte `host.read`s on one handle,
+`bench/ring.wack` makes 200,000 one-byte `host.read`s on one handle,
 200,000 one-byte `host.write`s, and 200,000 calls of `now` (each an open, a
 read and a close of `/dev/time`: three trips through the ring). Every trip
 writes a submission entry, rings the doorbell import, dispatches in
@@ -85,7 +85,7 @@ system calls directly: unbuffered one-byte `read` and `write`, and
 
 2026-10-02, commit 00daa53, AMD Ryzen 5 5500, median of five runs:
 
-| Operation | Chasm ns | Rust ns | Ring cost ns |
+| Operation | Whackford ns | Rust ns | Ring cost ns |
 |---|---:|---:|---:|
 | 1-byte read | 586 | 415 | 171 |
 | 1-byte write | 886 | 682 | 204 |
@@ -93,6 +93,6 @@ system calls directly: unbuffered one-byte `read` and `write`, and
 
 A trip through the ring costs about 120 to 200 ns, under half the system call
 it carries. An io_uring backend is not built (`ARCHITECTURE.md` section 18):
-a Chasm host word submits one entry and waits for it, so there is nothing to
+a Whackford host word submits one entry and waits for it, so there is nothing to
 batch.
 

@@ -1,12 +1,12 @@
-# Chasm in editors
+# Whackford in editors
 
-`chasm lsp` is a Language Server Protocol server over stdio. Any editor with
+`wack lsp` is a Language Server Protocol server over stdio. Any editor with
 a generic LSP client can start it.
 
 ## What it does
 
 - **Diagnostics** on open, change and save: the same codes and messages as
-  `chasm check`, with the code (`E_EFFECT_MISMATCH`, ...) as the diagnostic
+  `wack check`, with the code (`E_EFFECT_MISMATCH`, ...) as the diagnostic
   code and the expected and actual stacks, dependants and declared effect
   appended to the message.
 - **Hover** shows a word's stack effect and its state (declared with no body
@@ -20,20 +20,20 @@ a generic LSP client can start it.
 The program is the single open document, with the prelude loaded; there is
 no include form, so a word from another file shows as unknown.
 
-`chasm` must be on the path: `cargo install --path crates/cli`, or point the
-editor at `target/debug/chasm`. `lsp` is the one command without a `--json`
+`wack` must be on the path: `cargo install --path crates/cli`, or point the
+editor at `target/debug/wack`. `lsp` is the one command without a `--json`
 report, because it already speaks JSON-RPC.
 
 ## Neovim (0.10 or later)
 
 ```lua
-vim.filetype.add({ extension = { chasm = "chasm" } })
+vim.filetype.add({ extension = { wack = "wack" } })
 vim.api.nvim_create_autocmd("FileType", {
-  pattern = "chasm",
+  pattern = "wack",
   callback = function()
     vim.lsp.start({
-      name = "chasm",
-      cmd = { "chasm", "lsp" },
+      name = "wack",
+      cmd = { "wack", "lsp" },
       root_dir = vim.fs.root(0, { "Cargo.toml", ".git" }),
     })
   end,
@@ -46,14 +46,14 @@ In `languages.toml`:
 
 ```toml
 [[language]]
-name = "chasm"
-scope = "source.chasm"
-file-types = ["chasm"]
+name = "wack"
+scope = "source.wack"
+file-types = ["wack"]
 comment-token = "#"
-language-servers = ["chasm"]
+language-servers = ["wack"]
 
-[language-server.chasm]
-command = "chasm"
+[language-server.wack]
+command = "wack"
 args = ["lsp"]
 ```
 
@@ -64,14 +64,14 @@ in `settings.json`:
 
 ```json
 {
-  "files.associations": { "*.chasm": "plaintext" },
-  "glspc.serverCommand": "chasm",
+  "files.associations": { "*.wack": "plaintext" },
+  "glspc.serverCommand": "wack",
   "glspc.serverCommandArguments": ["lsp"],
   "glspc.languageId": "plaintext"
 }
 ```
 
 VS Code matches a language server to a language id that some extension has
-registered, and nothing registers `chasm`, so this treats `.chasm` files as
+registered, and nothing registers `wack`, so this treats `.wack` files as
 plain text. The cost is that the server also receives other plain-text files
-opened in that window; it reports their contents as Chasm.
+opened in that window; it reports their contents as Whackford.

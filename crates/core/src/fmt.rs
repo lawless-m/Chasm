@@ -1,4 +1,4 @@
-//! `chasm fmt`: one layout for Chasm source, keeping the author's line
+//! `wack fmt`: one layout for Whackford source, keeping the author's line
 //! breaks and the double spaces that group a line into phrases.
 //!
 //! - A quotation that spans lines has `[` and `]` alone on their lines (a
@@ -264,7 +264,7 @@ fn verify(file: &str, src: &str, out: &str) -> Result<(), Diagnostic> {
     }
     Err(Diagnostic::error(
         codes::E_INTERNAL,
-        "chasm fmt would change the program's tokens; the file is left as it is",
+        "wack fmt would change the program's tokens; the file is left as it is",
         Location {
             file: file.to_string(),
             line: 1,
@@ -279,7 +279,7 @@ mod tests {
     use super::format;
 
     fn f(s: &str) -> String {
-        format("t.chasm", s).unwrap()
+        format("t.wack", s).unwrap()
     }
 
     #[test]

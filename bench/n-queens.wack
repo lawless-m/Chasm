@@ -1,6 +1,6 @@
 # Benchmark: count the solutions of 12 queens with `queens` from
-# examples/n-queens.chasm. Run as
-# `chasm run examples/n-queens.chasm bench/n-queens.chasm`.
+# examples/n-queens.wack. Run as
+# `wack run examples/n-queens.wack bench/n-queens.wack`.
 # Prints the checksum, then the nanoseconds the work took.
 
 : main ( -- )

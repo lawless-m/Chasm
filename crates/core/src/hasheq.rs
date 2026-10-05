@@ -1,4 +1,4 @@
-//! The Chasm source of the generated `eq` and `hash` words for types that are
+//! The Whackford source of the generated `eq` and `hash` words for types that are
 //! not compared inline: `str`, `bytes`, arrays, structs and unions. Each is a body
 //! for the effect `( t t -- i32 )` or `( t -- i32 )`, built from primitives,
 //! the type's generated readers and `eq`/`hash` on its parts.

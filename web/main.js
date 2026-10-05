@@ -52,7 +52,7 @@ function render(r) {
   if (r.trap) print(r.trap.word ? `trap in \`${r.trap.word}\`: ${r.trap.message}\n` : `trap: ${r.trap.message}\n`, "err");
   const s = r.stack;
   // A struct or union value (`point{..}`, `option.some{..}`) gets a line of
-  // its own, as in `chasm repl`.
+  // its own, as in `wack repl`.
   if (s.some((e) => e.value.endsWith("}") && !e.value.startsWith('"'))) {
     print(`(\n${s.map((e) => `${e.type} ${e.value}\n`).join("")})\n`, "stack");
   } else {
@@ -63,10 +63,10 @@ function render(r) {
 // The program so far: every chunk that defined, declared, tested, forgot or
 // forced something without an error, in order. Lines are not kept. A reload
 // replays it into a fresh session.
-const SAVED = "chasm.program";
+const SAVED = "wack.program";
 
 // Every chunk entered, oldest first, for Up and Down in the input box.
-const HISTORY = "chasm.history";
+const HISTORY = "wack.history";
 const HISTORY_MAX = 500;
 
 function loadSaved(key = SAVED) {
@@ -153,7 +153,7 @@ async function main() {
     );
     return;
   }
-  const compiler = await loadCompiler(await (await fetch("chasm_web.wasm")).arrayBuffer());
+  const compiler = await loadCompiler(await (await fetch("wack_web.wasm")).arrayBuffer());
   const L = compiler.layout;
   const memory = new WebAssembly.Memory({ initial: L.INITIAL_PAGES, maximum: L.SHARED_MAX_PAGES, shared: true });
   const worker = new Worker("worker.js", { type: "module" });
@@ -168,7 +168,7 @@ async function main() {
     storage: localStorageOrNone(),
   });
   await repl.ready;
-  print("Chasm REPL. Type a definition or a line; Enter runs it.\n", "hint");
+  print("Whackford REPL. Type a definition or a line; Enter runs it.\n", "hint");
   const program = [];
   for (const text of loadSaved()) {
     const r = await repl.step(text);

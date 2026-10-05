@@ -1,4 +1,4 @@
-//! Drive `chasm lsp` over stdio with framed JSON-RPC messages.
+//! Drive `wack lsp` over stdio with framed JSON-RPC messages.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -13,12 +13,12 @@ struct Lsp {
 
 impl Lsp {
     fn start() -> Lsp {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_chasm"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_wack"))
             .arg("lsp")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
-            .expect("run chasm lsp");
+            .expect("run wack lsp");
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
         Lsp {
@@ -95,7 +95,7 @@ impl Lsp {
     fn open(&mut self, uri: &str, text: &str) {
         self.send(
             json!({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
-            "textDocument": {"uri": uri, "languageId": "chasm", "version": 1, "text": text}}}),
+            "textDocument": {"uri": uri, "languageId": "wack", "version": 1, "text": text}}}),
         );
     }
 }
@@ -104,7 +104,7 @@ impl Lsp {
 fn diagnostics_on_open_and_change() {
     let mut lsp = Lsp::start();
     lsp.initialize();
-    let uri = "file:///tmp/x.chasm";
+    let uri = "file:///tmp/x.wack";
     lsp.open(uri, ": f ( i32 -- i32 ) dup ;\n");
     let p = lsp.diagnostics();
     let ds = p["diagnostics"].as_array().unwrap();
@@ -152,7 +152,7 @@ impl Lsp {
 fn hover_shows_effects() {
     let mut lsp = Lsp::start();
     lsp.initialize();
-    let uri = "file:///tmp/h.chasm";
+    let uri = "file:///tmp/h.wack";
     lsp.open(
         uri,
         ": sq ( i32 -- i32 ) dup i32.mul ;\ndeclare later ( str -- i32 )\n: twice ( i32 -- i32 ) sq sq ;\n",
@@ -189,7 +189,7 @@ fn hover_shows_effects() {
 fn definition_of_user_words() {
     let mut lsp = Lsp::start();
     lsp.initialize();
-    let uri = "file:///tmp/d.chasm";
+    let uri = "file:///tmp/d.wack";
     lsp.open(
         uri,
         ": sq ( i32 -- i32 ) dup i32.mul ;\n: twice ( i32 -- i32 ) sq sq ;\n: say ( -- ) \"x\" println ;\n",
@@ -214,7 +214,7 @@ fn definition_of_user_words() {
 fn hover_shows_inferred_and_generic_words() {
     let mut lsp = Lsp::start();
     lsp.initialize();
-    let uri = "file:///tmp/g.chasm";
+    let uri = "file:///tmp/g.wack";
     lsp.open(
         uri,
         ": sq dup i32.mul ;\n: twice ( T -- T T ) dup ;\n: a ( i32 -- i32 i32 ) twice ;\n",

@@ -1,7 +1,7 @@
-use chasm_core::layout::LITERALS_BASE;
-use chasm_core::repl::Forced;
-use chasm_core::types::Ty;
-use chasm_core::{validate, Session, Step, Value};
+use wack_core::layout::LITERALS_BASE;
+use wack_core::repl::Forced;
+use wack_core::types::Ty;
+use wack_core::{validate, Session, Step, Value};
 
 fn ok(s: &mut Session, text: &str) -> Step {
     let step = s.step(text, 0x20_0000);
@@ -222,7 +222,7 @@ fn forget_refuses_primitives_prelude_and_struct_words() {
 
 #[test]
 fn force_chunk_continues_until_a_blank_line() {
-    use chasm_core::repl::needs_more;
+    use wack_core::repl::needs_more;
     assert!(needs_more(")force : f ( -- i32 ) 1 ;\n"));
     assert!(!needs_more(
         ")force : f ( -- i32 ) 1 ;\n: g ( -- ) f drop ;\n\n"
@@ -439,7 +439,7 @@ fn unions_at_the_repl() {
             p,
             Ok(wasmparser::Payload::ImportSection(r)) if r.clone().into_imports().any(|i| i.unwrap().name == "refs")
         )),
-        "a session with a union imports chasm.refs"
+        "a session with a union imports wack.refs"
     );
     assert_eq!(code(&mut s, ")forget shape.circle"), "E_FORGET");
 }

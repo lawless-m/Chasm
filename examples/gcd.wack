@@ -1,6 +1,6 @@
 # Greatest common divisor of two non-negative i32s by Euclid's algorithm.
 # Rosetta Code: Greatest_common_divisor. Exercises: recursion, stack
-# shuffling with swap and over. (basics.chasm has the loop version.)
+# shuffling with swap and over. (basics.wack has the loop version.)
 
 : gcd ( i32 i32 -- i32 )
   dup i32.eqz [ drop ] [ swap over i32.rem_u gcd ] if ;

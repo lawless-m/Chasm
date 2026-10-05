@@ -1,6 +1,6 @@
 [package]
-name = "chasm-runtime"
-description = "Chasm host runtime: I/O ring servicing, namespace, native wasmtime host."
+name = "wack-runtime"
+description = "Whackford host runtime: I/O ring servicing, namespace, native wasmtime host."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,7 @@ default = ["native"]
 native = ["dep:wasmtime"]
 
 [dependencies]
-chasm-core.workspace = true
+wack-core.workspace = true
 serde.workspace = true
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 wasmtime = { workspace = true, optional = true }

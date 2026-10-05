@@ -49,9 +49,9 @@ fn at(offset: u32) -> MemArg {
     }
 }
 
-/// Return the result in local `r` mapped from a WASI errno to a Chasm code.
+/// Return the result in local `r` mapped from a WASI errno to a Whackford code.
 fn map_errno(code: &mut Vec<I<'static>>, r: u32) {
-    for (errno, chasm) in [
+    for (errno, wack) in [
         (44, L::E_NOT_FOUND),
         (2, L::E_PERMISSION),
         (8, L::E_BAD_HANDLE),
@@ -62,7 +62,7 @@ fn map_errno(code: &mut Vec<I<'static>>, r: u32) {
             I::I32Const(errno),
             I::I32Eq,
             I::If(BlockType::Empty),
-            I::I32Const(chasm),
+            I::I32Const(wack),
             I::Return,
             I::End,
         ]);

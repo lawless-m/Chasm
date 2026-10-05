@@ -3,5 +3,5 @@
 # Set RUSTUP_TOOLCHAIN in the environment if the default Rust is too old.
 set -e
 cd "$(dirname "$0")/.."
-cargo build -p chasm-web --target wasm32-unknown-unknown --release
-cp target/wasm32-unknown-unknown/release/chasm_web.wasm web/chasm_web.wasm
+cargo build -p wack-web --target wasm32-unknown-unknown --release
+cp target/wasm32-unknown-unknown/release/wack_web.wasm web/wack_web.wasm

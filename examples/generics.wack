@@ -1,6 +1,6 @@
 # Generic words: an effect may name type variables (`T`, `U`, any name
 # starting with an uppercase letter). Each concrete use compiles its own
-# instance, named like `twice<i32>` in `chasm words` and `chasm dead`.
+# instance, named like `twice<i32>` in `wack words` and `wack dead`.
 # Exercises: type variables in effects, `array T`, `[ T -- T ]`, a generic
 # calling a generic, function values at a generic type.
 

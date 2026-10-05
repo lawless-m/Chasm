@@ -27,7 +27,7 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - name: Compiler
-        run: cargo build --release -p chasm-cli
+        run: cargo build --release -p wack-cli
       - name: Web build
         run: sh web/build.sh
       - name: Markdown package

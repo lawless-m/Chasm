@@ -63,8 +63,8 @@ pub struct Defined {
 /// Host contract: write `literal_bytes` at `literal_addr` and set the heap
 /// pointer to `(literal_addr + len + 7) & !7`, even when the step failed
 /// (interned addresses must stay valid); grow the table to `table_size`;
-/// instantiate `module` with the imports `chasm.ring_enter`, `chasm.memory`
-/// and `chasm.table`; set each install's slot to its export. If `line` is
+/// instantiate `module` with the imports `wack.ring_enter`, `wack.memory`
+/// and `wack.table`; set each install's slot to its export. If `line` is
 /// Some, snapshot the memory data stack, call the line, and on success set
 /// `Session::stack` to `stack_after`; on a trap restore the snapshot and
 /// leave `Session::stack` alone.
@@ -86,7 +86,7 @@ pub struct Step {
     /// and every test of a word this step gave a body. Empty if the step
     /// has errors.
     pub tests: Vec<TestRun>,
-    /// The host grows the `chasm.refs` anyref table to at least this many
+    /// The host grows the `wack.refs` anyref table to at least this many
     /// entries before running the line. A struct on the memory data stack is
     /// one slot holding its own slot index (counted from `DATA_STACK_BASE`)
     /// into that table; an `array <struct>` is three slots: that index for
@@ -426,7 +426,7 @@ impl Session {
         self.finish(heap_ptr, before, tests_before, built, defined, line)
     }
 
-    /// A REPL command: a line starting with `)`, which no Chasm line can.
+    /// A REPL command: a line starting with `)`, which no Whackford line can.
     /// Commands are not part of the language, so a file never holds one.
     fn command(&mut self, text: &str, heap_ptr: u32) -> Step {
         let loc = Location {
@@ -1203,7 +1203,7 @@ pub fn read_stack(
             Ty::I64 => Value::I64(i64::from_le_bytes(a)),
             Ty::F32 => Value::F32(f32::from_bits(lo(a))),
             Ty::F64 => Value::F64(f64::from_le_bytes(a)),
-            // A struct slot holds its own index into `chasm.refs`; the host reads it.
+            // A struct slot holds its own index into `wack.refs`; the host reads it.
             Ty::Struct(..) => refs(i, &t.to_string()),
             Ty::Array(e) if matches!(e.as_ref(), Ty::Struct(..)) => {
                 let Some(len) = slot(i + 2) else { break };

@@ -7,12 +7,12 @@ fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-fn chasm(args: &[&str]) -> (bool, String, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_chasm"))
+fn wack(args: &[&str]) -> (bool, String, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_wack"))
         .args(args)
         .current_dir(root())
         .output()
-        .expect("run chasm");
+        .expect("run wack");
     (
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -24,7 +24,7 @@ fn chasm(args: &[&str]) -> (bool, String, String) {
 fn every_example_checks_and_its_tests_pass() {
     for entry in std::fs::read_dir(root().join("examples")).unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("chasm") {
+        if path.extension().and_then(|e| e.to_str()) != Some("wack") {
             continue;
         }
         let p = path
@@ -33,34 +33,34 @@ fn every_example_checks_and_its_tests_pass() {
             .to_str()
             .unwrap()
             .to_string();
-        let (ok, out, err) = chasm(&["check", &p]);
+        let (ok, out, err) = wack(&["check", &p]);
         assert!(ok, "check {p} failed:\n{out}{err}");
-        let (ok, out, err) = chasm(&["test", &p]);
+        let (ok, out, err) = wack(&["test", &p]);
         assert!(ok, "tests in {p} failed:\n{out}{err}");
     }
 }
 
 #[test]
 fn hello_runs() {
-    let (ok, out, _) = chasm(&["run", "examples/hello.chasm"]);
+    let (ok, out, _) = wack(&["run", "examples/hello.wack"]);
     assert!(ok);
-    assert_eq!(out, "Hello from Chasm\n");
+    assert_eq!(out, "Hello from Whackford\n");
 }
 
 #[test]
 fn json_report_shape() {
-    let (ok, out, _) = chasm(&["run", "--json", "examples/hello.chasm"]);
+    let (ok, out, _) = wack(&["run", "--json", "examples/hello.wack"]);
     assert!(ok);
     let j: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(j["schema"], 1);
     assert_eq!(j["command"], "run");
     assert_eq!(j["ok"], true);
-    assert_eq!(j["results"]["output"], "Hello from Chasm\n");
+    assert_eq!(j["results"]["output"], "Hello from Whackford\n");
 }
 
 #[test]
 fn unresolved_lists_contract_stubs() {
-    let (ok, out, _) = chasm(&["unresolved", "--json", "examples/contract.chasm"]);
+    let (ok, out, _) = wack(&["unresolved", "--json", "examples/contract.wack"]);
     assert!(ok);
     let j: serde_json::Value = serde_json::from_str(&out).unwrap();
     let list = j["results"]["unresolved"].as_array().unwrap();
@@ -73,18 +73,18 @@ fn unresolved_lists_contract_stubs() {
 #[test]
 fn benchmarks_check_against_their_examples() {
     for t in ["sieve", "mandelbrot", "n-queens", "quicksort"] {
-        let (ok, out, err) = chasm(&[
+        let (ok, out, err) = wack(&[
             "check",
-            &format!("examples/{t}.chasm"),
-            &format!("bench/{t}.chasm"),
+            &format!("examples/{t}.wack"),
+            &format!("bench/{t}.wack"),
         ]);
-        assert!(ok, "bench/{t}.chasm: {out}{err}");
+        assert!(ok, "bench/{t}.wack: {out}{err}");
     }
 }
 
 #[test]
 fn dead_lists_words_main_never_reaches() {
-    let (ok, out, _) = chasm(&["dead", "--json", "examples/basics.chasm"]);
+    let (ok, out, _) = wack(&["dead", "--json", "examples/basics.wack"]);
     assert!(ok);
     let j: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(j["results"]["has_roots"], true);
@@ -95,28 +95,28 @@ fn dead_lists_words_main_never_reaches() {
         .map(|w| w["word"].as_str().unwrap())
         .collect();
     assert_eq!(names, ["abs", "hypot"]);
-    let (_, out, _) = chasm(&["dead", "examples/hello.chasm"]);
+    let (_, out, _) = wack(&["dead", "examples/hello.wack"]);
     assert_eq!(out, "no dead words\n");
-    let (_, out, _) = chasm(&["dead", "examples/contract.chasm"]);
+    let (_, out, _) = wack(&["dead", "examples/contract.wack"]);
     assert!(out.starts_with("no roots"), "{out}");
 }
 
 #[test]
 fn files_example_reads_a_mount() {
-    let (ok, out, err) = chasm(&["run", "examples/files.chasm", "--mount", "ex=examples"]);
+    let (ok, out, err) = wack(&["run", "examples/files.wack", "--mount", "ex=examples"]);
     assert!(ok, "{err}");
-    assert!(out.contains("hello.chasm\n"));
-    assert!(out.contains("--- hello.chasm ---"));
+    assert!(out.contains("hello.wack\n"));
+    assert!(out.contains("--- hello.wack ---"));
     assert!(out.contains("time moves forward"));
 }
 
 #[test]
 fn errors_are_reported_with_codes() {
-    let dir = std::env::temp_dir().join(format!("chasm-test-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("wack-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let f = dir.join("bad.chasm");
+    let f = dir.join("bad.wack");
     std::fs::write(&f, ": f ( i32 -- i32 ) dup ;\n").unwrap();
-    let (ok, out, _) = chasm(&["check", "--json", f.to_str().unwrap()]);
+    let (ok, out, _) = wack(&["check", "--json", f.to_str().unwrap()]);
     assert!(!ok);
     let j: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(j["diagnostics"][0]["code"], "E_EFFECT_MISMATCH");
@@ -128,14 +128,14 @@ fn errors_are_reported_with_codes() {
 }
 
 fn scratch(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("chasm-test-{}-{name}", std::process::id()))
+    std::env::temp_dir().join(format!("wack-test-{}-{name}", std::process::id()))
 }
 
 #[test]
 fn build_optimises_with_binaryen() {
     let out = scratch("sieve.wasm");
     let out = out.to_str().unwrap();
-    let (ok, json, err) = chasm(&["build", "--json", "examples/sieve.chasm", "-o", out]);
+    let (ok, json, err) = wack(&["build", "--json", "examples/sieve.wack", "-o", out]);
     assert!(ok, "{json}{err}");
     let j: serde_json::Value = serde_json::from_str(&json).unwrap();
     let r = &j["results"];
@@ -144,11 +144,11 @@ fn build_optimises_with_binaryen() {
         "is Binaryen 121 or later installed? {r}"
     );
     assert!(r["bytes"].as_u64() < r["unoptimised_bytes"].as_u64());
-    let (_, json, _) = chasm(&[
+    let (_, json, _) = wack(&[
         "build",
         "--json",
         "--no-opt",
-        "examples/sieve.chasm",
+        "examples/sieve.wack",
         "-o",
         out,
     ]);
@@ -161,9 +161,9 @@ fn build_optimises_with_binaryen() {
 #[test]
 fn build_without_binaryen_notes_it_and_still_writes() {
     let out = scratch("hello.wasm");
-    let o = Command::new(env!("CARGO_BIN_EXE_chasm"))
-        .args(["build", "examples/hello.chasm", "-o", out.to_str().unwrap()])
-        .env("CHASM_WASM_OPT", "no-such-wasm-opt")
+    let o = Command::new(env!("CARGO_BIN_EXE_wack"))
+        .args(["build", "examples/hello.wack", "-o", out.to_str().unwrap()])
+        .env("WACK_WASM_OPT", "no-such-wasm-opt")
         .current_dir(root())
         .output()
         .unwrap();
@@ -175,13 +175,13 @@ fn build_without_binaryen_notes_it_and_still_writes() {
 
 #[test]
 fn run_refuses_reachable_unresolved_words() {
-    let src = scratch("stub.chasm");
+    let src = scratch("stub.wack");
     std::fs::write(
         &src,
         "declare later ( -- i32 )\n: main ( -- ) later drop ;\n",
     )
     .unwrap();
-    let (ok, _, err) = chasm(&["run", src.to_str().unwrap()]);
+    let (ok, _, err) = wack(&["run", src.to_str().unwrap()]);
     assert!(!ok);
     assert!(err.contains("E_UNRESOLVED"), "{err}");
     let _ = std::fs::remove_file(src);
@@ -191,38 +191,38 @@ fn run_refuses_reachable_unresolved_words() {
 fn json_report_shape_for_every_command() {
     std::fs::create_dir_all(root().join("tmp")).unwrap();
     let runs: &[(&str, &[&str])] = &[
-        ("check", &["check", "--json", "examples/basics.chasm"]),
+        ("check", &["check", "--json", "examples/basics.wack"]),
         (
             "build",
             &[
                 "build",
                 "--json",
-                "examples/hello.chasm",
+                "examples/hello.wack",
                 "-o",
                 "tmp/shape.wasm",
                 "--no-opt",
             ],
         ),
-        ("run", &["run", "--json", "examples/hello.chasm"]),
-        ("test", &["test", "--json", "examples/basics.chasm"]),
+        ("run", &["run", "--json", "examples/hello.wack"]),
+        ("test", &["test", "--json", "examples/basics.wack"]),
         (
             "unresolved",
-            &["unresolved", "--json", "examples/contract.chasm"],
+            &["unresolved", "--json", "examples/contract.wack"],
         ),
-        ("dead", &["dead", "--json", "examples/basics.chasm"]),
-        ("infer", &["infer", "--json", "examples/basics.chasm"]),
-        ("words", &["words", "--json", "examples/basics.chasm"]),
+        ("dead", &["dead", "--json", "examples/basics.wack"]),
+        ("infer", &["infer", "--json", "examples/basics.wack"]),
+        ("words", &["words", "--json", "examples/basics.wack"]),
         (
             "deps",
-            &["deps", "--json", "square", "examples/basics.chasm"],
+            &["deps", "--json", "square", "examples/basics.wack"],
         ),
         (
             "used-by",
-            &["used-by", "--json", "square", "examples/basics.chasm"],
+            &["used-by", "--json", "square", "examples/basics.wack"],
         ),
     ];
     for (command, args) in runs {
-        let (_, out, err) = chasm(args);
+        let (_, out, err) = wack(args);
         let j: serde_json::Value =
             serde_json::from_str(&out).unwrap_or_else(|e| panic!("{command}: {e}: {out}{err}"));
         assert_eq!(j["schema"], 1, "{command}");
@@ -231,7 +231,7 @@ fn json_report_shape_for_every_command() {
         assert!(j["diagnostics"].is_array(), "{command}");
         assert!(j["results"].is_object(), "{command}");
     }
-    let (ok, out, _) = chasm(&["check", "--json", "no-such-file.chasm"]);
+    let (ok, out, _) = wack(&["check", "--json", "no-such-file.wack"]);
     assert!(!ok);
     let j: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(j["schema"], 1);
@@ -243,14 +243,14 @@ fn json_report_shape_for_every_command() {
 
 #[test]
 fn usage_errors_are_json_reports_under_json() {
-    let (ok, out, _) = chasm(&["check", "--json"]);
+    let (ok, out, _) = wack(&["check", "--json"]);
     assert!(!ok);
     let j: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(j["schema"], 1);
     assert_eq!(j["command"], "check");
     assert_eq!(j["ok"], false);
     assert_eq!(j["diagnostics"][0]["code"], "E_USAGE");
-    let (ok, _, _) = chasm(&["--version"]);
+    let (ok, _, _) = wack(&["--version"]);
     assert!(ok);
 }
 
@@ -258,12 +258,12 @@ fn usage_errors_are_json_reports_under_json() {
 fn build_wasi() {
     std::fs::create_dir_all(root().join("tmp")).unwrap();
     let out = format!("tmp/hello-wasi-{}.wasm", std::process::id());
-    let (ok, json, err) = chasm(&[
+    let (ok, json, err) = wack(&[
         "build",
         "--json",
         "--wasi",
         "--no-opt",
-        "examples/hello.chasm",
+        "examples/hello.wack",
         "-o",
         &out,
     ]);
@@ -276,17 +276,17 @@ fn build_wasi() {
 
 #[test]
 fn generic_words_run_and_test() {
-    let src = scratch("generic.chasm");
+    let src = scratch("generic.wack");
     std::fs::write(
         &src,
         ": twice ( T -- T T ) dup ;\n: main ( -- ) 3 twice i32.add i32.to-str println ;\ntest twice : 3 twice -> 3 3\ntest twice : \"a\" twice str.concat -> \"aa\"\n",
     )
     .unwrap();
     let p = src.to_str().unwrap();
-    let (ok, out, err) = chasm(&["test", p]);
+    let (ok, out, err) = wack(&["test", p]);
     assert!(ok, "{out}{err}");
     assert!(out.contains("2 passed"), "{out}");
-    let (ok, out, err) = chasm(&["run", p]);
+    let (ok, out, err) = wack(&["run", p]);
     assert!(ok, "{out}{err}");
     assert_eq!(out, "6\n");
     let _ = std::fs::remove_file(src);
@@ -294,19 +294,19 @@ fn generic_words_run_and_test() {
 
 #[test]
 fn dead_and_build_with_generics() {
-    let src = scratch("generic-dead.chasm");
+    let src = scratch("generic-dead.wack");
     std::fs::write(
         &src,
         ": twice ( T -- T T ) dup ;\n: main ( -- ) 4 twice i32.mul i32.to-str println ;\n",
     )
     .unwrap();
     let p = src.to_str().unwrap();
-    let (_, out, _) = chasm(&["dead", p]);
+    let (_, out, _) = wack(&["dead", p]);
     assert!(!out.contains("twice"), "{out}");
     let wasm = scratch("generic-dead.wasm");
-    let (ok, out, err) = chasm(&["build", "--no-opt", p, "-o", wasm.to_str().unwrap()]);
+    let (ok, out, err) = wack(&["build", "--no-opt", p, "-o", wasm.to_str().unwrap()]);
     assert!(ok, "{out}{err}");
-    let (ok, out, _) = chasm(&["run", p]);
+    let (ok, out, _) = wack(&["run", p]);
     assert!(ok);
     assert_eq!(out, "16\n");
     let _ = std::fs::remove_file(src);
@@ -315,27 +315,27 @@ fn dead_and_build_with_generics() {
 
 #[test]
 fn the_last_definition_of_a_generic_wins() {
-    let src = scratch("generic-redef.chasm");
+    let src = scratch("generic-redef.wack");
     std::fs::write(
         &src,
         ": pick2 ( T T -- T ) drop ;\n: f ( i32 i32 -- i32 ) pick2 ;\n: pick2 ( T T -- T ) nip ;\ntest f : 1 2 f -> 2\n",
     )
     .unwrap();
-    let (ok, out, err) = chasm(&["test", src.to_str().unwrap()]);
+    let (ok, out, err) = wack(&["test", src.to_str().unwrap()]);
     assert!(ok, "{out}{err}");
     let _ = std::fs::remove_file(src);
 }
 
 #[test]
 fn words_flags_inferred_and_generic() {
-    let src = scratch("words-flags.chasm");
+    let src = scratch("words-flags.wack");
     std::fs::write(
         &src,
         ": sq dup i32.mul ;\n: twice ( T -- T T ) dup ;\n: a ( i32 -- i32 i32 ) twice ;\n",
     )
     .unwrap();
     let p = src.to_str().unwrap();
-    let (_, out, _) = chasm(&["words", "--json", p]);
+    let (_, out, _) = wack(&["words", "--json", p]);
     let j: serde_json::Value = serde_json::from_str(&out).unwrap();
     let word = |n: &str| {
         j["results"]["words"]
@@ -349,7 +349,7 @@ fn words_flags_inferred_and_generic() {
     assert_eq!(word("sq")["inferred"], true);
     assert_eq!(word("twice")["generic"], true);
     assert_eq!(word("twice<i32>")["instance_of"], "twice");
-    let (_, out, _) = chasm(&["words", p]);
+    let (_, out, _) = wack(&["words", p]);
     assert!(out.contains("sq ( i32 -- i32 )  [inferred]"), "{out}");
     assert!(out.contains("twice ( T -- T T )  [generic]"), "{out}");
     let _ = std::fs::remove_file(src);
@@ -357,14 +357,14 @@ fn words_flags_inferred_and_generic() {
 
 #[test]
 fn infer_lists_unannotated_words() {
-    let src = scratch("infer.chasm");
+    let src = scratch("infer.wack");
     std::fs::write(
         &src,
         ": sq dup i32.mul ;\n: twice dup ;\n: main ( -- ) 3 sq twice i32.add i32.to-str println ;\n",
     )
     .unwrap();
     let p = src.to_str().unwrap();
-    let (ok, out, err) = chasm(&["infer", "--json", p]);
+    let (ok, out, err) = wack(&["infer", "--json", p]);
     assert!(ok, "{out}{err}");
     let j: serde_json::Value = serde_json::from_str(&out).unwrap();
     let words = j["results"]["words"].as_array().unwrap();
@@ -378,13 +378,13 @@ fn infer_lists_unannotated_words() {
         (words[1]["name"].as_str(), words[1]["effect"].as_str()),
         (Some("twice"), Some("( T -- T T )"))
     );
-    let (_, out, _) = chasm(&["infer", p]);
+    let (_, out, _) = wack(&["infer", p]);
     assert!(
         out.contains("sq ( i32 -- i32 )") && out.contains("twice ( T -- T T )"),
         "{out}"
     );
     std::fs::write(&src, ": bad 1 \"x\" i32.add ;\n").unwrap();
-    let (ok, out, _) = chasm(&["infer", "--json", p]);
+    let (ok, out, _) = wack(&["infer", "--json", p]);
     assert!(!ok);
     let j: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(j["diagnostics"][0]["code"], "E_TYPE_MISMATCH");
@@ -393,11 +393,11 @@ fn infer_lists_unannotated_words() {
 
 #[test]
 fn infer_write_inserts_effects() {
-    let src = scratch("infer-write.chasm");
+    let src = scratch("infer-write.wack");
     let before = "# header\n: sq dup i32.mul ;\n: twice dup ;\n:  spaced   ( i32 -- i32 ) 1 i32.add ;\n: main ( -- ) 3 sq twice i32.add i32.to-str println ;\n";
     std::fs::write(&src, before).unwrap();
     let p = src.to_str().unwrap();
-    let (ok, out, err) = chasm(&["infer", "--write", p]);
+    let (ok, out, err) = wack(&["infer", "--write", p]);
     assert!(ok, "{out}{err}");
     let after = std::fs::read_to_string(&src).unwrap();
     assert_eq!(
@@ -406,8 +406,8 @@ fn infer_write_inserts_effects() {
             .replace(": sq dup", ": sq ( i32 -- i32 ) dup")
             .replace(": twice dup", ": twice ( T -- T T ) dup")
     );
-    assert!(chasm(&["check", p]).0);
-    let (_, out, _) = chasm(&["infer", p]);
+    assert!(wack(&["check", p]).0);
+    let (_, out, _) = wack(&["infer", p]);
     assert_eq!(out, "no un-annotated words\n");
     let _ = std::fs::remove_file(src);
 }
@@ -424,7 +424,7 @@ fn union_program(name: &str, extra: &str) -> std::path::PathBuf {
 }
 
 fn test_results(f: &std::path::Path) -> (bool, serde_json::Value) {
-    let (ok, out, err) = chasm(&["test", "--json", f.to_str().unwrap()]);
+    let (ok, out, err) = wack(&["test", "--json", f.to_str().unwrap()]);
     let j: serde_json::Value =
         serde_json::from_str(&out).unwrap_or_else(|e| panic!("{e}: {out}{err}"));
     (ok, j)
@@ -433,7 +433,7 @@ fn test_results(f: &std::path::Path) -> (bool, serde_json::Value) {
 #[test]
 fn union_tag_readers_and_traps() {
     let f = union_program(
-        "union-tag.chasm",
+        "union-tag.wack",
         "test shape.tag : 2.0 3.0 shape.rect shape.tag -> 1\ntest shape.tag : shape.empty shape.tag -> 2\ntest shape.rect.h : 2.0 3.0 shape.rect shape.rect.h -> 3.0\n\
          : area ( shape -- f64 ) circle: [ :> r  r r f64.mul 3.14 f64.mul ] rect: [ f64.mul ] empty: [ 0.0 ] match ;\n\
          : n ( shape -- i32 ) circle: [ drop 1 ] rect: [ 2drop 2 ] empty: [ 3 ] match ;\n\
@@ -451,7 +451,7 @@ fn union_tag_readers_and_traps() {
             .all(|t| t["status"] == "pass"),
         "{j}"
     );
-    let (_, out, _) = chasm(&["words", "--json", f.to_str().unwrap()]);
+    let (_, out, _) = wack(&["words", "--json", f.to_str().unwrap()]);
     let w: serde_json::Value = serde_json::from_str(&out).unwrap();
     let tag = w["results"]["words"]
         .as_array()
@@ -461,10 +461,10 @@ fn union_tag_readers_and_traps() {
         .unwrap()
         .clone();
     assert_eq!(tag["generated"], true);
-    let (_, out, _) = chasm(&["dead", f.to_str().unwrap()]);
+    let (_, out, _) = wack(&["dead", f.to_str().unwrap()]);
     assert!(!out.contains("shape.tag"), "{out}");
     let g = union_program(
-        "union-trap.chasm",
+        "union-trap.wack",
         "test shape.rect.h : 1.0 shape.circle shape.rect.h -> 0.0\n",
     );
     let (_, j) = test_results(&g);
@@ -486,14 +486,14 @@ fn generic_unions_run() {
                test length : three length -> 3\ntest sum : three sum -> 6\n\
                test get : 5 option.some get -> 5\ntest get : option.none ( option i32 ) get -> 0\n\
                : main ( -- ) three sum i32.to-str println ;\n";
-    let f = scratch("generic-unions.chasm");
+    let f = scratch("generic-unions.wack");
     std::fs::write(&f, src).unwrap();
     let (ok, j) = test_results(&f);
     assert!(ok, "{j}");
     let tests = j["results"]["tests"].as_array().unwrap();
     assert_eq!(tests.len(), 4, "{j}");
     assert!(tests.iter().all(|t| t["status"] == "pass"), "{j}");
-    let (ok, out, err) = chasm(&["run", f.to_str().unwrap()]);
+    let (ok, out, err) = wack(&["run", f.to_str().unwrap()]);
     assert!(ok, "{err}");
     assert_eq!(out, "6\n");
     let _ = std::fs::remove_file(f);
@@ -505,7 +505,7 @@ fn examples_and_benchmarks_are_formatted() {
     for dir in ["examples", "bench"] {
         for entry in std::fs::read_dir(root().join(dir)).unwrap() {
             let path = entry.unwrap().path();
-            if path.extension().and_then(|e| e.to_str()) == Some("chasm") {
+            if path.extension().and_then(|e| e.to_str()) == Some("wack") {
                 files.push(
                     path.strip_prefix(root())
                         .unwrap()
@@ -518,9 +518,9 @@ fn examples_and_benchmarks_are_formatted() {
     }
     let mut args = vec!["fmt", "--check"];
     args.extend(files.iter().map(String::as_str));
-    let (ok, out, err) = chasm(&args);
+    let (ok, out, err) = wack(&args);
     assert!(
         ok,
-        "run `chasm fmt examples/*.chasm bench/*.chasm`:\n{out}{err}"
+        "run `wack fmt examples/*.wack bench/*.wack`:\n{out}{err}"
     );
 }

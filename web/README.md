@@ -10,8 +10,8 @@ RUSTUP_TOOLCHAIN=1.99.0 sh web/build.sh    # or plain `sh web/build.sh` if the d
 python3 web/serve.py                        # then open http://localhost:8000/ (Vivaldi or any current browser)
 ```
 
-`build.sh` builds `chasm-web` for `wasm32-unknown-unknown` and copies it to
-`web/chasm_web.wasm` (git-ignored).
+`build.sh` builds `wack-web` for `wasm32-unknown-unknown` and copies it to
+`web/wack_web.wasm` (git-ignored).
 
 The page uses `SharedArrayBuffer` and `Atomics.wait`, which browsers allow
 only on a cross-origin isolated page. That needs two response headers:
@@ -32,7 +32,7 @@ page once. It does nothing when the page is already cross-origin isolated.
 ## Saved program
 
 The page keeps the program in the browser's `localStorage` (key
-`chasm.program`): every chunk that defines, declares, tests, forgets or
+`wack.program`): every chunk that defines, declares, tests, forgets or
 forces something without an error, in the order typed. Lines are not kept.
 On load the page replays the saved chunks into the fresh session, so a
 reload or a redeploy keeps your words but starts with an empty stack. A
@@ -40,7 +40,7 @@ saved chunk that no longer checks (after a compiler change) is shown with
 its error and dropped.
 
 A link can carry an example: `#code=<base64url>` in the URL holds the
-UTF-8 text of a `.chasm` file. After the saved program is replayed, the
+UTF-8 text of a `.wack` file. After the saved program is replayed, the
 page splits that text into chunks and runs each as if typed: a chunk
 begins at every line that starts, at column 0, with `:`, `export`,
 `declare`, `test`, `struct` or `union`, and every other line continues the
@@ -55,14 +55,14 @@ Two page commands, handled by `main.js` rather than the compiler:
 
 `)words`, a compiler command, lists the program as it stands instead:
 the latest definition of each word still defined, ready to copy into a
-`.chasm` file (`docs/reference.md` section 1a). It is not saved, and
+`.wack` file (`docs/reference.md` section 1a). It is not saved, and
 neither is `)test` or `)test word`, which run the tests in force.
 
 Up and Down in the input box step through the chunks you have entered,
 as in readline: Up from the first line of the box, Down from the last, so
 inside a multi-line chunk they still move the caret. Down past the newest
 entry brings back what you were typing. The history (500 chunks, repeats
-collapsed) is kept in `localStorage` too (key `chasm.history`) and survives
+collapsed) is kept in `localStorage` too (key `wack.history`) and survives
 `)clear`.
 
 `test/bridge.html` keeps nothing, so driving it does not touch the saved
@@ -71,7 +71,7 @@ program.
 ## How it works
 
 - **Main thread** (`main.js`, `driver.js`): owns the compiler session
-  (`compiler.js` over `chasm_web.wasm`), the shared `WebAssembly.Memory`
+  (`compiler.js` over `wack_web.wasm`), the shared `WebAssembly.Memory`
   (4 MiB initial, 64 MiB maximum) and the I/O ring (`ring.js`). Each step
   follows the session's host contract (`crates/core/src/repl.rs`): it writes
   the step's literals at the heap pointer, sends the step module to the
@@ -82,7 +82,7 @@ program.
   instantiates each step module against the shared memory and its table,
   installs the functions at their slots, runs the step's tests and line, and
   reports traps from the trap cells.
-- **Doorbell.** The compiled code's one import, `chasm.ring_enter`, stores 0
+- **Doorbell.** The compiled code's one import, `wack.ring_enter`, stores 0
   in the doorbell cell (`DOORBELL` in the layout), posts `ring` to the main
   thread and blocks in `Atomics.wait`. The main thread services the ring,
   stores 1 and calls `Atomics.notify`.
@@ -91,7 +91,7 @@ program.
   (struct slots and layouts). Worker to main: `ring`, `done` (trap, test
   results) and `rendered` (struct values).
 - **Structs.** References cannot live in shared memory, so a struct on the
-  stack is a slot holding its index into `chasm.refs`, an `anyref` table the
+  stack is a slot holding its index into `wack.refs`, an `anyref` table the
   worker owns. The worker creates it the first time a step module imports it
   or a step's `refs_size` is above 0, so engines without WasmGC run sessions
   without structs unchanged. JavaScript cannot read WasmGC struct fields, so
@@ -102,7 +102,7 @@ program.
   type's arguments for `option i32`). A struct array's length is its `len`
   slot in memory.
 - **Layout.** The JavaScript never hard-codes an address: `compiler.js`
-  reads the layout from the compiler (`chasm_core::layout::constants`).
+  reads the layout from the compiler (`wack_core::layout::constants`).
 
 `compiler.js`, `ring.js`, `worker-core.js` and `driver.js` use no DOM or
 Node API, so the node checks below exercise the same code the page runs.
@@ -116,7 +116,7 @@ CORS. There is no `/file` and there are no mounts: those paths return not
 found.
 
 `/local/<name>` is a flat directory of files in the page's `localStorage`,
-item `chasm/local/<name>`, the bytes kept as a string of char codes 0 to 255.
+item `wack/local/<name>`, the bytes kept as a string of char codes 0 to 255.
 They outlast the tab. Every mode works; each write is saved at once, and a
 write past the storage quota is -4. Reading `/local` gives directory
 records. `"/net/https/host/path" "/local/name" copy` fetches a file once and

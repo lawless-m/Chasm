@@ -35,7 +35,7 @@ def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
     handler = functools.partial(Handler, directory=str(ROOT))
     with http.server.ThreadingHTTPServer(("localhost", port), handler) as httpd:
-        print(f"Chasm REPL at http://localhost:{port}/", flush=True)
+        print(f"Whackford REPL at http://localhost:{port}/", flush=True)
         httpd.serve_forever()
 
 

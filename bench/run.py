@@ -1,6 +1,6 @@
-"""Run-speed benchmark: Chasm against the same algorithms in Rust and JavaScript.
+"""Run-speed benchmark: Whackford against the same algorithms in Rust and JavaScript.
 
-Each task is a Chasm example plus a file in bench/ that replaces its `main`,
+Each task is a Whackford example plus a file in bench/ that replaces its `main`,
 with ports in bench/rust/ and bench/js/. Every program prints a checksum and
 the nanoseconds its work took, timed inside the program, so start-up and
 compilation are not counted. The checksums must agree.
@@ -28,14 +28,14 @@ def sh(cmd, **kw):
 
 def build():
     OUT.mkdir(parents=True, exist_ok=True)
-    sh(["cargo", "build", "-q", "--release", "-p", "chasm-cli"])
+    sh(["cargo", "build", "-q", "--release", "-p", "wack-cli"])
     for t in TASKS:
         sh(["rustc", "-C", "opt-level=3", "-o", str(OUT / t), f"bench/rust/{t}.rs"])
 
 
 def commands(t):
     return {
-        "chasm": ["target/release/chasm", "run", f"examples/{t}.chasm", f"bench/{t}.chasm"],
+        "wack": ["target/release/wack", "run", f"examples/{t}.wack", f"bench/{t}.wack"],
         "rust": [str(OUT / t)],
         "js": ["node", f"bench/js/{t}.mjs"],
     }
@@ -79,11 +79,11 @@ def main():
         checks = {c for c, _ in res.values()}
         if len(checks) != 1:
             sys.exit(f"{t}: checksums disagree: {res}")
-        c, r, j = (res[k][1] for k in ("chasm", "rust", "js"))
+        c, r, j = (res[k][1] for k in ("wack", "rust", "js"))
         rows.append(f"| {t} | {c:.1f} | {r:.1f} | {j:.1f} | {c / r:.2f} | {c / j:.2f} |")
     table = "\n".join(
         [
-            "| Task | Chasm ms | Rust ms | JS ms | Chasm / Rust | Chasm / JS |",
+            "| Task | Whackford ms | Rust ms | JS ms | Whackford / Rust | Whackford / JS |",
             "|---|---:|---:|---:|---:|---:|",
             *rows,
         ]

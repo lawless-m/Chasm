@@ -56,7 +56,7 @@ test total-x : 4 points total-x -> 6
 test map : 4 points [ point.x 10 i32.mul ] map array.to-str -> "0 10 20 30"
 test filter : 5 points [ point.x 2 i32.ge_s ] filter array.len -> 3
 
-# A slice shares storage with its array, as for every Chasm array.
+# A slice shares storage with its array, as for every Whackford array.
 : write-through ( -- i32 )
   4 points :> a
   a 1 2 array.slice  0  99 0.0 point.new  array.at!

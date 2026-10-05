@@ -1,4 +1,4 @@
-//! `chasm run` making HTTP requests against a local server.
+//! `wack run` making HTTP requests against a local server.
 
 #[path = "../../runtime/tests/common/http_server.rs"]
 mod http_server;
@@ -10,12 +10,12 @@ fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-fn chasm(args: &[&str]) -> (bool, String, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_chasm"))
+fn wack(args: &[&str]) -> (bool, String, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_wack"))
         .args(args)
         .current_dir(root())
         .output()
-        .expect("run chasm");
+        .expect("run wack");
     (
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -42,7 +42,7 @@ const PROGRAM: &str = r#"
 : main ( -- )
   "/net/http/ADDR/hello" read-file :> status :> body
   body print  status i32.to-str println
-  "/net/http/ADDR/post" "X-Chasm: 7\n\nhello" post drop println
+  "/net/http/ADDR/post" "X-Wack: 7\n\nhello" post drop println
   "/net/http/ADDR/missing" read-file i32.to-str println drop ;
 "#;
 
@@ -50,15 +50,15 @@ const PROGRAM: &str = r#"
 fn run_gets_and_posts() {
     let addr = http_server::start();
     std::fs::create_dir_all(root().join("tmp")).unwrap();
-    let prog = root().join(format!("tmp/net-{}.chasm", std::process::id()));
+    let prog = root().join(format!("tmp/net-{}.wack", std::process::id()));
     std::fs::write(&prog, PROGRAM.replace("ADDR", &addr.to_string())).unwrap();
     let p = prog.to_str().unwrap();
-    let (ok, out, err) = chasm(&["run", p]);
+    let (ok, out, err) = wack(&["run", p]);
     assert!(ok, "{out}{err}");
     assert!(out.contains("hi\n0\n"), "{out}");
     assert!(out.contains("got:hello:7"), "{out}");
     assert!(out.contains("-1\n"), "{out}");
-    let (_, out, _) = chasm(&["run", "--no-net", p]);
+    let (_, out, _) = wack(&["run", "--no-net", p]);
     assert!(out.starts_with("-3\n"), "{out}");
     let _ = std::fs::remove_file(prog);
 }

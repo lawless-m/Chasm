@@ -1,4 +1,4 @@
-// Port of `primes` in examples/sieve.chasm.
+// Port of `primes` in examples/sieve.wack.
 function primes(n) {
   const composite = new Int32Array(n + 1);
   for (let p = 2; p * p <= n; p++) {

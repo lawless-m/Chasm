@@ -16,7 +16,7 @@ use crate::prims;
 use crate::types::{names, width_all, Effect, Ty};
 use wasm_encoder::Instruction as I;
 
-pub const PRELUDE: &str = include_str!("prelude.chasm");
+pub const PRELUDE: &str = include_str!("prelude.wack");
 pub const PRELUDE_NAME: &str = "<prelude>";
 
 #[derive(Debug, Clone)]

@@ -1,4 +1,4 @@
-// Port of `primes` in examples/sieve.chasm.
+// Port of `primes` in examples/sieve.wack.
 use std::time::Instant;
 
 fn primes(n: usize) -> Vec<i32> {

@@ -2,7 +2,7 @@
 //! HTTP request after the request line: `Name: value` lines, an empty line,
 //! then the body. Nothing written is a GET; a non-empty body makes a POST.
 
-use chasm_core::layout as L;
+use wack_core::layout as L;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {

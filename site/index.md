@@ -1,11 +1,11 @@
-# Chasm
+# Whackford
 
-Chasm is a typed, concatenative language in the Forth and Factor family.
+Whackford is a typed, concatenative language in the Forth and Factor family.
 Every word has a stack effect, written or inferred, and the checker verifies
 each body against it before anything runs. Programs compile to WebAssembly
 and run natively or in the browser.
 
-```chasm
+```wack
 : square ( i32 -- i32 )  dup i32.mul ;
 test square : 3 square -> 9
 

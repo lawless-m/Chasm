@@ -1,19 +1,19 @@
 //! The native REPL host: one wasmtime store holding the shared memory and
 //! table, into which each step's module is instantiated.
 //!
-//! The session (`chasm_core::repl`) decides what to compile; this module
+//! The session (`wack_core::repl`) decides what to compile; this module
 //! follows its host contract: place the literals, install the functions in
 //! the table, run the line, and restore the memory data stack on a trap.
 
 use std::time::Instant;
 
-use chasm_core::layout as L;
-use chasm_core::repl::{read_stack, Defined, Layout, StackEntry, Step};
-use chasm_core::{Diagnostic, Location, Session, Value};
 use serde::Serialize;
 use std::collections::HashMap;
+use wack_core::layout as L;
+use wack_core::repl::{read_stack, Defined, Layout, StackEntry, Step};
+use wack_core::{Diagnostic, Location, Session, Value};
 
-use chasm_core::types::Ty;
+use wack_core::types::Ty;
 use wasmtime::{
     AnyRef, AsContext, Caller, Engine, Linker, Memory, MemoryType, Module, Ref, RefType, RootScope,
     Rooted, Store, Table, TableType, Val,
@@ -52,7 +52,7 @@ pub struct Outcome {
     pub diagnostics: Vec<Diagnostic>,
     pub defined: Vec<Defined>,
     pub forgotten: Vec<String>,
-    pub forced: Vec<chasm_core::repl::Forced>,
+    pub forced: Vec<wack_core::repl::Forced>,
     pub rechecked: Vec<String>,
     /// The program as it stands, from `)words`.
     pub listing: Option<String>,
@@ -71,7 +71,7 @@ pub struct NativeRepl {
     linker: Linker<ReplState>,
     memory: Memory,
     table: Table,
-    /// `chasm.refs`: references on the memory data stack, by slot index.
+    /// `wack.refs`: references on the memory data stack, by slot index.
     refs: Table,
     pub session: Session,
 }
@@ -261,7 +261,7 @@ impl NativeRepl {
         let mut diagnostics = step.diagnostics.clone();
         if let Err(m) = self.install(&step) {
             diagnostics.push(Diagnostic::error(
-                chasm_core::diag::codes::E_INTERNAL,
+                wack_core::diag::codes::E_INTERNAL,
                 m,
                 Location::default(),
             ));
@@ -350,7 +350,7 @@ impl NativeRepl {
     }
 
     /// The struct and union values on the stack, by slot index, read from
-    /// `chasm.refs`.
+    /// `wack.refs`.
     fn render_structs(&mut self) -> HashMap<u32, Value> {
         let mut slots = Vec::new();
         let mut i = 0;

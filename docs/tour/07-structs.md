@@ -4,7 +4,7 @@ A struct is a record with named fields. It is declared at the top level:
 the name, then `field: type` pairs. There is no terminator; the
 declaration ends where the fields do.
 
-```chasm
+```wack
 struct point  x: i32  y: f64
 
 : point.add ( point point -- point )
@@ -41,7 +41,7 @@ A field can be another struct, as long as that struct is declared above.
 Arrays hold structs too, and every array word and combinator works on an
 `array point`.
 
-```chasm
+```wack
 struct point  x: i32  y: f64
 struct seg  a: point  b: point
 
@@ -70,7 +70,7 @@ A struct can refer to itself, which is how a list is made. There is no
 null to test for. A link that may be absent has the type `option node`,
 and is either `option.none` or a node wrapped by `option.some`.
 
-```chasm
+```wack
 struct node  v: i32  next: option node
 
 : cons ( i32 option node -- option node )  node.new option.some ;

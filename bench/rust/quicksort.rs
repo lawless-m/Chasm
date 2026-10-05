@@ -1,4 +1,4 @@
-// Port of `quicksort` in examples/quicksort.chasm and `wide` in bench/quicksort.chasm.
+// Port of `quicksort` in examples/quicksort.wack and `wide` in bench/quicksort.wack.
 use std::time::Instant;
 
 fn partition(a: &mut [i32]) -> usize {

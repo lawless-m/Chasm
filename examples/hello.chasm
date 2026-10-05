@@ -1,2 +1,0 @@
-# The smallest program: print a line.
-: main ( -- )  "Hello from Chasm" println ;

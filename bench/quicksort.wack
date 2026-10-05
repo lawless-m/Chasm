@@ -1,6 +1,6 @@
 # Benchmark: sort a million pseudo-random 31-bit integers with `quicksort`
-# from examples/quicksort.chasm. Run as
-# `chasm run examples/quicksort.chasm bench/quicksort.chasm`.
+# from examples/quicksort.wack. Run as
+# `wack run examples/quicksort.wack bench/quicksort.wack`.
 # The example's `scrambled` draws from 0 to 999, and so many duplicates
 # make its Lomuto partition quadratic; `wide` keeps the whole 31 bits.
 # Prints the checksum (the middle element, or -1 if unsorted), then the

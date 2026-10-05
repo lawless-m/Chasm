@@ -1,4 +1,4 @@
-# Chasm prelude: library words written in Chasm, compiled with every program.
+# Whackford prelude: library words written in Whackford, compiled with every program.
 #
 # Built on the primitives only. Strings and byte buffers are ( addr len )
 # pairs; see

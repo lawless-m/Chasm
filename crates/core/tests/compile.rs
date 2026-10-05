@@ -1,8 +1,8 @@
-use chasm_core::{compile, Options, Source};
+use wack_core::{compile, Options, Source};
 
-fn ok(src: &str) -> chasm_core::Compilation {
+fn ok(src: &str) -> wack_core::Compilation {
     let c = compile(
-        &[Source::new("t.chasm", src)],
+        &[Source::new("t.wack", src)],
         &Options {
             prelude: true,
             test_exports: true,
@@ -19,7 +19,7 @@ fn ok(src: &str) -> chasm_core::Compilation {
 }
 
 fn err(src: &str) -> String {
-    let c = compile(&[Source::new("t.chasm", src)], &Options::default());
+    let c = compile(&[Source::new("t.wack", src)], &Options::default());
     assert!(!c.ok(), "expected an error");
     c.diagnostics[0].code.clone()
 }
@@ -124,11 +124,11 @@ fn declare_then_define() {
 
 #[test]
 fn step_module_imports_memory_and_table() {
-    use chasm_core::ast::{Node, NodeKind};
-    use chasm_core::check::{compile_body, Ctx, Mode, Origin, Word, WordKind};
-    use chasm_core::module::{assemble_step, export_name};
-    use chasm_core::types::{Effect, Ty};
-    use chasm_core::Location;
+    use wack_core::ast::{Node, NodeKind};
+    use wack_core::check::{compile_body, Ctx, Mode, Origin, Word, WordKind};
+    use wack_core::module::{assemble_step, export_name};
+    use wack_core::types::{Effect, Ty};
+    use wack_core::Location;
 
     let mut ctx = Ctx::default();
     ctx.indirect_calls = true;
@@ -171,7 +171,7 @@ fn step_module_imports_memory_and_table() {
     }
 
     let bytes = assemble_step(&mut ctx, &[0, 1], false);
-    chasm_core::validate(&bytes).unwrap();
+    wack_core::validate(&bytes).unwrap();
     let mut imports = Vec::new();
     let mut exports = Vec::new();
     for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
@@ -190,16 +190,16 @@ fn step_module_imports_memory_and_table() {
             _ => {}
         }
     }
-    let chasm = |n: &str| ("chasm".to_string(), n.to_string());
+    let wack = |n: &str| ("wack".to_string(), n.to_string());
     assert_eq!(
         imports,
-        vec![chasm("ring_enter"), chasm("memory"), chasm("table")]
+        vec![wack("ring_enter"), wack("memory"), wack("table")]
     );
     assert_eq!(exports, vec![export_name(0), export_name(1)]);
     assert_eq!(exports, vec!["w0", "w1"]);
 
     let shared = assemble_step(&mut ctx, &[0, 1], true);
-    chasm_core::validate(&shared).unwrap();
+    wack_core::validate(&shared).unwrap();
 }
 
 #[test]
@@ -312,9 +312,9 @@ test only-tested : only-tested -> 3
     assert_eq!(dead, ["c"]);
 }
 
-fn export(src: &str) -> chasm_core::Compilation {
+fn export(src: &str) -> wack_core::Compilation {
     compile(
-        &[Source::new("t.chasm", src)],
+        &[Source::new("t.wack", src)],
         &Options {
             prelude: true,
             test_exports: false,
@@ -390,7 +390,7 @@ fn imports_and_exports(wasm: &[u8]) -> (Vec<String>, Vec<String>) {
 fn wasi_build_imports_preview1_and_exports_start() {
     let src = ": main ( -- ) \"hi\" println ;";
     let c = compile(
-        &[Source::new("t.chasm", src)],
+        &[Source::new("t.wack", src)],
         &Options {
             prelude: true,
             test_exports: false,
@@ -414,7 +414,7 @@ fn wasi_build_imports_preview1_and_exports_start() {
     assert!(exports.iter().any(|e| e == "memory"), "{exports:?}");
     let plain = export(src);
     let (imports, exports) = imports_and_exports(plain.wasm.as_ref().unwrap());
-    assert_eq!(imports, ["chasm.ring_enter"]);
+    assert_eq!(imports, ["wack.ring_enter"]);
     assert!(!exports.iter().any(|e| e == "_start"));
 }
 
@@ -430,7 +430,7 @@ fn declared_generic_words() {
     assert_eq!(err("export : e ( T -- T ) ;"), "E_NEEDS_EFFECT");
     assert_eq!(err("struct box  v: T"), "E_UNKNOWN_TYPE");
     let c = compile(
-        &[Source::new("t.chasm", "declare g ( array T -- i32 )")],
+        &[Source::new("t.wack", "declare g ( array T -- i32 )")],
         &Options::default(),
     );
     let names: Vec<&str> = c.unresolved().iter().map(|w| w.name.as_str()).collect();
@@ -445,7 +445,7 @@ fn some_words_must_declare_their_effect() {
     );
     let c = compile(
         &[Source::new(
-            "t.chasm",
+            "t.wack",
             "declare odd? ( i32 -- i32 )\n: even? dup i32.eqz [ drop 1 ] [ 1 i32.sub odd? ] if ;\n: odd? ( i32 -- i32 ) dup i32.eqz [ drop 0 ] [ 1 i32.sub even? ] if ;",
         )],
         &Options::default(),
@@ -461,7 +461,7 @@ fn some_words_must_declare_their_effect() {
     assert_eq!(err(": main \"x\" println ;"), "E_NEEDS_EFFECT");
     let c = compile(
         &[Source::new(
-            "t.chasm",
+            "t.wack",
             ": fact ( i32 -- i32 ) ;\n: f :> fact fact ;",
         )],
         &Options::default(),
@@ -565,7 +565,7 @@ fn whole_program_emits_only_reachable_instances() {
     );
     assert!(!dead.contains(&"twice".to_string()), "{dead:?}");
     let c = export("declare g ( T -- T )\n: main ( -- ) 1 g drop ;");
-    let unresolved: Vec<&chasm_core::Diagnostic> = c
+    let unresolved: Vec<&wack_core::Diagnostic> = c
         .diagnostics
         .iter()
         .filter(|d| d.code == "E_UNRESOLVED")
@@ -582,7 +582,7 @@ fn redefining_a_generic_rebuilds_instances() {
 
 #[test]
 fn ticking_a_generic_word() {
-    use chasm_core::graph::EdgeKind;
+    use wack_core::graph::EdgeKind;
     let g = ": twice ( T -- T T ) dup ;\n";
     let c = ok(&format!("{g}: t1 ( -- [ i32 -- i32 i32 ] ) 'twice ;"));
     let callees: Vec<(String, EdgeKind)> = c
@@ -684,7 +684,7 @@ fn match_on_a_union() {
     ));
     let c = compile(
         &[Source::new(
-            "t.chasm",
+            "t.wack",
             format!("{SHAPE}: f ( shape -- i32 ) circle: [ drop 1 ] rect: [ 2drop 2 ] match ;"),
         )],
         &Options::default(),

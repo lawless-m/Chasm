@@ -312,7 +312,7 @@ impl Ctx {
     }
 
     /// Whether any struct or union type is registered (step modules then
-    /// import `chasm.refs`).
+    /// import `wack.refs`).
     pub fn has_ref_types(&self) -> bool {
         self.types.iter().any(|t| matches!(t, TypeDef::Rec(_)))
     }
@@ -1116,7 +1116,7 @@ impl<'c> Walker<'c> {
             self.op(I::LocalGet(base));
             match vt {
                 ValType::Ref(r) => {
-                    // The slot holds this value's index in `chasm.refs`.
+                    // The slot holds this value's index in `wack.refs`.
                     self.op(I::I32Load(memarg(
                         layout::STACK_SLOT * i as u32,
                         ValType::I32,
@@ -1147,7 +1147,7 @@ impl<'c> Walker<'c> {
         for (j, (vt, v)) in vts.into_iter().zip(vals).enumerate() {
             let off = layout::STACK_SLOT * j as u32;
             if let ValType::Ref(_) = vt {
-                // A reference goes in `chasm.refs` at the slot's own index,
+                // A reference goes in `wack.refs` at the slot's own index,
                 // and the slot holds that index.
                 let ix = *ix.get_or_insert_with(|| self.new_local(ValType::I32));
                 self.op(I::LocalGet(base));

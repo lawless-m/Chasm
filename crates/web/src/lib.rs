@@ -1,7 +1,7 @@
-//! The Chasm compiler for the browser: the REPL session behind a small C
+//! The Whackford compiler for the browser: the REPL session behind a small C
 //! ABI, built as a `wasm32-unknown-unknown` cdylib. No wasm-bindgen; the
 //! JavaScript side (`web/compiler.js`) passes UTF-8 text in through
-//! `chasm_alloc` and reads results back as JSON and byte buffers.
+//! `wack_alloc` and reads results back as JSON and byte buffers.
 //!
 //! Buffers handed to JavaScript stay owned by Rust until the next call
 //! that replaces them.
@@ -9,10 +9,10 @@
 pub mod api {
     use std::cell::RefCell;
 
-    use chasm_core::repl::{needs_more as core_needs_more, Layout, Step};
-    use chasm_core::types::{names, Ty};
-    use chasm_core::{layout, Diagnostic, Location, Session};
     use serde_json::{json, Value as J};
+    use wack_core::repl::{needs_more as core_needs_more, Layout, Step};
+    use wack_core::types::{names, Ty};
+    use wack_core::{layout, Diagnostic, Location, Session};
 
     /// One step's result: JSON plus the module and literal bytes.
     #[derive(Debug, Clone, Default)]
@@ -126,8 +126,8 @@ pub mod api {
             }
             None => {
                 let d = Diagnostic::error(
-                    chasm_core::diag::codes::E_INTERNAL,
-                    "no session: call chasm_new first",
+                    wack_core::diag::codes::E_INTERNAL,
+                    "no session: call wack_new first",
                     Location::default(),
                 );
                 StepJson {
@@ -176,9 +176,9 @@ fn set_result(r: api::StepJson) {
 }
 
 /// # Safety
-/// The returned buffer of `len` bytes must be released with `chasm_free`.
+/// The returned buffer of `len` bytes must be released with `wack_free`.
 #[no_mangle]
-pub extern "C" fn chasm_alloc(len: u32) -> *mut u8 {
+pub extern "C" fn wack_alloc(len: u32) -> *mut u8 {
     let mut v = Vec::<u8>::with_capacity(len as usize);
     let p = v.as_mut_ptr();
     std::mem::forget(v);
@@ -186,9 +186,9 @@ pub extern "C" fn chasm_alloc(len: u32) -> *mut u8 {
 }
 
 /// # Safety
-/// `ptr` and `len` must come from one `chasm_alloc` call.
+/// `ptr` and `len` must come from one `wack_alloc` call.
 #[no_mangle]
-pub unsafe extern "C" fn chasm_free(ptr: *mut u8, len: u32) {
+pub unsafe extern "C" fn wack_free(ptr: *mut u8, len: u32) {
     drop(Vec::from_raw_parts(ptr, 0, len as usize));
 }
 
@@ -199,26 +199,26 @@ unsafe fn text<'a>(ptr: *const u8, len: u32) -> std::borrow::Cow<'a, str> {
 }
 
 #[no_mangle]
-pub extern "C" fn chasm_new(prelude: i32, heap_ptr: u32) {
+pub extern "C" fn wack_new(prelude: i32, heap_ptr: u32) {
     set_result(api::new_session(prelude != 0, heap_ptr));
 }
 
 /// # Safety
 /// `ptr..ptr+len` must be readable UTF-8 text.
 #[no_mangle]
-pub unsafe extern "C" fn chasm_step(ptr: *const u8, len: u32, heap_ptr: u32) {
+pub unsafe extern "C" fn wack_step(ptr: *const u8, len: u32, heap_ptr: u32) {
     set_result(api::step(&text(ptr, len), heap_ptr));
 }
 
 #[no_mangle]
-pub extern "C" fn chasm_line_done(ok: i32) {
+pub extern "C" fn wack_line_done(ok: i32) {
     api::line_done(ok != 0);
 }
 
 /// # Safety
 /// `ptr..ptr+len` must be readable UTF-8 text.
 #[no_mangle]
-pub unsafe extern "C" fn chasm_needs_more(ptr: *const u8, len: u32) -> i32 {
+pub unsafe extern "C" fn wack_needs_more(ptr: *const u8, len: u32) -> i32 {
     api::needs_more(&text(ptr, len)) as i32
 }
 
@@ -235,17 +235,17 @@ macro_rules! buffer {
     };
 }
 
-buffer!(chasm_result_ptr, chasm_result_len, json);
-buffer!(chasm_module_ptr, chasm_module_len, module);
-buffer!(chasm_literals_ptr, chasm_literals_len, literals);
+buffer!(wack_result_ptr, wack_result_len, json);
+buffer!(wack_module_ptr, wack_module_len, module);
+buffer!(wack_literals_ptr, wack_literals_len, literals);
 
 #[no_mangle]
-pub extern "C" fn chasm_layout_ptr() -> *const u8 {
+pub extern "C" fn wack_layout_ptr() -> *const u8 {
     LAYOUT.with(|l| l.as_ptr())
 }
 
 #[no_mangle]
-pub extern "C" fn chasm_layout_len() -> u32 {
+pub extern "C" fn wack_layout_len() -> u32 {
     LAYOUT.with(|l| l.len() as u32)
 }
 

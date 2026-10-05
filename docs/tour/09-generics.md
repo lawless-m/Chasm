@@ -6,7 +6,7 @@
 starting with an uppercase letter is a type variable: it stands for
 whatever type the caller has.
 
-```chasm
+```wack
 : twice ( T -- T T )  dup ;
 : first ( array T -- T )  0 array.at ;
 
@@ -24,7 +24,7 @@ test first : nums [ i32.to-str ] map first -> "10"
 ```
 
 `twice` is used here at `i32` and at `str`. Each concrete use compiles its
-own instance, and `chasm words` lists them by name: `twice<i32>`,
+own instance, and `wack words` lists them by name: `twice<i32>`,
 `twice<str>`.
 
 A `T` is any type, but inside the word it matches only itself. There are
@@ -38,7 +38,7 @@ A struct or union takes type parameters after its name, and its fields may
 use them. The type is applied to its arguments by position, without
 parentheses: `pair i32 str` is a pair of an `i32` and a `str`.
 
-```chasm
+```wack
 struct pair T U  first: T  second: U
 
 : swap-pair ( pair T U -- pair U T )  :> p  p pair.second p pair.first pair.new ;
@@ -60,7 +60,7 @@ list could be a list of anything, so `list.nil` with nothing to fix its
 type is `E_AMBIGUOUS_TYPE`. A declared effect settles it, as in `empty`
 below, or a stack assertion: `list.nil ( list str )`.
 
-```chasm
+```wack
 union list T
   | nil
   | cons  head: T  tail: list T

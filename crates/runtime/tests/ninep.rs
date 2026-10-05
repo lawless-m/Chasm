@@ -3,7 +3,7 @@
 #[path = "common/ninep_server.rs"]
 mod server;
 
-use chasm_runtime::ninep::{Client, Error, OREAD, OWRITE};
+use wack_runtime::ninep::{Client, Error, OREAD, OWRITE};
 
 #[test]
 fn read_files_and_directories() {

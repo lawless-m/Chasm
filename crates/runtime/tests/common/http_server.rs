@@ -1,7 +1,7 @@
 //! A tiny HTTP/1.1 server for offline tests: one request per connection.
 //!
-//! GET /hello → `hi\n`; GET /echo → the `X-Chasm` header or `none`;
-//! POST /post → `got:<body>:<X-Chasm or none>`; /missing → 404;
+//! GET /hello → `hi\n`; GET /echo → the `X-Wack` header or `none`;
+//! POST /post → `got:<body>:<X-Wack or none>`; /missing → 404;
 //! /forbidden → 403.
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -28,7 +28,7 @@ fn serve(stream: TcpStream) {
     let method = parts.next().unwrap_or("").to_string();
     let path = parts.next().unwrap_or("").to_string();
     let mut length = 0;
-    let mut chasm = "none".to_string();
+    let mut wack = "none".to_string();
     loop {
         let mut h = String::new();
         if reader.read_line(&mut h).unwrap_or(0) == 0 {
@@ -42,7 +42,7 @@ fn serve(stream: TcpStream) {
             let value = value.trim().to_string();
             match name.to_ascii_lowercase().as_str() {
                 "content-length" => length = value.parse().unwrap_or(0),
-                "x-chasm" => chasm = value,
+                "x-wack" => wack = value,
                 _ => {}
             }
         }
@@ -52,8 +52,8 @@ fn serve(stream: TcpStream) {
     let body = String::from_utf8_lossy(&body).into_owned();
     let (status, text) = match (method.as_str(), path.as_str()) {
         ("GET", "/hello") => ("200 OK", "hi\n".to_string()),
-        ("GET", "/echo") => ("200 OK", chasm),
-        ("POST", "/post") => ("200 OK", format!("got:{body}:{chasm}")),
+        ("GET", "/echo") => ("200 OK", wack),
+        ("POST", "/post") => ("200 OK", format!("got:{body}:{wack}")),
         (_, "/forbidden") => ("403 Forbidden", String::new()),
         _ => ("404 Not Found", String::new()),
     };

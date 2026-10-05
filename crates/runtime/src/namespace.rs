@@ -7,7 +7,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use chasm_core::layout as L;
+use wack_core::layout as L;
 
 use crate::ninep;
 use crate::Host;

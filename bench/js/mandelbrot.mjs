@@ -1,4 +1,4 @@
-// Port of `escape` in examples/mandelbrot.chasm and `grid-sum` in bench/mandelbrot.chasm.
+// Port of `escape` in examples/mandelbrot.wack and `grid-sum` in bench/mandelbrot.wack.
 function escape(cx, cy, max) {
   let x = 0, y = 0, k = 0;
   while (k < max && x * x + y * y <= 4.0) {

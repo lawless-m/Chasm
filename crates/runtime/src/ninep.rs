@@ -151,7 +151,7 @@ impl Client {
         c.msize = msize.min(8192);
         let mut body = 0u32.to_le_bytes().to_vec();
         body.extend_from_slice(&NOFID.to_le_bytes());
-        put_str(&mut body, "chasm");
+        put_str(&mut body, "wack");
         put_str(&mut body, "");
         c.rpc(TATTACH, &body).map_err(io)?;
         Ok(c)

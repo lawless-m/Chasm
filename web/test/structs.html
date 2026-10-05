@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>Chasm struct check</title></head>
+<head><meta charset="utf-8"><title>Whackford struct check</title></head>
 <body>
 <pre id="out">running</pre>
 <script type="module">
@@ -14,7 +14,7 @@ const assert = {
   equal: (a, b, m) => { if (a !== b) throw new Error(`${m ?? "not equal"}: ${a} !== ${b}`); },
 };
 try {
-  const compiler = await loadCompiler(await (await fetch("../chasm_web.wasm")).arrayBuffer());
+  const compiler = await loadCompiler(await (await fetch("../wack_web.wasm")).arrayBuffer());
   const L = compiler.layout;
   const memory = new WebAssembly.Memory({ initial: L.INITIAL_PAGES, maximum: L.SHARED_MAX_PAGES, shared: true });
   const worker = new Worker("../worker.js", { type: "module" });

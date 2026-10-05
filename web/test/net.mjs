@@ -5,21 +5,21 @@ import http from "node:http";
 import { loadCompiler } from "../compiler.js";
 import { Namespace, serviceRing } from "../ring.js";
 
-const { layout: L } = await loadCompiler(readFileSync(new URL("../chasm_web.wasm", import.meta.url)));
+const { layout: L } = await loadCompiler(readFileSync(new URL("../wack_web.wasm", import.meta.url)));
 
 const server = http.createServer((req, res) => {
   const chunks = [];
   req.on("data", (c) => chunks.push(c));
   req.on("end", () => {
     const body = Buffer.concat(chunks).toString();
-    const chasm = req.headers["x-chasm"] ?? "none";
+    const wack = req.headers["x-wack"] ?? "none";
     const reply = (status, text) => {
       res.writeHead(status, { "Content-Length": Buffer.byteLength(text) });
       res.end(text);
     };
     if (req.method === "GET" && req.url === "/hello") reply(200, "hi\n");
-    else if (req.method === "GET" && req.url === "/echo") reply(200, chasm);
-    else if (req.method === "POST" && req.url === "/post") reply(200, `got:${body}:${chasm}`);
+    else if (req.method === "GET" && req.url === "/echo") reply(200, wack);
+    else if (req.method === "POST" && req.url === "/post") reply(200, `got:${body}:${wack}`);
     else reply(404, "");
   });
 });
@@ -72,8 +72,8 @@ async function request(path, written) {
 
 try {
   assert.equal(await request(`${base}/hello`, ""), "hi\n");
-  assert.equal(await request(`${base}/echo`, "X-Chasm: 42\n\n"), "42");
-  assert.equal(await request(`${base}/post`, "X-Chasm: 7\n\nhello"), "got:hello:7");
+  assert.equal(await request(`${base}/echo`, "X-Wack: 42\n\n"), "42");
+  assert.equal(await request(`${base}/post`, "X-Wack: 7\n\nhello"), "got:hello:7");
   assert.equal(await request(`${base}/post`, "X: 1\nbody"), L.E_MALFORMED);
   assert.equal(await request(`${base}/missing`, ""), L.E_NOT_FOUND);
   const h = await submit(L.OP_OPEN, 0x300000, put(0x300000, `${base}/hello`), L.MODE_READ_WRITE);

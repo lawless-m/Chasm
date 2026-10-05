@@ -5,7 +5,7 @@ import { loadCompiler } from "../compiler.js";
 import { Namespace, serviceRing } from "../ring.js";
 
 const { layout: L } = await loadCompiler(
-  readFileSync(new URL("../chasm_web.wasm", import.meta.url)),
+  readFileSync(new URL("../wack_web.wasm", import.meta.url)),
 );
 const memory = new WebAssembly.Memory({
   initial: L.INITIAL_PAGES,
@@ -77,7 +77,7 @@ const r = await open("/local/a", L.MODE_READ);
 assert.equal(await submit(L.OP_WRITE, r, 0x300100, 1), L.E_PERMISSION);
 assert.equal(await read(r), "hello!");
 assert.equal(await read(r), "");
-assert.equal(ns.storage.getItem("chasm/local/a"), "hello!");
+assert.equal(ns.storage.getItem("wack/local/a"), "hello!");
 assert.equal(await open("/local/b", L.MODE_WRITE) >= 3, true);
 assert.equal(await open("/local", L.MODE_WRITE), L.E_PERMISSION);
 const d = await open("/local", L.MODE_READ);

@@ -1,12 +1,12 @@
-# A program for `chasm build --wasi`, which maps the four host words onto
+# A program for `wack build --wasi`, which maps the four host words onto
 # WASI preview1:
 #   /dev/cons      stdin and stdout
 #   /dev/time      clock_time_get
 #   /file/<path>   path_open of <path> under the first preopened directory
 # Build and run it under any WASI preview1 runtime, for example:
-#   chasm build --wasi examples/wasi.chasm -o wasi.wasm
+#   wack build --wasi examples/wasi.wack -o wasi.wasm
 #   wasmtime --dir=. wasi.wasm
-# `chasm run examples/wasi.chasm` runs it natively through the ring, where
+# `wack run examples/wasi.wack` runs it natively through the ring, where
 # /file/README.md is the host's /README.md.
 
 : greeting ( str -- str )  "hello from " swap str.concat ;

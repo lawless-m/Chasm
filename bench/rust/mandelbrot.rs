@@ -1,4 +1,4 @@
-// Port of `escape` in examples/mandelbrot.chasm and `grid-sum` in bench/mandelbrot.chasm.
+// Port of `escape` in examples/mandelbrot.wack and `grid-sum` in bench/mandelbrot.wack.
 use std::time::Instant;
 
 fn escape(cx: f64, cy: f64, max: i32) -> i32 {

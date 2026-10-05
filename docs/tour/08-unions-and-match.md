@@ -4,7 +4,7 @@ A struct holds all of its fields at once. A union value is exactly one of
 several variants, each with fields of its own. It is declared at the top
 level: the name, then a `|` before each variant.
 
-```chasm
+```wack
 union shape
   | circle  r: f64
   | rect    w: f64  h: f64
@@ -56,7 +56,7 @@ index in declaration order, and each field has a reader, such as
 are no writers: a union's fields cannot be changed, so build a new value
 instead.
 
-```chasm
+```wack
 union shape
   | circle  r: f64
   | rect    w: f64  h: f64
@@ -71,11 +71,11 @@ test grow : 1.5 shape.circle grow shape.circle.r -> 3.0
 ## Maybe
 
 The prelude declares one union for you: `option T` is either `none` or
-`some` with a value `v`. It is how Chasm says "maybe", in place of a null.
+`some` with a value `v`. It is how Whackford says "maybe", in place of a null.
 `option.none` and `option.some` build one, and `none:` and `some:` match
 it.
 
-```chasm
+```wack
 : or-zero ( option i32 -- i32 )  none: [ 0 ] some: [ ] match ;
 
 test or-zero : 5 option.some or-zero -> 5

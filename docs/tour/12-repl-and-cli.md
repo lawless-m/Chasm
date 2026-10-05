@@ -2,13 +2,13 @@
 
 ## The REPL
 
-`chasm repl` reads one chunk at a time, compiling and running each at
+`wack repl` reads one chunk at a time, compiling and running each at
 once. A chunk that starts with `:`, `export`, `declare`, `test`, `struct`
 or `union` is processed exactly as in a file. Anything else is a line: it
 runs on the current stack. After each chunk the stack is shown as
 `( types ) values`, bottom to top.
 
-```chasm-repl
+```wack-repl
 > : sq ( i32 -- i32 )  dup i32.mul ;
 ok: sq ( i32 -- i32 )
 ( )
@@ -37,7 +37,7 @@ the new `sq`, `quad` gives 12 without being touched. A different effect is
 refused, and the error lists the words that depend on the old one. A line
 that traps leaves the stack as it was.
 
-A line starting with `)` is a command to the REPL, not Chasm. `)forget sq`
+A line starting with `)` is a command to the REPL, not Whackford. `)forget sq`
 removes a word, once nothing uses it. `)force` changes an effect
 deliberately, rechecking every dependant; the
 [reference](../reference.md#1a-the-repl) describes it.
@@ -50,7 +50,7 @@ It keeps your program in the browser: a reload brings your words back,
 loads its example without saving it. Nothing calls `main` for you: type
 `main` to run it.
 
-```chasm
+```wack
 : sq ( i32 -- i32 )  dup i32.mul ;
 : quad ( i32 -- i32 )  sq sq ;
 test quad : 3 quad -> 81
@@ -61,23 +61,23 @@ test quad : 3 quad -> 81
 ## The command line
 
 ```
-chasm check  FILE...          types and effects only; fast
-chasm run    FILE...          build and run main
-chasm test   FILE...          run the test lines
-chasm unresolved FILE...      declared words with no body yet
-chasm words  FILE...          every word and its effect
-chasm prims                   every primitive and its effect
-chasm deps WORD FILE...       what WORD calls
-chasm used-by WORD FILE...    what calls WORD
-chasm dead   FILE...          words main never reaches
-chasm infer  FILE...          the effects of words that left theirs out
-chasm build  FILE... -o out.wasm   a WebAssembly module (--wasi for WASI)
-chasm repl                    the REPL
-chasm lsp                     a language server for editors
+wack check  FILE...          types and effects only; fast
+wack run    FILE...          build and run main
+wack test   FILE...          run the test lines
+wack unresolved FILE...      declared words with no body yet
+wack words  FILE...          every word and its effect
+wack prims                   every primitive and its effect
+wack deps WORD FILE...       what WORD calls
+wack used-by WORD FILE...    what calls WORD
+wack dead   FILE...          words main never reaches
+wack infer  FILE...          the effects of words that left theirs out
+wack build  FILE... -o out.wasm   a WebAssembly module (--wasi for WASI)
+wack repl                    the REPL
+wack lsp                     a language server for editors
 ```
 
 A program is the files you name, in order, so a library goes first:
-`chasm test lib.chasm prog.chasm`. Add `--json` to any command and it
+`wack test lib.wack prog.wack`. Add `--json` to any command and it
 prints a machine-readable report in place of the text.
 
 ## Where next

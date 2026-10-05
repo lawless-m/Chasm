@@ -1,6 +1,6 @@
 # Benchmark: total escape count over a 1200 x 800 grid of the Mandelbrot
-# set, 200 iterations at most, with `escape` from examples/mandelbrot.chasm.
-# Run as `chasm run examples/mandelbrot.chasm bench/mandelbrot.chasm`.
+# set, 200 iterations at most, with `escape` from examples/mandelbrot.wack.
+# Run as `wack run examples/mandelbrot.wack bench/mandelbrot.wack`.
 # Prints the checksum, then the nanoseconds the work took.
 
 : grid-sum ( i32 i32 i32 -- i32 )

@@ -1,6 +1,6 @@
 [package]
-name = "chasm-core"
-description = "Chasm compiler core: lexer, parser, effect checker, dependency graph, wasm emitter. No I/O."
+name = "wack-core"
+description = "Whackford compiler core: lexer, parser, effect checker, dependency graph, wasm emitter. No I/O."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

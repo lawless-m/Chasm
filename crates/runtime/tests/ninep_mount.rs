@@ -3,8 +3,8 @@
 #[path = "common/ninep_server.rs"]
 mod server;
 
-use chasm_runtime::namespace::{Config, Mount, NativeHost};
-use chasm_runtime::Host;
+use wack_runtime::namespace::{Config, Mount, NativeHost};
+use wack_runtime::Host;
 
 fn host(addr: String) -> NativeHost {
     NativeHost::new(Config {

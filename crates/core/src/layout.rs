@@ -70,7 +70,7 @@ pub const INITIAL_PAGES: u64 = 64;
 pub const SHARED_MAX_PAGES: u64 = 1024;
 
 /// Host import module and doorbell name.
-pub const IMPORT_MODULE: &str = "chasm";
+pub const IMPORT_MODULE: &str = "wack";
 pub const IMPORT_RING_ENTER: &str = "ring_enter";
 /// Shared memory import name of REPL step modules.
 pub const IMPORT_MEMORY: &str = "memory";
@@ -79,7 +79,7 @@ pub const IMPORT_TABLE: &str = "table";
 /// Shared anyref table of REPL step modules that use structs: a reference
 /// on the memory data stack is a slot holding its own index into this table.
 pub const IMPORT_REFS: &str = "refs";
-/// Table index of `chasm.refs` in a step module (0 is `chasm.table`).
+/// Table index of `wack.refs` in a step module (0 is `wack.table`).
 pub const REFS_TABLE: u32 = 1;
 pub const EXPORT_MEMORY: &str = "memory";
 

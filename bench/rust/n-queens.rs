@@ -1,4 +1,4 @@
-// Port of `queens` in examples/n-queens.chasm.
+// Port of `queens` in examples/n-queens.wack.
 use std::time::Instant;
 
 fn safe(q: &[i32], r: i32, c: i32) -> bool {

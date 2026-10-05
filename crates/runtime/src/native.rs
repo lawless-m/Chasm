@@ -1,7 +1,7 @@
-//! Run Chasm modules natively with wasmtime.
+//! Run Whackford modules natively with wasmtime.
 
-use chasm_core::types::Ty;
-use chasm_core::{Compilation, TestInfo, Value};
+use wack_core::types::Ty;
+use wack_core::{Compilation, TestInfo, Value};
 use wasmtime::{Config as WtConfig, Engine, Func, Instance, Linker, Memory, Module, Store, Val};
 
 use crate::namespace::{Config, NativeHost};
@@ -37,7 +37,7 @@ pub struct Outcome<T> {
     pub host: NativeHost,
 }
 
-/// The engine every Chasm host uses: WasmGC on, with the copying collector
+/// The engine every Whackford host uses: WasmGC on, with the copying collector
 /// (far faster than the default for many short-lived structs).
 pub fn engine() -> Result<Engine, String> {
     // Backtraces (on by default) name the trapping word via the name section.
@@ -59,11 +59,11 @@ impl Runner {
         let mut linker: Linker<State> = Linker::new(&self.engine);
         linker
             .func_wrap(
-                chasm_core::layout::IMPORT_MODULE,
-                chasm_core::layout::IMPORT_RING_ENTER,
+                wack_core::layout::IMPORT_MODULE,
+                wack_core::layout::IMPORT_RING_ENTER,
                 |mut caller: wasmtime::Caller<'_, State>| {
                     let Some(mem) = caller
-                        .get_export(chasm_core::layout::EXPORT_MEMORY)
+                        .get_export(wack_core::layout::EXPORT_MEMORY)
                         .and_then(|e| e.into_memory())
                     else {
                         return;
@@ -77,7 +77,7 @@ impl Runner {
             .instantiate(&mut *store, &self.module)
             .map_err(|e| e.to_string())?;
         let mem = inst
-            .get_memory(&mut *store, chasm_core::layout::EXPORT_MEMORY)
+            .get_memory(&mut *store, wack_core::layout::EXPORT_MEMORY)
             .ok_or("module has no memory export")?;
         Ok((inst, mem))
     }

@@ -454,7 +454,7 @@ pub fn names() -> impl Iterator<Item = &'static str> {
     NUMERIC_NAMES.iter().chain(OTHER).copied()
 }
 
-/// Names from other languages and the Chasm words that do the job.
+/// Names from other languages and the Whackford words that do the job.
 const ALIASES: &[(&str, &str)] = &[
     ("pop", "`drop`"),
     ("len", "`str.len` or `array.len`"),

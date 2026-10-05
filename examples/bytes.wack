@@ -1,6 +1,6 @@
 # Byte buffers: `bytes` carries its length, so `host.read` fills at most
 # that many bytes and `bytes.at` traps past the end. Run with:
-#   chasm run examples/bytes.chasm --mount ex=examples
+#   wack run examples/bytes.wack --mount ex=examples
 
 : filled ( i32 -- bytes )
   :> n
@@ -47,6 +47,6 @@ test shared : shared -> "ZB"
 test size : "/mnt/none/x" size -> -1
 
 : main ( -- )
-  "hello.chasm is " print
-  "/mnt/ex/hello.chasm" size i32.to-str print
+  "hello.wack is " print
+  "/mnt/ex/hello.wack" size i32.to-str print
   " bytes" println ;

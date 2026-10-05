@@ -7,9 +7,9 @@ const decoder = new TextDecoder();
 // TextDecoder refuses views of a SharedArrayBuffer, so decode a copy.
 const decode = (u8) => decoder.decode(u8.slice());
 
-// `/local/<name>` is the item `chasm/local/<name>` of a Storage (the page's
+// `/local/<name>` is the item `wack/local/<name>` of a Storage (the page's
 // localStorage), its bytes kept as a string of char codes 0 to 255.
-const LOCAL = "chasm/local/";
+const LOCAL = "wack/local/";
 
 const toBinary = (u8) => {
   let s = "";

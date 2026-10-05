@@ -245,14 +245,14 @@ fn word_function(ctx: &mut Ctx, w: &Word, remap: Option<&[Option<u32>]>, shift: 
 
 fn name_section(names: NameMap) -> NameSection {
     let mut name_sec = NameSection::new();
-    name_sec.module("chasm");
+    name_sec.module("wack");
     name_sec.functions(&names);
     name_sec
 }
 
 fn version_section() -> CustomSection<'static> {
     CustomSection {
-        name: "chasm-version".into(),
+        name: "wack-version".into(),
         data: env!("CARGO_PKG_VERSION").as_bytes().into(),
     }
 }
@@ -505,7 +505,7 @@ pub fn assemble_step(ctx: &mut Ctx, ids: &[WordId], shared_memory: bool) -> Vec<
     let mut funcs = FunctionSection::new();
     let mut code = CodeSection::new();
     let mut names = NameMap::new();
-    names.append(0, "chasm.ring_enter");
+    names.append(0, "wack.ring_enter");
 
     for (idx, ty, f, name) in runtime_helpers(ctx, 0, false) {
         funcs.function(ty);

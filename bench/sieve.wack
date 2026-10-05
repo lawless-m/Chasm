@@ -1,5 +1,5 @@
 # Benchmark: count the primes below ten million with `primes` from
-# examples/sieve.chasm. Run as `chasm run examples/sieve.chasm bench/sieve.chasm`.
+# examples/sieve.wack. Run as `wack run examples/sieve.wack bench/sieve.wack`.
 # Prints the checksum, then the nanoseconds the work took.
 
 : main ( -- )

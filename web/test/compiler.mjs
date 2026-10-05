@@ -1,9 +1,9 @@
-// Check web/compiler.js against the built compiler (web/chasm_web.wasm).
+// Check web/compiler.js against the built compiler (web/wack_web.wasm).
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { loadCompiler } from "../compiler.js";
 
-const wasm = readFileSync(new URL("../chasm_web.wasm", import.meta.url));
+const wasm = readFileSync(new URL("../wack_web.wasm", import.meta.url));
 const c = await loadCompiler(wasm);
 const hp = c.layout.LITERALS_BASE + 0x10_0000;
 

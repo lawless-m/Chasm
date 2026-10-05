@@ -1,4 +1,4 @@
-//! Drive `chasm repl` through a pipe.
+//! Drive `wack repl` through a pipe.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -9,7 +9,7 @@ fn root() -> PathBuf {
 }
 
 fn repl(args: &[&str], input: &str) -> (bool, String, String) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_chasm"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_wack"))
         .arg("repl")
         .args(args)
         .current_dir(root())
@@ -17,7 +17,7 @@ fn repl(args: &[&str], input: &str) -> (bool, String, String) {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("run chasm repl");
+        .expect("run wack repl");
     child
         .stdin
         .take()

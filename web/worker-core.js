@@ -5,12 +5,12 @@
 // done. No DOM, no Node APIs: `post` and `onMessage` are supplied.
 
 const decoder = new TextDecoder();
-// Import name of the refs table (`chasm_core::layout::IMPORT_REFS`).
+// Import name of the refs table (`wack_core::layout::IMPORT_REFS`).
 const L_REFS = "refs";
 
 export function attach(post, onMessage) {
   let memory, L, table;
-  // `chasm.refs`: references on the memory data stack, by slot index.
+  // `wack.refs`: references on the memory data stack, by slot index.
   // Made on the first step that needs it, so engines without WasmGC never see it.
   let refs = null;
 
@@ -21,7 +21,7 @@ export function attach(post, onMessage) {
     Atomics.wait(cells, L.DOORBELL >> 2, 0);
   }
 
-  // The message and word a Chasm trap left behind, or the engine's message.
+  // The message and word a Whackford trap left behind, or the engine's message.
   function trapInfo(err) {
     const dv = new DataView(memory.buffer);
     const len = dv.getUint32(L.TRAP_MSG_LEN, true);
@@ -96,9 +96,9 @@ export function attach(post, onMessage) {
         if (refs.length < msg.refsSize) refs.grow(msg.refsSize - refs.length);
       }
       if (mod) {
-        const chasm = { memory, table, ring_enter };
-        if (refs) chasm.refs = refs;
-        const instance = new WebAssembly.Instance(mod, { chasm });
+        const wack = { memory, table, ring_enter };
+        if (refs) wack.refs = refs;
+        const instance = new WebAssembly.Instance(mod, { wack });
         for (const i of msg.installs) table.set(i.slot, instance.exports[i.export]);
       }
     } catch (e) {

@@ -8,7 +8,7 @@ builds a new array from the block's results, `filter` keeps the elements
 for which the block leaves non-zero, and `fold` threads a running value
 through.
 
-```chasm
+```wack
 : iota ( i32 -- array i32 )
   :> n
   n array.new ( array i32 ) :> a
@@ -39,7 +39,7 @@ a word, and `call` runs the function value on top, giving it the values
 beneath. The type of a function value is its effect in square brackets, so
 an effect can ask for one: `twice` takes an `i32` and a `[ i32 -- i32 ]`.
 
-```chasm
+```wack
 : twice ( i32 [ i32 -- i32 ] -- i32 )  :> f  f call f call ;
 : inc ( i32 -- i32 )  1 i32.add ;
 : square ( i32 -- i32 )  dup i32.mul ;
@@ -55,7 +55,7 @@ type error, found before anything runs.
 Combine the two ideas to apply a word, chosen by the caller, to every
 element:
 
-```chasm
+```wack
 : apply-each ( array i32 [ i32 -- i32 ] -- array i32 )  :> f  [ f call ] map ;
 : square ( i32 -- i32 )  dup i32.mul ;
 : negate ( i32 -- i32 )  0 swap i32.sub ;

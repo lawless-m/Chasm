@@ -1,4 +1,4 @@
-// Port of `queens` in examples/n-queens.chasm.
+// Port of `queens` in examples/n-queens.wack.
 function safe(q, r, c) {
   for (let i = 0; i < r; i++) {
     const qc = q[i];

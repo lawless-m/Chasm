@@ -1,4 +1,4 @@
-//! `chasm`: check, build, run and test Chasm programs.
+//! `wack`: check, build, run and test Whackford programs.
 //!
 //! Every command builds a JSON report `{ schema, ok, command, diagnostics,
 //! results }`. With `--json` that report is printed; otherwise the text
@@ -10,18 +10,18 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use chasm_core::{compile, Compilation, Diagnostic, Location, Options, Source};
-use chasm_runtime::namespace::{Config, Console, Mount};
-use chasm_runtime::native::{run_tests, Runner, TestStatus};
-use chasm_runtime::repl::{NativeRepl, Outcome};
 use clap::{Args, Parser, Subcommand};
 use serde_json::{json, Value as J};
+use wack_core::{compile, Compilation, Diagnostic, Location, Options, Source};
+use wack_runtime::namespace::{Config, Console, Mount};
+use wack_runtime::native::{run_tests, Runner, TestStatus};
+use wack_runtime::repl::{NativeRepl, Outcome};
 
 #[derive(Parser)]
 #[command(
-    name = "chasm",
+    name = "wack",
     version,
-    about = "Chasm: a typed concatenative language that compiles to WebAssembly"
+    about = "Whackford: a typed concatenative language that compiles to WebAssembly"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -30,7 +30,7 @@ struct Cli {
 
 #[derive(Args)]
 struct Common {
-    /// Source files (.chasm), processed in order.
+    /// Source files (.wack), processed in order.
     #[arg(required = true)]
     files: Vec<PathBuf>,
     /// Print the machine-readable JSON report.
@@ -68,7 +68,7 @@ enum Cmd {
         /// Skip Binaryen's `wasm-opt`.
         #[arg(long)]
         no_opt: bool,
-        /// Import WASI preview1 instead of the Chasm ring host and export _start.
+        /// Import WASI preview1 instead of the Whackford ring host and export _start.
         #[arg(long)]
         wasi: bool,
     },
@@ -103,7 +103,7 @@ enum Cmd {
     },
     /// Format source files in place: one layout, keeping the line breaks.
     Fmt {
-        /// Source files (.chasm).
+        /// Source files (.wack).
         #[arg(required = true)]
         files: Vec<PathBuf>,
         /// Change nothing; fail if a file is not formatted.
@@ -174,8 +174,8 @@ impl Report {
 /// Insert each inferred effect after its word's name in the source file,
 /// leaving every other byte as it was. Returns the files changed.
 #[allow(clippy::result_large_err)]
-fn write_effects(words: &[&chasm_core::WordInfo]) -> Result<Vec<String>, Diagnostic> {
-    let mut by_file: BTreeMap<&str, Vec<&chasm_core::WordInfo>> = BTreeMap::new();
+fn write_effects(words: &[&wack_core::WordInfo]) -> Result<Vec<String>, Diagnostic> {
+    let mut by_file: BTreeMap<&str, Vec<&wack_core::WordInfo>> = BTreeMap::new();
     for w in words {
         by_file.entry(w.location.file.as_str()).or_default().push(w);
     }
@@ -218,7 +218,7 @@ fn write_effects(words: &[&chasm_core::WordInfo]) -> Result<Vec<String>, Diagnos
     Ok(written)
 }
 
-/// The wasm features Chasm emits; `wasm-opt` may use no others.
+/// The wasm features Whackford emits; `wasm-opt` may use no others.
 const WASM_OPT_FEATURES: &[&str] = &[
     "--enable-multivalue",
     "--enable-reference-types",
@@ -229,17 +229,17 @@ const WASM_OPT_FEATURES: &[&str] = &[
     "--enable-mutable-globals",
 ];
 
-/// Run Binaryen's `wasm-opt -O3` (or `$CHASM_WASM_OPT`) over a module. Returns
+/// Run Binaryen's `wasm-opt -O3` (or `$WACK_WASM_OPT`) over a module. Returns
 /// the module to use and, when optimisation was wanted but did not happen,
 /// why. A result that does not validate is not used.
 fn optimise(raw: &[u8], skip: bool) -> (Vec<u8>, Option<String>) {
     if skip {
         return (raw.to_vec(), None);
     }
-    let tool = std::env::var("CHASM_WASM_OPT").unwrap_or_else(|_| "wasm-opt".to_string());
+    let tool = std::env::var("WACK_WASM_OPT").unwrap_or_else(|_| "wasm-opt".to_string());
     let dir = std::env::temp_dir();
-    let input = dir.join(format!("chasm-{}.wasm", std::process::id()));
-    let output = dir.join(format!("chasm-{}.opt.wasm", std::process::id()));
+    let input = dir.join(format!("wack-{}.wasm", std::process::id()));
+    let output = dir.join(format!("wack-{}.opt.wasm", std::process::id()));
     if let Err(e) = std::fs::write(&input, raw) {
         return (
             raw.to_vec(),
@@ -270,7 +270,7 @@ fn optimise(raw: &[u8], skip: bool) -> (Vec<u8>, Option<String>) {
                 .trim()
         )),
         Ok(_) => match std::fs::read(&output) {
-            Ok(bytes) => match chasm_core::validate(&bytes) {
+            Ok(bytes) => match wack_core::validate(&bytes) {
                 Ok(()) => Ok(bytes),
                 Err(e) => Err(format!(
                     "not optimised: `{tool}` produced an invalid module: {e}"
@@ -598,7 +598,7 @@ fn exec(cli: Cli) -> (Report, bool) {
             let r = match load(&common, false, false, false) {
                 Err(d) => failed("infer", vec![d]),
                 Ok(comp) => {
-                    let mut inferred: Vec<&chasm_core::WordInfo> = comp
+                    let mut inferred: Vec<&wack_core::WordInfo> = comp
                         .words
                         .iter()
                         .filter(|w| {
@@ -654,7 +654,7 @@ fn exec(cli: Cli) -> (Report, bool) {
                         continue;
                     }
                 };
-                match chasm_core::fmt::format(&name, &text) {
+                match wack_core::fmt::format(&name, &text) {
                     Err(d) => diagnostics.push(d),
                     Ok(out) => {
                         let changed = out != text;
@@ -717,7 +717,7 @@ fn exec(cli: Cli) -> (Report, bool) {
             (r, json)
         }
         Cmd::Prims { json } => {
-            let primitives: Vec<J> = chasm_core::prims::names()
+            let primitives: Vec<J> = wack_core::prims::names()
                 .map(|name| {
                     let effect = lsp::primitive_effect(name)
                         .unwrap_or_else(|| panic!("primitive `{name}` has no effect"));
@@ -759,8 +759,7 @@ fn exec(cli: Cli) -> (Report, bool) {
 
 fn repl_report(o: Outcome, output: Vec<u8>) -> Report {
     let failed_test = o.tests.iter().any(|t| t.status == TestStatus::Fail);
-    let trap =
-        |e: &chasm_runtime::native::RunError| json!({ "message": e.message, "word": e.word });
+    let trap = |e: &wack_runtime::native::RunError| json!({ "message": e.message, "word": e.word });
     let results = json!({
         "defined": o.defined.iter().map(|d| json!({
             "name": d.name, "effect": d.effect, "declared": d.declared, "inferred": d.inferred,
@@ -831,7 +830,7 @@ fn run_repl(host: HostArgs, json: bool, no_prelude: bool) -> ExitCode {
         let mut line = String::new();
         let eof = !matches!(std::io::stdin().lock().read_line(&mut line), Ok(n) if n > 0);
         chunk.push_str(&line);
-        if !eof && chasm_core::repl::needs_more(&chunk) {
+        if !eof && wack_core::repl::needs_more(&chunk) {
             continue;
         }
         if !chunk.trim().is_empty() {
@@ -1255,7 +1254,7 @@ fn main() -> ExitCode {
                 Some("used-by") => "used-by",
                 Some("repl") => "repl",
                 Some("lsp") => "lsp",
-                _ => "chasm",
+                _ => "wack",
             };
             let d = Diagnostic::error("E_USAGE", e.to_string().trim(), Location::default());
             print_report(&failed(cmd, vec![d]), true);

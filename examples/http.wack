@@ -1,13 +1,13 @@
 # HTTP through the namespace: open /net/http/<host>/<path>, write header
 # lines, an empty line and a body, then read the response body. Nothing
 # written is a GET; a body makes a POST. Run with a URL path on stdin:
-#   echo /net/http/127.0.0.1:8111/hello.txt | chasm run examples/http.chasm
+#   echo /net/http/127.0.0.1:8111/hello.txt | wack run examples/http.wack
 # With no input it GETs /net/http/example.com/.
 
 : header ( str str -- str )
   :> value :> name
   name ": " str.concat value str.concat "\n" str.concat ;
-test header : "X-Chasm" "7" header -> "X-Chasm: 7\n"
+test header : "X-Wack" "7" header -> "X-Wack: 7\n"
 test header : "Accept" "text/plain" header -> "Accept: text/plain\n"
 
 : send ( i32 str -- )
@@ -61,4 +61,4 @@ test get : "/nowhere" get -> "" -1
   more 0 i32.ne line str.len 0 i32.gt_s i32.and :> given
   given [ line ] [ "/net/http/example.com/" ] if :> path
   path get show
-  given [ path "X-Chasm" "7" header "hello" request show ] when ;
+  given [ path "X-Wack" "7" header "hello" request show ] when ;

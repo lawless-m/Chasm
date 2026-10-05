@@ -1,4 +1,4 @@
-"""Syntax highlighting for Chasm code blocks on the site: text in, HTML out.
+"""Syntax highlighting for Whackford code blocks on the site: text in, HTML out.
 
 A small tokenizer over the lexical rules of docs/reference.md sections 2 to
 4. Token classes: tok-c comment, tok-s string, tok-n number, tok-k keyword,
@@ -80,7 +80,7 @@ def highlight(text):
 
 
 def highlight_repl(text):
-    """A transcript: `> ` and `. ` lines are prompt plus Chasm, the rest output."""
+    """A transcript: `> ` and `. ` lines are prompt plus Whackford, the rest output."""
     lines = []
     for line in text.split("\n"):
         if line.startswith(("> ", ". ")):

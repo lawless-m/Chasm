@@ -3,8 +3,8 @@
 #[path = "common/http_server.rs"]
 mod http_server;
 
-use chasm_runtime::namespace::{Config, NativeHost};
-use chasm_runtime::Host;
+use wack_runtime::namespace::{Config, NativeHost};
+use wack_runtime::Host;
 
 fn host(net: bool) -> NativeHost {
     NativeHost::new(Config {
@@ -47,15 +47,15 @@ fn get_post_and_errors() {
         Ok("hi\n".into())
     );
     assert_eq!(
-        request(&mut h, &format!("{base}/echo"), b"X-Chasm: 42\n\n"),
+        request(&mut h, &format!("{base}/echo"), b"X-Wack: 42\n\n"),
         Ok("42".into())
     );
     assert_eq!(
-        request(&mut h, &format!("{base}/post"), b"X-Chasm: 7\n\nhello"),
+        request(&mut h, &format!("{base}/post"), b"X-Wack: 7\n\nhello"),
         Ok("got:hello:7".into())
     );
     assert_eq!(
-        request(&mut h, &format!("{base}/post"), b"X-Chasm: 7\nhello"),
+        request(&mut h, &format!("{base}/post"), b"X-Wack: 7\nhello"),
         Err(-6)
     );
     assert_eq!(request(&mut h, &format!("{base}/missing"), b""), Err(-1));

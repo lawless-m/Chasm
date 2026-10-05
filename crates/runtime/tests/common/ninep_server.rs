@@ -70,9 +70,9 @@ fn stat(tree: &BTreeMap<String, Node>, path: &str) -> Vec<u8> {
     s.extend_from_slice(&len.to_le_bytes());
     for field in [
         if path.is_empty() { "/" } else { name },
-        "chasm",
-        "chasm",
-        "chasm",
+        "wack",
+        "wack",
+        "wack",
     ] {
         put_str(&mut s, field);
     }

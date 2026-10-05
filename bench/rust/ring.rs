@@ -1,4 +1,4 @@
-// The same work as bench/ring.chasm without the ring: one system call per
+// The same work as bench/ring.wack without the ring: one system call per
 // one-byte read or write, and SystemTime::now. Run:
 //   rustc -C opt-level=3 -o tmp/ring-rs bench/rust/ring.rs
 //   tmp/ring-rs tmp/ring

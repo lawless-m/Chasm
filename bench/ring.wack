@@ -3,7 +3,7 @@
 # /dev/time each), timed with `now`. Compare with bench/rust/ring.rs, the
 # same system calls without the ring. Run:
 #   mkdir -p tmp/ring
-#   chasm run bench/ring.chasm --mount b=tmp/ring
+#   wack run bench/ring.wack --mount b=tmp/ring
 
 : per-op ( i64 i32 -- str )  i64 i64.div_s i64.to-str ;
 

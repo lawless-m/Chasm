@@ -4,7 +4,7 @@
 # Exercises: inference through locals, loops, calls to other inferred words,
 # quotations under `if`, and a word inferred generic.
 #
-# `chasm infer examples/inferred.chasm` prints these, each with its line:
+# `wack infer examples/inferred.wack` prints these, each with its line:
 #   c>f ( i32 -- i32 )
 #   f>c ( i32 -- i32 )
 #   describe ( i32 -- str )

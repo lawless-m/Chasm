@@ -2,14 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Chasm bridge</title>
+<title>Whackford bridge</title>
 <style>
   body { font: 14px monospace; margin: 16px; background: #fff; color: #111; }
   .err { color: #b00; }
 </style>
 </head>
 <body>
-<p>A Chasm REPL driven through BRIDGE: <code>bridge.action("step", text)</code>, <code>bridge.action("output")</code>.</p>
+<p>A Whackford REPL driven through BRIDGE: <code>bridge.action("step", text)</code>, <code>bridge.action("output")</code>.</p>
 <pre id="log" data-bridge-node="log">starting</pre>
 <script type="module">
 import { loadCompiler } from "../compiler.js";
@@ -35,7 +35,7 @@ try {
       document.head.append(s);
     });
   }
-  const compiler = await loadCompiler(await (await fetch("../chasm_web.wasm")).arrayBuffer());
+  const compiler = await loadCompiler(await (await fetch("../wack_web.wasm")).arrayBuffer());
   const L = compiler.layout;
   const memory = new WebAssembly.Memory({ initial: L.INITIAL_PAGES, maximum: L.SHARED_MAX_PAGES, shared: true });
   const worker = new Worker("../worker.js", { type: "module" });

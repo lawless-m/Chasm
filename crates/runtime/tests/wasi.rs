@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use chasm_core::{compile, Options, Source};
+use wack_core::{compile, Options, Source};
 use wasmtime::{Linker, Module, Store};
 use wasmtime_wasi::p1::{add_to_linker_sync, WasiP1Ctx};
 use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
@@ -10,7 +10,7 @@ use wasmtime_wasi::{FsPerms, WasiCtxBuilder};
 
 fn build(src: &str) -> Vec<u8> {
     let c = compile(
-        &[Source::new("t.chasm", src)],
+        &[Source::new("t.wack", src)],
         &Options {
             prelude: true,
             test_exports: false,
@@ -34,7 +34,7 @@ fn scratch(name: &str) -> PathBuf {
 
 /// Run `_start` with `dir` preopened as `/`; stdout, and whether it succeeded.
 fn run(wasm: &[u8], dir: &PathBuf) -> (String, bool) {
-    let engine = chasm_runtime::native::engine().unwrap();
+    let engine = wack_runtime::native::engine().unwrap();
     let stdout = MemoryOutputPipe::new(1 << 20);
     let ctx = WasiCtxBuilder::new()
         .stdout(stdout.clone())
@@ -90,7 +90,7 @@ fn a_trap_fails_start() {
 #[test]
 fn the_wasi_example_runs() {
     let src = std::fs::read_to_string(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/wasi.chasm"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/wasi.wack"),
     )
     .unwrap();
     let dir = scratch("example");

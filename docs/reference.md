@@ -1,10 +1,10 @@
-# Chasm language reference
+# Whackford language reference
 
-This is the working reference for writing Chasm. It describes what the
+This is the working reference for writing Whackford. It describes what the
 compiler in this repository accepts today. The design documents
 (`ARCHITECTURE.md`, `LANGUAGE.md`) say why; this says how.
 
-Chasm is a typed, concatenative language in the Forth and Factor family. A
+Whackford is a typed, concatenative language in the Forth and Factor family. A
 program is a sequence of **words**. Every word has a **stack effect**, written
 or inferred, and the checker verifies each body against it before anything
 runs. Words
@@ -13,23 +13,23 @@ compile to WebAssembly functions whose types are their effects.
 ## 1. Running things
 
 ```
-chasm check  FILE...          # types and effects only; fast
-chasm run    FILE...          # build and run `main ( -- )` (--opt: also wasm-opt)
-chasm test   FILE...          # run the `test` lines
-chasm unresolved FILE...      # declared words with no body yet
-chasm words  FILE...          # every word and its effect
-chasm prims                   # every primitive and its effect
-chasm deps WORD FILE...       # what WORD calls (--all for transitive)
-chasm used-by WORD FILE...    # what calls WORD
-chasm dead   FILE...          # words `main` and `export` words never reach
-chasm infer  FILE...          # inferred effects of un-annotated words (--write inserts them)
-chasm fmt    FILE...          # format in place (--check: change nothing, fail if unformatted)
-chasm build  FILE... -o out.wasm  # optimised with Binaryen (--no-opt to skip; --wasi: WASI preview1 module)
-chasm repl                    # interactive; reads chunks from stdin
-chasm lsp                     # language server over stdio (docs/editors.md)
+wack check  FILE...          # types and effects only; fast
+wack run    FILE...          # build and run `main ( -- )` (--opt: also wasm-opt)
+wack test   FILE...          # run the `test` lines
+wack unresolved FILE...      # declared words with no body yet
+wack words  FILE...          # every word and its effect
+wack prims                   # every primitive and its effect
+wack deps WORD FILE...       # what WORD calls (--all for transitive)
+wack used-by WORD FILE...    # what calls WORD
+wack dead   FILE...          # words `main` and `export` words never reach
+wack infer  FILE...          # inferred effects of un-annotated words (--write inserts them)
+wack fmt    FILE...          # format in place (--check: change nothing, fail if unformatted)
+wack build  FILE... -o out.wasm  # optimised with Binaryen (--no-opt to skip; --wasi: WASI preview1 module)
+wack repl                    # interactive; reads chunks from stdin
+wack lsp                     # language server over stdio (docs/editors.md)
 ```
 
-`chasm fmt` keeps your line breaks and any gap of two or more spaces (a
+`wack fmt` keeps your line breaks and any gap of two or more spaces (a
 phrase break or a lined-up column) and fixes the rest:
 
 - A quotation that spans lines gets `[` and `]` on lines of their own, its
@@ -41,7 +41,7 @@ phrase break or a lined-up column) and fixes the rest:
 - Single spaces inside `( ... )` and in a definition's header
   (`export raw : name (`); runs of blank lines become one.
 
-```chasm fragment
+```wack fragment
 : count ( str -- i32 )
   0 :> n!
   [
@@ -57,15 +57,15 @@ would change. `examples/` and `bench/` are kept formatted (`cargo test`
 checks).
 
 A program is the files you name, in order; there is no include form. To use
-a library, name it first: `chasm test lib.chasm prog.chasm`. A pipeline
-works too, `cat lib.chasm prog.chasm | chasm test /dev/stdin`, but then error
+a library, name it first: `wack test lib.wack prog.wack`. A pipeline
+works too, `cat lib.wack prog.wack | wack test /dev/stdin`, but then error
 locations count lines in the concatenated text.
 
 `build` and `run` compile the whole program from its roots, `main` and the
 `export` words: words they never reach are left out of the module, and a
 reachable word that is declared but has no body is refused (`E_UNRESOLVED`).
 A program with no root keeps every word. `build` then runs Binaryen's
-`wasm-opt -O3` (version 121 or later; `$CHASM_WASM_OPT` names another
+`wasm-opt -O3` (version 121 or later; `$WACK_WASM_OPT` names another
 binary), which shrinks the module by about a quarter; if it is missing or
 fails, the unoptimised module is written with a note. `run` skips that step
 unless given `--opt`, because under wasmtime it is as often slower as faster
@@ -85,7 +85,7 @@ Add `--json` to any command for a machine-readable report:
 { "schema": 1, "ok": false, "command": "check",
   "diagnostics": [ { "code": "E_EFFECT_MISMATCH", "severity": "error",
                      "message": "...", "word": "f",
-                     "location": { "file": "f.chasm", "line": 3, "column": 1, "token": "f" },
+                     "location": { "file": "f.wack", "line": 3, "column": 1, "token": "f" },
                      "expected": ["i32"], "actual": ["i32", "i32"] } ],
   "results": { ... } }
 ```
@@ -127,7 +127,7 @@ TCP; native only), `--no-file` (hides the host filesystem) and `--no-net` (hides
 
 ## 1a. The REPL
 
-`chasm repl` reads chunks from stdin and compiles and runs each at once.
+`wack repl` reads chunks from stdin and compiles and runs each at once.
 
 - A chunk that starts with `:`, `export`, `raw`, `declare`, `test`, `struct` or
   `union` is processed
@@ -159,7 +159,7 @@ TCP; native only), `--no-file` (hides the host filesystem) and `--no-net` (hides
   dependants.
 - A line that traps prints `trap in `[line N]`: message` and leaves the
   stack as it was.
-- A line starting with `)` is a REPL command, not Chasm, so a file never
+- A line starting with `)` is a REPL command, not Whackford, so a file never
   holds one: `)forget word`, `)force`, `)test` and `)words`. `)forget word` removes a word and its tests and frees the name,
   which can then be defined with any effect. It is refused (`E_FORGET`, with
   the `dependants`) while another word, a quotation in one, or another
@@ -173,7 +173,7 @@ TCP; native only), `--no-file` (hides the host filesystem) and `--no-net` (hides
   `word` and of every word that uses it, directly or through other words,
   quotations or instances: after redefining `word`, the tests its change
   can break. Tests run in the session's shared instance with the console
-  not captured, unlike `chasm test`.
+  not captured, unlike `wack test`.
 - `)words` prints the program as it stands, ready to save as a file: each
   `struct` and `union`, each `declare` of a word still defined, the latest
   definition of each word (forgotten and replaced ones left out, every word
@@ -204,7 +204,7 @@ TCP; native only), `--no-file` (hides the host filesystem) and `--no-net` (hides
   `results.forced`, `results.rechecked`, `results.listing` (`)words`; otherwise null),
   `results.tests`, `results.trap`, `results.stack` and `results.timing`.
 
-```chasm-repl
+```wack-repl
 > : sq ( i32 -- i32 ) dup i32.mul ;
 ok: sq ( i32 -- i32 )
 ( )
@@ -228,7 +228,7 @@ ok: cube ( i32 -- i32 ) (inferred)
 
 Changing an effect with `)force`:
 
-```chasm-repl
+```wack-repl
 > : f ( -- i32 ) 1 ;
 ok: f ( -- i32 )
 ( )
@@ -261,7 +261,7 @@ The same REPL runs in the browser; see `web/README.md`.
 
 A file is a sequence of top-level forms, processed **in order**:
 
-```chasm fragment
+```wack fragment
 : name ( inputs -- outputs )  body ;          # define
 : name  body ;                                # define, with the effect inferred
 export : name ( inputs -- outputs )  body ;   # define and export from the module
@@ -278,7 +278,7 @@ union name P... | variant  field: type ... | ...   # a union (section 10b, 10c)
 - Tokens are separated by whitespace: `[ dup ]`, not `[dup]`.
 - The program's entry point is `: main ( -- ) ... ;`.
 - A definition may leave out its effect; it is inferred and then checked as
-  if written (`chasm infer` shows what was inferred). Words that call
+  if written (`wack infer` shows what was inferred). Words that call
   themselves or each other, `export` words and `main` must write theirs
   (`E_NEEDS_EFFECT`).
 - **Raw words.** The words that reach memory by address (loads and stores,
@@ -287,7 +287,7 @@ union name P... | variant  field: type ... | ...   # a union (section 10b, 10c)
   word marked `raw : name ...` (`export raw :` also works); anywhere else,
   tests and REPL lines included, they are `E_RAW`. The checked words
   (`bytes`, `str`, arrays) cover ordinary programs. A `raw` word is called
-  like any other, and `chasm words` flags it `[raw]`, so every place that
+  like any other, and `wack words` flags it `[raw]`, so every place that
   touches memory directly is easy to find.
 
 ## 3. Types and effects
@@ -309,7 +309,7 @@ A name starting with an uppercase letter is a **type variable**: `T`, `U`,
 `Elem`, in effects, `array T`, `[ T -- T ]` and stack assertions. A word whose
 effect has one is **generic**:
 
-```chasm
+```wack
 : twice ( T -- T T )  dup ;
 : first ( array T -- T )  0 array.at ;
 ```
@@ -353,7 +353,7 @@ These work on any type; `dup` on a `str` copies both halves.
 
 Beyond three or so values, bind names instead of shuffling:
 
-```chasm
+```wack
 : sum-to ( i32 -- i32 )
   :> n            # pop into immutable local n
   0 :> acc!       # pop into mutable local acc
@@ -460,20 +460,20 @@ past its end.
 | `fold` | `arr init [ U T -- U ] fold` → `U` |
 | `array.to-str` | `( array i32 -- str )` elements in decimal, space-separated |
 
-```chasm
+```wack
 : sum ( array i32 -- i32 )  0 [ i32.add ] fold ;
 ```
 
 ## 10a. Structs
 
-```chasm
+```wack
 struct point  x: i32  y: f64
 ```
 
 A top-level form: the name, then `field: type` pairs for as long as the next
 token is a field label. There is no terminator. A field may have any type,
 including a struct declared above, the struct itself, or an `array` of it.
-The declaration generates ordinary words, listed by `chasm words` and seen by
+The declaration generates ordinary words, listed by `wack words` and seen by
 `deps` and `used-by`:
 
 | Word | Effect |
@@ -506,7 +506,7 @@ storage, and a write through the slice is visible in the original.
 **Optional links.** There is no null test. A link that may be absent is the
 prelude's `option T` (section 10c), matched with `none:` and `some:`:
 
-```chasm
+```wack
 struct node  v: i32  next: option node
 
 : sum ( option node -- i32 )
@@ -515,7 +515,7 @@ struct node  v: i32  next: option node
 
 ## 10b. Unions
 
-```chasm
+```wack
 union shape
   | circle  r: f64
   | rect    w: f64  h: f64
@@ -538,7 +538,7 @@ Union fields cannot be written: build a new value instead.
 **match.** Labelled arms written directly before `match`, in any order, as
 `if` takes its quotations:
 
-```chasm fragment
+```wack fragment
 : area ( shape -- f64 )
   circle: [ :> r  r r f64.mul 3.14 f64.mul ]
   rect:   [ f64.mul ]
@@ -570,7 +570,7 @@ Union fields cannot be written: build a new value instead.
 
 Type parameters follow the name; a field may use them:
 
-```chasm
+```wack
 struct pair T U  first: T  second: U
 union list T | nil | cons  head: T  tail: list T
 ```
@@ -598,7 +598,7 @@ The prelude declares `union option T | none | some  v: T`:
 `option.none ( -- option T )`, `option.some ( T -- option T )`, matched with
 `none:` and `some:`:
 
-```chasm
+```wack
 : or-zero ( option i32 -- i32 )  none: [ 0 ] some: [ ] match ;
 test or-zero : 5 option.some or-zero -> 5
 ```
@@ -641,7 +641,7 @@ function itself may change between versions.
 | `vec.each` | `( vec T [ T -- ] -- )` |
 | `vec.fold` | `( vec T A [ A T -- A ] -- A )` |
 
-```chasm
+```wack
 : add ( i32 i32 -- i32 )  i32.add ;
 
 : squares ( i32 -- vec i32 )
@@ -670,7 +670,7 @@ locals, use `vec.to-array [ ... ] each`.
 | `map.keys` | `( map K V -- vec K )` in no particular order |
 | `map.each` | `( map K V [ K V -- ] -- )` in no particular order |
 
-```chasm
+```wack
 : or-zero ( option i32 -- i32 )  none: [ 0 ] some: [ ] match ;
 
 : tally ( map str i32 str -- )
@@ -691,7 +691,7 @@ a key after inserting it loses it.
 
 ## 11. Functions as values
 
-```chasm
+```wack
 : twice ( i32 [ i32 -- i32 ] -- i32 )  :> f  f call f call ;
 : inc ( i32 -- i32 )  1 i32.add ;
 test twice : 5 'inc twice -> 7
@@ -711,7 +711,7 @@ test twice : 5 'inc twice -> 7
 A parenthesised list of types without `--` inside a body asserts the
 **whole** stack at that point, top rightmost:
 
-```chasm
+```wack
 : hypot ( f64 f64 -- f64 )
   dup f64.mul      ( f64 f64 )
   swap dup f64.mul ( f64 f64 )
@@ -723,7 +723,7 @@ Inside a generic word they may name its type variables: `( array T )`.
 
 ## 13. Contracts and tests
 
-```chasm
+```wack
 declare parse-int ( str -- i32 )
 test parse-int : "1234" parse-int -> 1234
 
@@ -738,14 +738,14 @@ test parse-int : "1234" parse-int -> 1234
   body for every caller; changing an effect is rejected (`E_REDEFINE_EFFECT`)
   and the error lists the dependants. Inferred effects follow the same rules.
 - A test of a generic word runs on the instance its body uses.
-- `chasm words` flags `inferred`, `generic` and `instance of NAME`.
+- `wack words` flags `inferred`, `generic` and `instance of NAME`.
 - `test word : body -> expected` runs `body` on an empty stack and compares
   the result with the expected literals, type by type. The expected part is
   every literal after `->`, up to the next non-literal. A test of a word with
   no body is reported **pending**. Tests may also name primitives. Each test
   runs in a fresh instance with a captured console.
-- `chasm unresolved` is the to-do list: work through it one stub at a time.
-- `chasm dead` lists the user words that `main` and the `export` words never
+- `wack unresolved` is the to-do list: work through it one stub at a time.
+- `wack dead` lists the user words that `main` and the `export` words never
   reach, following calls, quotations and `'word`, over every file named.
   Tests do not keep a word alive. Prelude and struct-generated words are not
   listed, and a program with neither `main` nor an `export` word reports
@@ -771,7 +771,7 @@ length; take the part it filled with `bytes.slice` and make a string of it
 with `bytes.to-str` (a copy) or `bytes.as-str` (no copy, when the buffer is
 not written again). `host.write` takes a string.
 
-```chasm
+```wack
 # Print a file through a 64-byte buffer, a chunk at a time. Status is 0
 # at the end, or the error.
 : cat ( str -- i32 )
@@ -847,7 +847,7 @@ Collections (`vec T`, `map K V`) are in section 10d. The prelude also declares `
 | `E_LEX`, `E_SYNTAX` | malformed source |
 | `E_LITERAL_RANGE` | a literal does not fit its type |
 | `E_UNKNOWN_TYPE` | not a type name, a struct or union used before its declaration, the wrong number of type arguments, a field using an undeclared parameter, or a generic type naming itself with other arguments |
-| `E_UNDEFINED` | unknown word (the message suggests the nearest name, or the Chasm word for a common name from another language: `pop` → `drop`, `+` → `i32.add`), or used before it is defined or declared |
+| `E_UNDEFINED` | unknown word (the message suggests the nearest name, or the Whackford word for a common name from another language: `pop` → `drop`, `+` → `i32.add`), or used before it is defined or declared |
 | `E_STACK_UNDERFLOW` | not enough values; `expected` and `actual` are given |
 | `E_TYPE_MISMATCH` | wrong types on top of the stack |
 | `E_EFFECT_MISMATCH` | body does not leave the declared outputs |
@@ -886,4 +886,4 @@ recursive `list T`, `option`), `generic-structs` (`pair T U`, a generic word
 over it, a struct holding an `option`), `collections` (`vec` push, `at` and
 `fold`, a word count with `map str i32`, a map keyed by `pair i32 i32`,
 `vec.clear`). Any of them can also be typed or piped into
-`chasm repl`, e.g. `chasm repl < examples/basics.chasm`.
+`wack repl`, e.g. `wack repl < examples/basics.wack`.

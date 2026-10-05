@@ -1,4 +1,4 @@
-//! Chasm compiler core.
+//! Whackford compiler core.
 //!
 //! Lexer, parser, effect checker, dependency graph and wasm emitter.
 //! No I/O: this crate builds unchanged for native targets and `wasm32`.

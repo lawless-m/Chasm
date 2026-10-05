@@ -13,7 +13,7 @@ and writing `n` pushes it again. A local is immutable unless its name is
 bound with a `!`: after `:> acc!`, the word `acc!` pops a new value into
 it.
 
-```chasm
+```wack
 : sum-to ( i32 -- i32 )
   :> n            # pop into immutable local n
   0 :> acc!       # pop into mutable local acc
@@ -34,7 +34,7 @@ comparison words leave 1 or 0. `cond [ then ] [ else ] if` runs one of two
 blocks, and both must leave the same stack, or the checker reports
 `E_BRANCH_MISMATCH`.
 
-```chasm
+```wack
 : fizz ( i32 -- str )
   :> n
   n 15 i32.rem_s i32.eqz [ "FizzBuzz" ]
@@ -67,7 +67,7 @@ leave the stack as it found it.
 top, and repeats the body while that is non-zero. `[ body ] [ cond ] until`
 runs the body first and stops once the condition is non-zero.
 
-```chasm
+```wack
 : gcd ( i32 i32 -- i32 )
   [ dup ] [ tuck i32.rem_s ] while
   drop ;

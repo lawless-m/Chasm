@@ -14,7 +14,7 @@ converts by itself. Each conversion is a word that says what it does:
 `f64.convert_i32_s` makes an `f64` from a signed `i32`, and `i64` after a
 value, rather than a literal, widens an `i32`.
 
-```chasm
+```wack
 : to-fahrenheit ( f64 -- f64 )  1.8 f64.mul 32.0 f64.add ;
 : mean ( i32 i32 -- f64 )  i32.add f64.convert_i32_s 2.0 f64.div ;
 : double-wide ( i32 -- i64 )  i64 2 i64 i64.mul ;
@@ -34,7 +34,7 @@ A string literal is `"text"`, with the escapes `\"`, `\\`, `\n`, `\t` and
 `\u{...}` for a codepoint by number. A `str` is immutable UTF-8, and
 `str.len` counts bytes, not characters: `"café"` is 5 long.
 
-```chasm
+```wack
 : label ( i32 -- str )  i32.to-str " km" str.concat ;
 
 test label : 42 label -> "42 km"
@@ -54,7 +54,7 @@ An array has a fixed length and one element type. `array.new` takes the
 length and leaves a zeroed array, but nothing in `5 array.new` says what
 the elements are, so a stack assertion fixes the type: `( array i32 )`.
 
-```chasm
+```wack
 : squares ( i32 -- array i32 )
   :> n
   n array.new ( array i32 ) :> a
@@ -75,7 +75,7 @@ An array value is a view, not a copy. `array.slice` takes a start and a
 count and leaves a view of the same storage, so writing through the slice
 changes the original:
 
-```chasm
+```wack
 : shared ( -- i32 )
   4 array.new ( array i32 ) :> a
   a 1 2 array.slice :> middle

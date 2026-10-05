@@ -1,17 +1,17 @@
 [package]
-name = "chasm-cli"
-description = "The chasm command-line tool."
+name = "wack-cli"
+description = "The wack command-line tool."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "chasm"
+name = "wack"
 path = "src/main.rs"
 
 [dependencies]
-chasm-core.workspace = true
-chasm-runtime.workspace = true
+wack-core.workspace = true
+wack-runtime.workspace = true
 clap.workspace = true
 lsp-server = "0.10.0"
 lsp-types = "0.97.0"

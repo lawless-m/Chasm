@@ -1,6 +1,6 @@
 # Stacks and words
 
-Chasm is a stack language. A program is a row of words, read left to
+Whackford is a stack language. A program is a row of words, read left to
 right. Values go on a stack; each word takes some values off the top and
 leaves some behind. There are no brackets to match and no precedence to
 remember: to add two numbers, put both on the stack, then say `i32.add`.
@@ -8,7 +8,7 @@ remember: to add two numbers, put both on the stack, then say `i32.add`.
 Here is that in the REPL. After each line it shows the stack, types first,
 bottom to top:
 
-```chasm-repl
+```wack-repl
 > 3 4 i32.add
 ( i32 ) 7
 > 5 dup
@@ -29,7 +29,7 @@ A definition starts with `:`, then the name, then the body, and ends with
 `;`. The part in parentheses is the word's stack effect: what it takes,
 then `--`, then what it leaves. The next page looks at effects closely.
 
-```chasm
+```wack
 : square ( i32 -- i32 )  dup i32.mul ;
 test square : 3 square -> 9
 
@@ -37,9 +37,9 @@ test square : 3 square -> 9
 ```
 
 `square` takes one `i32` and leaves one. The `test` line says that with 3
-on the stack, `square` leaves 9; `chasm test` runs it. `main ( -- )` is
+on the stack, `square` leaves 9; `wack test` runs it. `main ( -- )` is
 the program's entry point: it takes nothing and leaves nothing, and
-`chasm run` calls it. `print` writes a string, `println` adds a newline,
+`wack run` calls it. `print` writes a string, `println` adds a newline,
 and `i32.to-str` turns a number into a string to print.
 
 Every example on these pages has a Try-it button. It opens the REPL in
@@ -50,7 +50,7 @@ your browser with the code already loaded; type `main` there to run it.
 A word is built from other words, and the stack carries the values between
 them. `#` starts a comment that runs to the end of the line.
 
-```chasm
+```wack
 : double ( i32 -- i32 )  dup i32.add ;       # the value, added to itself
 : keep-top ( i32 i32 -- i32 )  swap drop ;   # throw away the one beneath
 
@@ -68,7 +68,7 @@ one unknown word.
 Strings go on the stack like numbers. `str.concat` takes two and leaves
 them joined.
 
-```chasm
+```wack
 : greet ( str -- str )  "Hello, " swap str.concat "!" str.concat ;
 test greet : "Ada" greet -> "Hello, Ada!"
 

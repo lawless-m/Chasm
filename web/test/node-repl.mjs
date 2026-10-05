@@ -7,7 +7,7 @@ import { Worker } from "node:worker_threads";
 import { loadCompiler } from "../compiler.js";
 import { Repl } from "../driver.js";
 
-const compiler = await loadCompiler(readFileSync(new URL("../chasm_web.wasm", import.meta.url)));
+const compiler = await loadCompiler(readFileSync(new URL("../wack_web.wasm", import.meta.url)));
 const L = compiler.layout;
 const memory = new WebAssembly.Memory({ initial: L.INITIAL_PAGES, maximum: L.SHARED_MAX_PAGES, shared: true });
 const worker = new Worker(new URL("./node-worker.mjs", import.meta.url));

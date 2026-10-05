@@ -1,4 +1,4 @@
-//! `chasm prims` lists every primitive with its effect.
+//! `wack prims` lists every primitive with its effect.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -7,12 +7,12 @@ fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-fn chasm(args: &[&str]) -> (bool, String, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_chasm"))
+fn wack(args: &[&str]) -> (bool, String, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_wack"))
         .args(args)
         .current_dir(root())
         .output()
-        .expect("run chasm");
+        .expect("run wack");
     (
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -22,7 +22,7 @@ fn chasm(args: &[&str]) -> (bool, String, String) {
 
 #[test]
 fn every_primitive_has_an_effect() {
-    let (ok, out, err) = chasm(&["prims", "--json"]);
+    let (ok, out, err) = wack(&["prims", "--json"]);
     assert!(ok, "prims --json failed:\n{out}{err}");
     let report: serde_json::Value = serde_json::from_str(&out).expect("a JSON report");
     assert_eq!(report["ok"], true);
@@ -50,7 +50,7 @@ fn every_primitive_has_an_effect() {
 
 #[test]
 fn plain_text_lists_one_primitive_per_line() {
-    let (ok, out, err) = chasm(&["prims"]);
+    let (ok, out, err) = wack(&["prims"]);
     assert!(ok, "prims failed:\n{out}{err}");
     assert!(out.lines().any(|l| l.starts_with("dup ( a -- a a )")));
 }

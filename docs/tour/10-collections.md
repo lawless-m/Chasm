@@ -13,7 +13,7 @@ values. The two collections in the prelude are built on them.
 An array has a fixed length. A `vec T` grows: `vec.push` adds to the end.
 `vec.make` takes no arguments, so an assertion fixes the element type.
 
-```chasm
+```wack
 : add ( i32 i32 -- i32 )  i32.add ;
 : or-zero ( option i32 -- i32 )  none: [ 0 ] some: [ ] match ;
 
@@ -44,7 +44,7 @@ copy the vec out and use the array combinator: `vec.to-array [ ... ] each`.
 A `map K V` is a hash map from keys to values. `map.set` inserts or
 replaces, and `map.get` leaves an `option V`, since the key may be absent.
 
-```chasm
+```wack
 : or-zero ( option i32 -- i32 )  none: [ 0 ] some: [ ] match ;
 
 : tally ( map str i32 str -- )
@@ -67,7 +67,7 @@ test map.keys : counts map.keys vec.len -> 2
 Keys are compared with `eq`, by contents, so a struct makes a natural key:
 a new pair finds what was stored under another with the same fields.
 
-```chasm
+```wack
 struct pair T U  first: T  second: U
 
 : grid ( -- map pair i32 i32 str )

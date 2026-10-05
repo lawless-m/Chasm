@@ -1,8 +1,7 @@
-//! `chasm lsp`: a Language Server Protocol server over stdio.
+//! `wack lsp`: a Language Server Protocol server over stdio.
 
 use std::collections::HashMap;
 
-use chasm_core::{compile, Compilation, Options, Severity, Source};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Response};
 use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument,
@@ -18,6 +17,7 @@ use lsp_types::{
     GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams, Location,
     MarkupContent, MarkupKind,
 };
+use wack_core::{compile, Compilation, Options, Severity, Source};
 
 pub fn run() -> Result<(), String> {
     let (connection, io_threads) = Connection::stdio();
@@ -155,7 +155,7 @@ fn token_range(line: u32, column: u32, token: &str) -> Range {
     Range::new(start, end)
 }
 
-fn to_lsp(d: &chasm_core::Diagnostic) -> LspDiagnostic {
+fn to_lsp(d: &wack_core::Diagnostic) -> LspDiagnostic {
     let l = &d.location;
     let mut message = d.message.clone();
     if let (Some(e), Some(a)) = (&d.expected, &d.actual) {
@@ -178,7 +178,7 @@ fn to_lsp(d: &chasm_core::Diagnostic) -> LspDiagnostic {
             Severity::Warning => DiagnosticSeverity::WARNING,
         }),
         code: Some(NumberOrString::String(d.code.clone())),
-        source: Some("chasm".to_string()),
+        source: Some("wack".to_string()),
         message,
         ..LspDiagnostic::default()
     }
@@ -186,7 +186,7 @@ fn to_lsp(d: &chasm_core::Diagnostic) -> LspDiagnostic {
 
 /// The token under a 0-based position, with its range.
 fn token_at(name: &str, text: &str, pos: Position) -> Option<(String, Range)> {
-    let tokens = chasm_core::lexer::lex(name, text).ok()?;
+    let tokens = wack_core::lexer::lex(name, text).ok()?;
     tokens.into_iter().find_map(|t| {
         let r = token_range(t.line, t.column, &t.text);
         (r.start.line == pos.line
@@ -238,14 +238,14 @@ fn hover(docs: &HashMap<String, String>, p: HoverParams) -> Option<Hover> {
                     notes.push(format!("instances: {}", instances.join(", ")));
                 }
             }
-            let mut s = format!("```chasm\n{} {}\n```", w.name, w.effect);
+            let mut s = format!("```wack\n{} {}\n```", w.name, w.effect);
             if !notes.is_empty() {
                 s.push_str(&format!("\n\n{}", notes.join(", ")));
             }
             s
         }
         None => format!(
-            "```chasm\n{word} {}\n```\n\nprimitive",
+            "```wack\n{word} {}\n```\n\nprimitive",
             primitive_effect(&word)?
         ),
     };
@@ -260,7 +260,7 @@ fn hover(docs: &HashMap<String, String>, p: HoverParams) -> Option<Hover> {
 
 /// A primitive's effect as written in `docs/reference.md`.
 pub(crate) fn primitive_effect(name: &str) -> Option<String> {
-    use chasm_core::{prims, types::names};
+    use wack_core::{prims, types::names};
     if let Some((inputs, outputs, _)) = prims::numeric(name) {
         return Some(effect(&names(&inputs), &names(&outputs)));
     }

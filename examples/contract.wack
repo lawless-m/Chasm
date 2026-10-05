@@ -1,6 +1,6 @@
 # Contract first: declare effects and tests, then fill in bodies.
-# `chasm unresolved examples/contract.chasm` lists the to-do list;
-# `chasm test` reports the tests of undefined words as pending.
+# `wack unresolved examples/contract.wack` lists the to-do list;
+# `wack test` reports the tests of undefined words as pending.
 
 declare parse-digit ( i32 -- i32 )
 test parse-digit : 55 parse-digit -> 7     # '7'
