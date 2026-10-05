@@ -1,6 +1,6 @@
 # Whackford: Future Directions
 
-Status: draft v0.3. **Nothing in this document is v1.** It records how later features would fit the v1 design, so that v1 decisions do not close them off.
+Status: draft v0.4. **Nothing in this document is v1.** It records how later features would fit the v1 design, so that v1 decisions do not close them off.
 
 The pattern `str` sets, a checker-level type with a fixed documented lowering, carries every feature here.
 
@@ -74,19 +74,23 @@ chan.make ( chan action ) :> ch
 
 Names follow Limbo (`spawn`, `alt`, channels); types are written the Whackford way, `chan T` like `vec T`.
 
-- **Channels.** `chan T` is generic over `T`. `chan.send ( chan T T -- )` and `chan.recv ( chan T -- option T )` block the process, not the program.
+- **Channels.** `chan T` is generic over `T`, one value used for both sending and receiving, as in Limbo. `chan.send ( chan T T -- )` and `chan.recv ( chan T -- option T )` block the process, not the program.
+- **Spawn.** `spawn ( [ -- ] -- )` is an ordinary word taking a function value, like `vec.each`: `[ ... ] spawn`, `f spawn` and `'worker spawn` all work. A process is a closure; what it captured is all it can reach.
 - **Alt.** Labelled arms in the shape of `match`: `a recv: [ ... ] b recv: [ ... ] alt`.
-- **Processes are green threads in one instance.** WasmGC references cannot cross threads until shared-everything threads ship, so a channel carrying a struct could not join two wasm threads.
+- **Processes are green threads in one instance.** WasmGC references cannot cross threads until shared-everything threads ship, so a channel carrying a struct could not join two wasm threads. Switching is cooperative, at channel operations and I/O only.
 - **Switching.** Either the Wasm stack-switching proposal (continuations; check engine and browser support when the time comes) or Binaryen's Asyncify, which works in every engine today at a cost in code size and speed. Binaryen is already a dependency (M5).
 - **I/O.** The ring (`ARCHITECTURE.md` section 5d) already carries a `user` field on every entry. A scheduler can park a process on its pending completion and run another, so I/O becomes concurrent without changing the `host.*` words.
-- **Stopping.** Limbo has no close: programs send a sentinel (`nil`), keep a separate quit channel, or kill the process group through `/prog`, and with two senders the sentinels have to be counted by hand. Whackford follows Rust's `mpsc`: a channel counts its senders and closes itself when the last one is done.
-  - `chan.make` starts with one sender. `chan.sender ( chan T -- )` adds one, before the `spawn` that captures it.
-  - `chan.close` says "this sender is done". The channel closes when every sender has closed.
-  - `chan.recv` returns `option T`: `some` while values remain, `none` once the channel is closed and drained, matched like `map.get`.
-  - Sending on a closed channel traps, and so does closing it once more than it has senders.
-  - A forgotten `chan.close` leaves the reader waiting. When every process is blocked on a channel and none is waiting on the ring, the scheduler traps (`all processes blocked`, naming each process and the channel it waits on) rather than hanging. A process waiting on I/O is not blocked: its completion will wake it.
-  - `mpsc` closes when the last sender is dropped. Whackford has no drop (structs are collected), so the count is explicit.
-  - Killing a process could be a write to a namespace entry, as Inferno's `/prog/<pid>/ctl`, not a new word.
+
+**Stopping is out of band.** A reader learns that a channel is finished from the channel, never from a value in the data: no sentinel (Limbo's `nil`) and no reserved value, which would mix control into data and, with several senders, need counting by hand in every reader. The channel counts its senders explicitly and closes when the last one says it is done:
+
+- `chan.make` starts with one sender. `chan.sender ( chan T -- )` adds one, before the `spawn` that captures it.
+- `chan.close` says "this sender is done". The channel closes when every sender has closed.
+- `chan.recv` returns `option T`: `some` while values remain, `none` once the channel is closed and drained, matched like `map.get`.
+- Sending on a closed channel traps, and so does closing it once more than it has senders.
+- A forgotten `chan.close` leaves the reader waiting. When every process is blocked on a channel and none is waiting on the ring, the scheduler traps (`all processes blocked`, naming each process and the channel it waits on) rather than hanging. A process waiting on I/O is not blocked: its completion will wake it. This detector is what makes an explicit close safe to rely on.
+- Killing a process could be a write to a namespace entry, as Inferno's `/prog/<pid>/ctl`, not a new word.
+
+The close is explicit, not automatic. Rust's `mpsc` closes when the last sender is dropped, but Whackford has no drop: WasmGC collects values without telling the program, so knowing that the last holder is gone would mean counting holders by hand at every capture, `spawn` and exit, including through closures captured by closures and ends kept in mutable struct fields. That is a large mechanism for the one convenience of not writing `chan.close`. An automatic close can be added later on top of the explicit one without breaking programs that close explicitly, so it waits until programs show the need.
 
 ```
 chan.make ( chan action ) :> ch
@@ -96,11 +100,9 @@ ch chan.sender                                        # two senders
 [ [ 1 ] [ ch chan.recv  none: [ leave ] some: [ handle ] match ] while ] spawn
 ```
 
+What this leaves to the program, as Limbo and Go do: a producer whose reader stops early blocks on its next `chan.send` (the detector reports it if nothing else can run), and with several senders each must close exactly once.
+
 Open questions:
 
-- **One channel or two ends.** To be settled before any channel code is written, because a program written for one shape has to be rewritten for the other. Closures capture immutable locals by value (section 3), so a channel end a process captures is a value it holds, and an end kept in a struct field is reached through the struct; which shape suits that best is still open.
-  - *Single `chan T`*, as described above: one value, used for both sending and receiving, with an explicit sender count. This is Limbo's shape, and a process may send and receive on the same channel. A reader that stops early leaves an infinite producer blocked on `chan.send`, because every holder of the channel might still be a reader.
-  - *Two typed ends*, after the pipe: `chan.make ( -- tx T rx T )`, bound as `chan.make ( action ) :> rx :> tx`, with `chan.send ( tx T T -- )` and `chan.recv ( rx T -- option T )`. Both ends are counted. A closure that captures an end is counted at `spawn`, read off the captured type, and a process's ends are released when it exits, so `chan.sender` is not needed. When the last sender is gone `chan.recv` gives `none`; when the last reader is gone the sender ends quietly at its next `chan.send`, as a writer does on a closed pipe. `chan.close` remains for letting go early: a parent that keeps its `tx` after spawning the senders must close it or the reader never sees `none`.
-  - With two ends, ends are captured and not sent: a word that makes the channel, spawns a process holding one end and returns the other (a generator, a pipeline stage) takes the place of a channel of channels. Two running processes cannot then be introduced to each other, so a reply to a client needs either a call word (request and reply as one rendezvous) or ends allowed as messages with ownership moving to the receiver. Both can be added later without breaking programs.
-  - *Both, under different names.* With the two ends as the primitive, the single channel is a prelude struct holding a `tx T` and an `rx T`, with a word to pick out either end. A process that captures the pair counts as a sender and a reader, so such a channel never stops by itself while a holder lives, which is Limbo's behaviour; handing a process one end gives it the pipe's. The pair can be added after the two ends without breaking programs, so the order is two ends first. The reverse does not work: typed ends added over a single counted `chan T` are only views, and the runtime still cannot tell a holder that reads from one that only writes. A producer that captures the pair where a `tx T` would do loses the automatic stop; its declared effect shows `chan T`. The pair puts ends in struct fields, so the checker sees through fields when it counts a capture. That cost is paid once per `spawn`, not per message.
-- **Sharing.** A struct, `vec` or `map` sent on a channel is a reference, so sender and receiver share it. The choices are to accept that (as Limbo and Go do), to copy on send, or to allow only immutable values (numbers, `str`, unions) on channels.
+- **Sharing.** A struct, `vec` or `map` sent on a channel, or captured by two processes, is a reference, so they share it. Closures already make a captured struct the way to share state, and switching happens only at channel operations and I/O, so sharing is interleaving at known points rather than a data race. The choices are to accept that (as Limbo and Go do), to copy on send, or to allow only immutable values (numbers, `str`, unions) on channels.
+- **Typed ends.** `chan.make` could instead give a sending end and a receiving end (`tx T`, `rx T`), so a word's effect shows which way it uses a channel and the checker refuses a receive on a sending end. Over the explicit close these are views of one channel, checked statically, and can be added after `chan T` without breaking programs. Counting ends automatically, the other reason for them, is the automatic close above.
