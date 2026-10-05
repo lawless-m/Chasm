@@ -1,6 +1,6 @@
 # Whackford: Architecture and Milestones
 
-Status: draft v0.19 (M0 to M9 implemented; decisions in sections 13 to 21). **Whackford** (after Wackford Squeers) is a typed, concatenative language that compiles to WebAssembly, with an interactive REPL, written in Rust. Source files use the `.wack` extension; the CLI binary is `wack`.
+Status: draft v0.20 (M0 to M10 implemented; decisions in sections 13 to 23). **Whackford** (after Wackford Squeers) is a typed, concatenative language that compiles to WebAssembly, with an interactive REPL, written in Rust. Source files use the `.wack` extension; the CLI binary is `wack`.
 
 ## 1. Goals
 
@@ -11,7 +11,7 @@ Status: draft v0.19 (M0 to M9 implemented; decisions in sections 13 to 21). **Wh
 - The compiler core runs **both natively and as wasm in the browser** from the same source.
 - Designed so that **Claude Code can write and fix programs** from compiler feedback alone.
 
-Non-goals for v1: closures, the Component Model, multi-threading. See `FUTURE.md` for how these would fit. Arrays and functions as values (without capture) **are** v1, and structs are milestone M4, as WasmGC structs (section 15).
+Non-goals for v1: the Component Model, multi-threading. See `FUTURE.md` for how these would fit. Arrays and functions as values **are** v1, structs are milestone M4, as WasmGC structs (section 15), and closures are milestone M10 (section 23).
 
 Licence: MIT.
 
@@ -48,7 +48,7 @@ Type representation: an effect is a list of input types and a list of output typ
 ## 5. Runtime layer
 
 - **Two stacks, with clear roles.** Words pass values on the native wasm operand stack: a word's effect is its wasm function type, and words call each other natively. The **data stack in linear memory** holds only the REPL's state between lines. A REPL line compiles to an anonymous word that loads its inputs from the memory stack, runs, and stores its outputs back. Exported programs never touch the memory stack unless they use it explicitly.
-- **Shared function table** (`funcref`). Each word owns a slot. Callers use `call_indirect`.
+- **Shared function table** (`funcref`). Each word owns a slot. Callers use `call_indirect`. A function value is a closure: a WasmGC struct holding a slot and the values it captured (section 23).
 - **Shared linear memory**, imported by every module.
 - **Host imports**: four I/O words over a namespace. See section 5d.
 - **Per-step modules in the REPL.** Each REPL step compiles the words it defines (named words, quotation values, test thunks, and the step's anonymous line word) into one small module that imports the shared memory and table. Shape and measured cost in section 14.
@@ -71,7 +71,7 @@ Wasm provides locals for free, and the language uses them at two levels:
 - **Named locals as sugar.** A word may bind values off the stack into word-scoped names with Factor's `:> name` (`:> name!` for mutable). Each local is typed by whatever was on the stack when it was bound, so the checker needs no new theory, and the emitter maps them directly to `local.get`/`local.set`. The word's effect is unchanged, so the interface story is untouched. This is the single biggest aid to writing correct code, human or machine: bind the inputs, and the stack only matters at the edges.
 - **Compiler-only locals.** The emitter uses wasm locals internally to implement shuffles such as `rot` and `pick` that have no cheap operand-stack encoding. Users never see these.
 
-v1 limits: locals are word-scoped and not captured by quotations (that would mean closures). Mutation is explicit via the `!` suffix. Shuffle words (`dup`, `swap`, `over`, `drop`) remain idiomatic for short words; locals are the expected choice beyond three or so values.
+Locals are word-scoped; a quotation value captures the immutable ones it names, by value (a closure, section 23). Mutation is explicit via the `!` suffix. Shuffle words (`dup`, `swap`, `over`, `drop`) remain idiomatic for short words; locals are the expected choice beyond three or so values.
 
 ## 5b. Polymorphism
 
@@ -88,7 +88,7 @@ Wasm has only structured control flow (`block`, `loop`, `if`, branches to enclos
 
 **A quotation under a combinator is syntax.** A `[ ... ]` that is the argument of a built-in combinator is inlined as a wasm block in place: no table slot, no indirect call, and locals of the enclosing word are visible inside it because it is part of that word's body. This covers control flow and the collection combinators (`each`, `map`, `filter`, `fold`, in `LANGUAGE.md` 4a).
 
-**A quotation anywhere else is a value** (`LANGUAGE.md` 7a): a table index with a quotation type, called via `call`. Values do not capture locals.
+**A quotation anywhere else is a value** (`LANGUAGE.md` 7a): a closure with a quotation type, called via `call`. It captures the immutable locals it names, by value.
 
 Combinators in v1:
 
@@ -103,7 +103,7 @@ Combinators in v1:
 
 Conditions are `i32`, zero false, as in wasm. Errors name both branches: "branches of `if` disagree: then-branch leaves `( i32 )`, else-branch leaves `( i32 i32 )`".
 
-Later, each a separate decision: `case` over an `i32` via `br_table`; closures.
+Later, a separate decision: `case` over an `i32` via `br_table`.
 
 ## 5d. I/O
 
@@ -178,7 +178,7 @@ Lives in `core`. Stored as two maps, **callers-of** and **callees-of**, updated 
 
 Edge kinds:
 - **Call**: a direct call.
-- **Address-taken**: the word's address escapes as a value (like a Forth tick). Such a word cannot be safely inlined or removed, and table indices on the stack can go stale.
+- **Address-taken**: the word's address escapes as a value (like a Forth tick). Such a word cannot be safely inlined or removed, and table indices on the stack can go stale. `'word` takes the address of the word and of its wrapper, `[tick word]` (section 23).
 
 Node state: **resolved** or **unresolved** (declared, no body yet).
 
@@ -236,6 +236,8 @@ Principles; exact fields are settled in M1 and generated from the Rust types (`s
 
 **M9: Collections.** A growable `vec T` (chunked, so storage never moves) and a hash map `map K V`, both written in Whackford in the prelude on the new by-contents primitives `hash` and `eq`. Prelude generics are made lazily, so programs that use none of them compile byte-identically.
 
+**M10: Closures.** Quotation values take inputs, their effects inferred or written after `[`, and capture the immutable locals they name by value. Every function value is a closure, a WasmGC struct holding the table slot of its code and its captures, in locals, fields, arrays and the REPL stack. Programs without function values compile byte-identically (section 23).
+
 M1 to M3 can overlap; the graph and stub data structures are part of M1 so that M3 is tooling only.
 
 ## 11. Open questions
@@ -277,7 +279,7 @@ Heavy native batch work (large test corpora, benchmarks, Binaryen runs over big 
    Start-up, including engine creation and installing the prelude as one step module: 11 ms wall time for `wack repl < /dev/null`. A step costs about 3 ms end to end, almost all of it in wasmtime compiling and instantiating the step module; the checker and assembler take about 50 µs. That meets the "small enough for instant feedback" expectation of section 5: a step is well under the roughly 100 ms at which a delay becomes noticeable.
 2. **Step modules.** `module::assemble_step` builds one module per REPL step. It imports `wack.ring_enter`, `wack.memory` and `wack.table` (a funcref table), carries its own copy of the runtime helpers `rt.alloc`, `rt.trap` and `rt.ring` at function indices 1 to 3, and exports each of its words as `w<id>`. The host sets table slot `id` to that export, so the slot of a word is its id. Calls between words are `call_indirect` through the table (`Ctx::indirect_calls`), which is how a redefinition reaches existing callers. A step module of a session with structs also imports `wack.refs`, an `anyref` table (section 16). A step module has no memory, table, element or data section. The browser variant declares the memory import shared, with 4 MiB initial and 64 MiB maximum (`SHARED_MAX_PAGES`).
 3. **Session and host contract.** `core::repl::Session` holds the word database and the types on the memory data stack. `step(text, heap_ptr)` returns a `Step`: diagnostics, module bytes, installs, table size, literal bytes and address, defined words, the line, and the tests to run. The host writes the literal bytes at the heap pointer and moves the heap pointer past them (8-aligned), grows the table, instantiates the module, sets the slots, runs the tests, then runs the line. On success it commits the line's output types as the session's stack. A step with errors still places its literals and installs the words it added, so a word declared or failing to check is installed as its unresolved stub, as in a file; it runs no line and no tests.
-4. **Memory data stack.** One 8-byte slot per wasm value from `DATA_STACK_BASE` (`STACK_SLOT`): `i32` and `f32` in the low 4 bytes, `i64` and `f64` the whole slot; `str` and `array T` take two slots, address then length. A struct takes one slot holding an index into `wack.refs`; an `array <struct>` takes three (that index for its GC array, then start and length). `DATA_STACK_PTR` holds the next free slot. A line compiles to a function of wasm type `( ) -> ( )` named `[line N]` (`Mode::Line`, `WordKind::Line`): its prologue pops its inputs off the memory stack, its epilogue pushes its outputs and traps with "data stack overflow" past `DATA_STACK_END`. Every line takes a table slot that is never freed.
+4. **Memory data stack.** One 8-byte slot per wasm value from `DATA_STACK_BASE` (`STACK_SLOT`): `i32` and `f32` in the low 4 bytes, `i64` and `f64` the whole slot; `str` and `array T` take two slots, address then length. A struct or a function value takes one slot holding an index into `wack.refs`; an `array` of structs or of function values takes three (that index for its GC array, then start and length). `DATA_STACK_PTR` holds the next free slot. A line compiles to a function of wasm type `( ) -> ( )` named `[line N]` (`Mode::Line`, `WordKind::Line`): its prologue pops its inputs off the memory stack, its epilogue pushes its outputs and traps with "data stack overflow" past `DATA_STACK_END`. Every line takes a table slot that is never freed.
 5. **Literals at the REPL.** `Ctx::begin_literals(heap_ptr)` starts each step's literal window at the heap pointer; literals are deduplicated within a step only.
 6. **Traps.** Before a line runs, the host saves the bytes of the memory stack and `DATA_STACK_PTR`; after a trap it restores both and the session keeps its old stack. It then clears `TRAP_MSG_LEN` so the next trap is reported cleanly.
 7. **Tests at the REPL.** A test runs as soon as its word has a body, by calling its thunk through the table in the shared instance. A test of a declared word waits and runs when the word gets a body, and a word's tests run again whenever it is redefined. The console output of tests is not captured.
@@ -314,7 +316,7 @@ Heavy native batch work (large test corpora, benchmarks, Binaryen runs over big 
 
 1. **Type table.** `Ctx.types` holds function, struct and struct-array definitions (`TypeDef`). Each struct is emitted as one rec group of two: the struct, then `array (mut (ref null struct))`, the storage of `array <struct>`. The table is append-only and every step module emits all of it, so a type keeps its index across REPL steps, and equivalent rec groups in separately compiled modules are the same type. A struct may name only earlier structs or itself, so referenced types always come first.
 2. **Arrays of structs are views** `( ref start len )` over a WasmGC array, three wasm values, so they slice and share storage like linear arrays. `array.new` makes the GC array (`array.new_default`, null elements); `array.at`, `array.at!` and `array.slice` check bounds with the same trap messages as linear arrays; `map` and `filter` build a fresh GC array viewed from 0.
-3. **The REPL stack and `wack.refs`.** Step modules of a session with structs import `wack.refs`, table 1, an `anyref` table. A line's epilogue stores each reference in `wack.refs` at its own slot index (counted from `DATA_STACK_BASE`) and writes that index into the slot; the prologue reads it back with `table.get` and `ref.cast`. The table is a GC root, so values on the stack survive collection, and a trap needs no extra restore. `Step.refs_size` tells the host how far to grow the table. Modules of sessions without structs are byte-identical to M2's, and programs without structs compile byte-identically to M3's.
+3. **The REPL stack and `wack.refs`.** Step modules of a session with structs (or, since M10, function values) import `wack.refs`, table 1, an `anyref` table. A line's epilogue stores each reference in `wack.refs` at its own slot index (counted from `DATA_STACK_BASE`) and writes that index into the slot; the prologue reads it back with `table.get` and `ref.cast`. The table is a GC root, so values on the stack survive collection, and a trap needs no extra restore. `Step.refs_size` tells the host how far to grow the table. Modules of sessions without structs are byte-identical to M2's, and programs without structs compile byte-identically to M3's.
 4. **Collector.** Wasmtime is built with the `gc` and `gc-copying` features, and `native::engine()` configures WasmGC with `Collector::Copying` for both the runner and the REPL (200 million short-lived structs: 0.26 s, against 22 s with deferred reference counting).
 5. **Stack echo.** Core renders `Value::Struct`, `Null` and `Opaque`; a struct array's length is its `len` slot. The native host reads struct fields through the wasmtime GC API inside a `RootScope`. The browser worker cannot read WasmGC fields from JavaScript, so it calls the generated accessor words through the funcref table, answering a `render` message with `rendered`; the step JSON carries each struct's fields and accessor slots. Nesting shows three levels, then `name{...}`.
 6. **Browser.** The worker creates `wack.refs` the first time a step module imports it or a step needs it (`refsSize`), so engines without WasmGC run sessions without structs unchanged.
@@ -383,3 +385,14 @@ Heavy native batch work (large test corpora, benchmarks, Binaryen runs over big 
 1. **`/local` in the browser.** The browser has no filesystem, so its namespace gains `/local/<name>`: a flat directory (a name is one path segment) of blobs in the page's `localStorage`, under the key `wack/local/<name>`, bytes stored as a string of char codes 0 to 255. `Namespace` takes any Storage; without one (node, storage blocked) it keeps them in memory. Writes are saved as they happen, so a program that never closes still keeps its file; a write the quota refuses is -4. The native host has no `/local`: there, `/file` and `--mount` are the files. Getting data in is a copy, not a new mechanism: `write-file` and `copy` are prelude words over the four host words, so `"/net/https/..." "/local/x" copy` fetches once and keeps the result.
 2. **`wack fmt` keeps the author's line breaks.** In postfix code the phrase boundaries are not in the syntax, only in the stack effects, so a formatter that chose its own line breaks would need the types and would group worse than a person. `crates/core/src/fmt.rs` (no I/O) takes the tokens from `lexer::lex` and the comments and spacing from the gaps between them, then fixes indentation, the layout of quotations that span lines (`[` and `]` alone, the combinator on the next line, a `match` label keeping its `[`), single gaps and headers, and blank lines. Gaps of two or more spaces are kept, as they group phrases or line up columns. The output must lex to the same tokens and comments or the file is refused. `examples/` and `bench/` are checked by `crates/cli/tests/examples.rs`.
 3. **The language is Whackford; the command and extension are `wack`.** Several GitHub projects are already called Chasm, some of them wasm-related, so the name was not distinctive. Whackford (after Wackford Squeers) has no namesakes on GitHub or crates.io. Prose says Whackford; everything typed says `wack`: the binary, `.wack` files, the `wack-*` crates, ```` ```wack ```` fences, the `wack` wasm import module and the `WACK*` environment variables.
+
+## 23. Decisions taken in M10
+
+1. **`$closure` is registered lazily.** `Ctx::closure_type` adds one rec group, a non-final struct of one `i32` (the slot) and the GC array of it, the first time a concrete function value type is lowered (`register_types` through `types::mentions_quot`, `Walker::gc_array`, `Ctx::register_type` for fields, or `Ctx::func_type`). It is kept in `struct_types` under the reserved key `[closure]` (`types::CLOSURE`), so `Ty::lower` finds it; until then `Ty::Quot` lowers to an `i32` placeholder that only the checking pass sees. A generic template's effect never registers it, so the prelude's `vec.each` costs a session nothing. Programs and REPL sessions without function values compile byte-identically to M9, pinned by `closures_cost_nothing_unless_used` in `crates/core/tests/compile.rs`.
+2. **The closure is the last parameter.** A word reached through a function value (`WordKind::Quote`: quotation values and tick wrappers; `Word::takes_env`) has the wasm type its effect gives plus a `(ref null $closure)` after the inputs (`Ctx::func_type`, used by `module::assemble`, `assemble_step` and `call`). At `call` the closure is on top of its inputs, so `local.tee`, `local.get`, `struct.get 0`, `call_indirect` needs no shuffle; first would have meant stashing every input. Its body runs in `Mode::Closure`, which records the parameter in `Walker::env`.
+3. **Environments.** A quotation value that captures gets a final subtype of `$closure` with the captured values as fields after the slot (`Ctx::env_type`, one rec group each, shared by quotations with the same field types). Its function casts the closure once into a local (`Walker::env_view`) and reads fields with `struct.get`. The checking pass records the outer locals a body reads in order of first use (`Walker::captures`); `compile_body` hands that list to the emitting pass, so the environment type is known before the first read. A quotation value inside another captures through it: the outer one captures what the inner one needs, so it can supply it.
+4. **Capture rules live in `Walker::name_ref`.** Outer locals come in as `Capture` (name, type, mutability). Reading an immutable one captures it; reading or assigning a mutable one is `E_CAPTURE`; assigning an immutable one is `E_LOCAL`.
+5. **Inferred quotation effects share the walker's substitution.** `Walker::infer_quote` tries `Mode::Infer(n)` for n = 0, 1, ... on a clone of the enclosing substitution and keeps the successful one, so the quotation's type variables are fixed by later use, and failed attempts leave numbering unchanged in both passes. An annotated quotation is checked the same way in both passes. In the emitting pass the effect must be fully resolved, else `E_AMBIGUOUS_TYPE`; the body is then compiled with `Mode::Closure` at that effect.
+6. **`'word` wrappers.** `Walker::tick` makes `[tick word]` once per word (`Ctx::tick_wrappers`), of kind `Quote`: it pushes its inputs and calls the word directly, or through the table in the REPL, so a redefinition reaches it. The tick records address-taken edges to the word and to the wrapper, so export keeps both. Each use allocates a closure.
+7. **Echo.** A function value on the REPL stack, or in a struct field, echoes as its type, natively (`repl::read_stack`, the runtime's field renderer) and in the browser (`driver.js`, `worker-core.js`), which cannot read the closure anyway. An array of function values echoes `<n elements>` like an array of structs.
+8. **Speed is unchanged.** The bench programs use no function values and compile to identical modules; `bench/run.py` on 2026-10-05 measured 90.6 / 118.8 / 110.4 / 94.1 ms (sieve / mandelbrot / n-queens / quicksort) against 87.1 / 114.4 / 109.8 / 93.7 before, within run-to-run noise (Rust moved as much).

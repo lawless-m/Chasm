@@ -1,20 +1,23 @@
 # Composition: given f and g, the function x -> f(g(x)).
-# Rosetta Code: Function_composition. Exercises: function values, call.
-# Wall: `compose ( f g -- h )` cannot be written. A quotation value takes no
-# inputs and captures nothing, and no function can be made at run time, so
-# there is nowhere to keep f and g inside a new function value. What v1 can
-# do is apply a composition (compose-apply below), or compose at definition
-# time, where composition is just writing words side by side.
+# Rosetta Code: Function_composition. Exercises: function values, call,
+# closures. `compose` captures f and g in a new function value.
 
 : inc ( i32 -- i32 )  1 i32.add ;
 : double ( i32 -- i32 )  2 i32.mul ;
 
-# f(g(x)), with f and g as values.
+# The function x -> f(g(x)): a closure over f and g.
+: compose ( [ i32 -- i32 ] [ i32 -- i32 ] -- [ i32 -- i32 ] )
+  :> g :> f
+  [ g call f call ] ;
+test compose : 3 'inc 'double compose call -> 7      # inc(double(3))
+test compose : 3 'double 'inc compose call -> 8      # double(inc(3))
+test compose : 3 'inc 'double compose 'inc compose call -> 9
+
+# f(g(x)), applied at once.
 : compose-apply ( i32 [ i32 -- i32 ] [ i32 -- i32 ] -- i32 )
   :> g :> f
   g call f call ;
-test compose-apply : 3 'inc 'double compose-apply -> 7      # inc(double(3))
-test compose-apply : 3 'double 'inc compose-apply -> 8      # double(inc(3))
+test compose-apply : 3 'inc 'double compose-apply -> 7
 
 # Composition at definition time: in a concatenative language, inc(double(x))
 # is `double inc`. The result is an ordinary word, usable as a value.
@@ -23,6 +26,7 @@ test inc-after-double : 3 inc-after-double -> 7
 
 : twice ( i32 [ i32 -- i32 ] -- i32 )  :> f  f call f call ;
 test twice : 3 'inc-after-double twice -> 15
+test twice : 3 'inc 'double compose twice -> 15
 
 : main ( -- )
-  "inc(double(20)) = " print 20 'inc 'double compose-apply i32.to-str println ;
+  "inc(double(20)) = " print 20 'inc 'double compose call i32.to-str println ;

@@ -294,10 +294,7 @@ pub fn assemble(ctx: &mut Ctx, opts: &ModuleOptions) -> Vec<u8> {
     let remap = (kept.len() != ctx.words.len() || shift > 0).then_some(index.as_slice());
     for &id in &kept {
         let w = ctx.words[id].clone();
-        let ty = ctx.intern_type(
-            w.effect.wasm_params(&ctx.struct_types),
-            w.effect.wasm_results(&ctx.struct_types),
-        );
+        let ty = ctx.func_type(&w.effect, w.takes_env());
         funcs.function(ty);
         let f = word_function(ctx, &w, remap, shift);
         code.function(&f);
@@ -519,10 +516,7 @@ pub fn assemble_step(ctx: &mut Ctx, ids: &[WordId], shared_memory: bool) -> Vec<
         let ty = if w.kind == WordKind::Line {
             void
         } else {
-            ctx.intern_type(
-                w.effect.wasm_params(&ctx.struct_types),
-                w.effect.wasm_results(&ctx.struct_types),
-            )
+            ctx.func_type(&w.effect, w.takes_env())
         };
         funcs.function(ty);
         let f = word_function(ctx, &w, None, 0);

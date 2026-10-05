@@ -1205,7 +1205,7 @@ pub fn read_stack(
             Ty::F64 => Value::F64(f64::from_le_bytes(a)),
             // A struct slot holds its own index into `wack.refs`; the host reads it.
             Ty::Struct(..) => refs(i, &t.to_string()),
-            Ty::Array(e) if matches!(e.as_ref(), Ty::Struct(..)) => {
+            Ty::Array(e) if matches!(e.as_ref(), Ty::Struct(..) | Ty::Quot(_)) => {
                 let Some(len) = slot(i + 2) else { break };
                 Value::Opaque(format!("<{} elements>", lo(len)))
             }
@@ -1221,7 +1221,8 @@ pub fn read_stack(
                     _ => Value::Opaque(format!("<{n} elements>")),
                 }
             }
-            Ty::Quot(_) => Value::Opaque(format!("#{}", lo(a))),
+            // A function value lives in `wack.refs`; only its type is shown.
+            Ty::Quot(_) => Value::Opaque(t.to_string()),
             Ty::I32 | Ty::Var(_) | Ty::Param(_) => Value::I32(lo(a) as i32),
         };
         i += t.width();

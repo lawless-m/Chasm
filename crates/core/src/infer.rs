@@ -9,7 +9,7 @@ use crate::diag::{codes, Diagnostic, Location};
 use crate::types::{Effect, Ty};
 
 /// The most inputs inference will try before giving up.
-const MAX_INPUTS: usize = 32;
+pub(crate) const MAX_INPUTS: usize = 32;
 
 /// Infer the effect of an un-annotated body: the smallest number of inputs
 /// for which it checks (the rest of the stack is grown one slot at a time
@@ -206,7 +206,7 @@ fn referenced(
 
 fn children(kind: &NodeKind) -> Vec<&Body> {
     match kind {
-        NodeKind::Quote(b)
+        NodeKind::Quote { body: b, .. }
         | NodeKind::When(b)
         | NodeKind::Unless(b)
         | NodeKind::Times(b)

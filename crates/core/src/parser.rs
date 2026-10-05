@@ -498,6 +498,24 @@ impl<'a> Parser<'a> {
         Ok(Effect::new(inputs, outputs))
     }
 
+    /// After `[`: an effect `( .. -- .. )` written first annotates the
+    /// quotation. A group without `--` is left for the body, as a stack
+    /// assertion.
+    fn quote_effect(&mut self) -> Result<Option<Effect>, Diagnostic> {
+        let Some(open) = self.peek().filter(|t| t.kind == TokKind::Word && t.is("(")) else {
+            return Ok(None);
+        };
+        let start = self.pos;
+        self.pos += 1;
+        self.types(&[")", "--"])?;
+        if !self.peek().is_some_and(|t| t.is("--")) {
+            self.pos = start;
+            return Ok(None);
+        }
+        self.pos = start + 1;
+        self.effect(open).map(Some)
+    }
+
     /// Parse types until (not consuming) one of `stops`.
     fn types(&mut self, stops: &[&str]) -> Result<Vec<Ty>, Diagnostic> {
         let mut out = Vec::new();
@@ -619,7 +637,11 @@ impl<'a> Parser<'a> {
                     if let Some(l) = self.number(t) {
                         NodeKind::Lit(l?)
                     } else if text == "[" {
-                        NodeKind::Quote(self.body(&["]"])?)
+                        let effect = self.quote_effect()?;
+                        NodeKind::Quote {
+                            body: self.body(&["]"])?,
+                            effect,
+                        }
                     } else if text == "(" {
                         let tys = self.types(&[")", "--"])?;
                         let close = self.next("`)`")?;
@@ -650,7 +672,7 @@ impl<'a> Parser<'a> {
                         while out.len() >= 2 {
                             let n = out.len();
                             let label = match (&out[n - 2].kind, &out[n - 1].kind) {
-                                (NodeKind::Name(l), NodeKind::Quote(_)) => {
+                                (NodeKind::Name(l), NodeKind::Quote { .. }) => {
                                     match l.strip_suffix(':').filter(|l| !l.is_empty()) {
                                         Some(l) => l.to_string(),
                                         None => break,
@@ -659,12 +681,15 @@ impl<'a> Parser<'a> {
                                 _ => break,
                             };
                             let Some(Node {
-                                kind: NodeKind::Quote(body),
-                                ..
+                                kind: NodeKind::Quote { body, effect },
+                                loc: qloc,
                             }) = out.pop()
                             else {
                                 unreachable!()
                             };
+                            if effect.is_some() {
+                                return Err(inlined_effect(self, "match", qloc));
+                            }
                             let at = out.pop().unwrap().loc;
                             arms.push(Arm {
                                 label,
@@ -685,9 +710,14 @@ impl<'a> Parser<'a> {
                         for _ in 0..arity {
                             match out.pop() {
                                 Some(Node {
-                                    kind: NodeKind::Quote(b),
-                                    ..
-                                }) => quotes.push(b),
+                                    kind: NodeKind::Quote { body, effect },
+                                    loc: qloc,
+                                }) => {
+                                    if effect.is_some() {
+                                        return Err(inlined_effect(self, text, qloc));
+                                    }
+                                    quotes.push(body)
+                                }
                                 _ => {
                                     return Err(self.err(
                                         format!(
@@ -731,6 +761,14 @@ impl<'a> Parser<'a> {
             out.push(Node { kind, loc });
         }
     }
+}
+
+/// A quotation under a combinator or `match` with an effect written after `[`.
+fn inlined_effect(p: &Parser, under: &str, loc: Location) -> Diagnostic {
+    p.err(
+        format!("a quotation under `{under}` is inlined and takes no effect; write the annotation only on a quotation value"),
+        loc,
+    )
 }
 
 fn combinator_example(name: &str) -> &'static str {

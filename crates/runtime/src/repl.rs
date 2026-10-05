@@ -462,14 +462,14 @@ impl Reader<'_> {
                 }
                 Ty::Bytes => Value::Opaque(format!("<{} bytes>", int(get(scope, w + 1)) as u32)),
                 Ty::Array(e) => {
-                    let at = if matches!(e.as_ref(), Ty::Struct(..)) {
+                    let at = if matches!(e.as_ref(), Ty::Struct(..) | Ty::Quot(_)) {
                         w + 2
                     } else {
                         w + 1
                     };
                     Value::Opaque(format!("<{} elements>", int(get(scope, at)) as u32))
                 }
-                Ty::Quot(_) => Value::Opaque(format!("#{}", int(get(scope, w)))),
+                Ty::Quot(_) => Value::Opaque(t.to_string()),
                 Ty::Struct(..) => match get(scope, w) {
                     Some(Val::AnyRef(Some(a))) => self.value(scope, &a, &t.to_string(), depth + 1),
                     _ => Value::Null,

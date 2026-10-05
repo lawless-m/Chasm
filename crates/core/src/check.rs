@@ -14,7 +14,9 @@ use crate::diag::{codes, Diagnostic, Location};
 use crate::graph::EdgeKind;
 use crate::layout;
 use crate::prims;
-use crate::types::{lower_all, names, ref_ty, Effect, StructTypes, Subst, Ty};
+use crate::types::{
+    lower_all, mentions_quot, names, ref_ty, Effect, StructTypes, Subst, Ty, CLOSURE,
+};
 
 pub type WordId = usize;
 
@@ -88,6 +90,13 @@ impl Word {
     pub fn func_index(id: WordId) -> u32 {
         FIRST_WORD_FN + id as u32
     }
+
+    /// Reached through a function value: a quotation value or the wrapper
+    /// of a `'word`. Its wasm function takes the closure as a last
+    /// parameter, after its inputs.
+    pub fn takes_env(&self) -> bool {
+        self.kind == WordKind::Quote
+    }
 }
 
 /// Shared compilation state: the word database, type interner, literals.
@@ -129,6 +138,10 @@ pub struct Ctx {
     /// The body being compiled may use the raw memory words: it is the
     /// prelude's, generated, or a word marked `raw`.
     pub raw: bool,
+    /// The wrapper word of each `'word` taken, by the word ticked.
+    pub tick_wrappers: HashMap<WordId, WordId>,
+    /// Environment types (subtypes of `$closure`), by their fields.
+    env_types: HashMap<Vec<ValType>, u32>,
 }
 
 /// A declared struct: its fields in order and its wasm type index.
@@ -223,6 +236,8 @@ impl Default for Ctx {
             instances: HashMap::new(),
             type_params: HashMap::new(),
             raw: false,
+            tick_wrappers: HashMap::new(),
+            env_types: HashMap::new(),
         }
     }
 }
@@ -422,6 +437,17 @@ impl Ctx {
             .filter(|(_, &g)| g)
             .map(|(r, _)| r.clone())
             .collect();
+        // A field holding a function value needs `$closure` first.
+        let quot = group.iter().any(|g| {
+            let Ty::Struct(n, args) = g else {
+                unreachable!()
+            };
+            let (_, lists) = self.type_fields(n, args).unwrap();
+            lists.iter().flatten().any(mentions_quot)
+        });
+        if quot {
+            self.closure_type();
+        }
         // Indices first, so fields inside the group resolve.
         let mut next = self.types.len() as u32;
         let mut layouts = Vec::new();
@@ -502,8 +528,58 @@ impl Ctx {
         self.struct_types.get(&t.to_string()).map(|&(i, _)| i)
     }
 
-    /// Register every concrete struct or union type `tys` mention.
+    /// The index of `$closure`, registered on first use only, so a program
+    /// without function values compiles as before.
+    pub fn closure_type(&mut self) -> u32 {
+        if let Some(&(i, _)) = self.struct_types.get(CLOSURE) {
+            return i;
+        }
+        let i = self.types.len() as u32;
+        self.register_rec(vec![
+            Member::Struct {
+                fields: vec![ValType::I32],
+                is_final: false,
+                supertype: None,
+            },
+            Member::Array(i),
+        ]);
+        self.struct_types.insert(CLOSURE.to_string(), (i, i + 1));
+        i
+    }
+
+    /// The environment type with these fields (the slot first), a final
+    /// subtype of `$closure` (index `closure`), in a rec group of its own.
+    pub fn env_type(&mut self, fields: Vec<ValType>, closure: u32) -> u32 {
+        if let Some(&t) = self.env_types.get(&fields) {
+            return t;
+        }
+        let t = self.register_rec(vec![Member::Struct {
+            fields: fields.clone(),
+            is_final: true,
+            supertype: Some(closure),
+        }]);
+        self.env_types.insert(fields, t);
+        t
+    }
+
+    /// The wasm function type of a word with effect `e`; `env` adds the
+    /// closure parameter of a word reached through a function value.
+    pub fn func_type(&mut self, e: &Effect, env: bool) -> u32 {
+        self.register_effect(e);
+        let mut params = e.wasm_params(&self.struct_types);
+        if env {
+            params.push(ref_ty(self.closure_type()));
+        }
+        let results = e.wasm_results(&self.struct_types);
+        self.intern_type(params, results)
+    }
+
+    /// Register every concrete struct or union type `tys` mention, and
+    /// `$closure` if they mention a function value.
     pub fn register_types(&mut self, tys: &[Ty]) {
+        if tys.iter().any(mentions_quot) {
+            self.closure_type();
+        }
         let mut found = Vec::new();
         for t in tys {
             crate::types::applied_types(t, &mut found);
@@ -675,6 +751,9 @@ impl Ctx {
 /// effect is derived by forward checking from an empty stack.
 pub enum Mode<'a> {
     Declared(&'a Effect),
+    /// As `Declared`, for a word reached through a function value: the
+    /// closure follows the inputs as a last parameter.
+    Closure(&'a Effect),
     Derived,
     /// A REPL line: inputs are the types on the memory data stack; it loads
     /// them, runs, and stores its outputs back.
@@ -689,24 +768,40 @@ pub struct Output {
     pub effect: Effect,
     pub compiled: Compiled,
     pub callees: Vec<(WordId, EdgeKind)>,
+    /// The locals of enclosing words the body captures, in field order.
+    pub captures: Vec<String>,
+    /// The environment type holding them, if any.
+    pub env_type: Option<u32>,
 }
 
-/// Compile one body. `outer_locals` are names visible in an enclosing word,
-/// used only to report captures.
+/// A local of an enclosing word, visible in a quotation value.
+#[derive(Debug, Clone)]
+pub struct Capture {
+    pub name: String,
+    pub ty: Ty,
+    pub mutable: bool,
+}
+
+/// Compile one body. `outer_locals` are the locals of enclosing words,
+/// which a quotation value captures.
 pub fn compile_body(
     ctx: &mut Ctx,
     name: &str,
     mode: Mode<'_>,
     body: &Body,
     loc: &Location,
-    outer_locals: &[String],
+    outer_locals: &[Capture],
 ) -> Result<Output, Diagnostic> {
     let mut first = Walker::new(ctx, name, false, Subst::default(), outer_locals);
     let effect = first.run(&mode, body, loc)?;
     let mut subst = first.subst;
     subst.restart();
+    let captures = first.captures;
     let mut second = Walker::new(ctx, name, true, subst, outer_locals);
+    // The emitting pass knows the environment before it reads from it.
+    second.captures = captures.clone();
     let effect2 = second.run(&mode, body, loc)?;
+    debug_assert_eq!(captures, second.captures);
     debug_assert_eq!(effect, effect2);
     let compiled = Compiled {
         locals: second.local_types,
@@ -719,6 +814,8 @@ pub fn compile_body(
         effect,
         compiled,
         callees,
+        captures,
+        env_type: second.env_view.map(|(t, _)| t),
     })
 }
 
@@ -730,7 +827,7 @@ pub fn check_body(
     mode: Mode<'_>,
     body: &Body,
     loc: &Location,
-    outer_locals: &[String],
+    outer_locals: &[Capture],
 ) -> Result<Effect, Diagnostic> {
     let words = ctx.words.len();
     let mut walker = Walker::new(ctx, name, false, Subst::default(), outer_locals);
@@ -977,7 +1074,7 @@ struct Walker<'c> {
     subst: Subst,
     stack: Vec<Ty>,
     locals: Vec<Local>,
-    outer_locals: Vec<String>,
+    outer_locals: Vec<Capture>,
     nparams: u32,
     local_types: Vec<ValType>,
     temps: HashMap<(ValType, u32), u32>,
@@ -985,6 +1082,15 @@ struct Walker<'c> {
     depth: u32,
     loops: Vec<LoopCtx>,
     callees: Vec<(WordId, EdgeKind)>,
+    /// The local holding the closure, in a word reached through a function
+    /// value.
+    env: Option<u32>,
+    /// The outer locals read so far (checking pass) or all of them
+    /// (emitting pass), in environment field order.
+    captures: Vec<String>,
+    /// In the emitting pass of a body with captures: the environment type
+    /// and the local holding the closure cast to it.
+    env_view: Option<(u32, u32)>,
 }
 
 impl<'c> Walker<'c> {
@@ -993,7 +1099,7 @@ impl<'c> Walker<'c> {
         name: &str,
         emit: bool,
         subst: Subst,
-        outer_locals: &[String],
+        outer_locals: &[Capture],
     ) -> Self {
         Walker {
             ctx,
@@ -1010,11 +1116,14 @@ impl<'c> Walker<'c> {
             depth: 0,
             loops: Vec::new(),
             callees: Vec::new(),
+            env: None,
+            captures: Vec::new(),
+            env_view: None,
         }
     }
 
     fn run(&mut self, mode: &Mode<'_>, body: &Body, loc: &Location) -> Result<Effect, Diagnostic> {
-        if let Mode::Declared(e) = mode {
+        if let Mode::Declared(e) | Mode::Closure(e) = mode {
             self.stack = e.inputs.clone();
             if self.emit {
                 self.ctx.register_effect(e);
@@ -1023,6 +1132,25 @@ impl<'c> Walker<'c> {
             self.nparams = params.len() as u32;
             for i in 0..self.nparams {
                 self.op(I::LocalGet(i));
+            }
+            if matches!(mode, Mode::Closure(_)) {
+                let env = self.nparams;
+                self.env = Some(env);
+                self.nparams += 1;
+                if self.emit && !self.captures.is_empty() {
+                    let c = self.ctx.closure_type();
+                    let mut fields = vec![ValType::I32];
+                    for n in self.captures.clone() {
+                        let ty = self.capture(&n).expect("a recorded capture").ty;
+                        fields.extend(self.lower(&ty));
+                    }
+                    let t = self.ctx.env_type(fields, c);
+                    let local = self.new_local(ref_ty(t));
+                    self.op(I::LocalGet(env));
+                    self.op(I::RefCastNullable(HeapType::Concrete(t)));
+                    self.op(I::LocalSet(local));
+                    self.env_view = Some((t, local));
+                }
             }
         }
         let mut line_base = None;
@@ -1037,7 +1165,7 @@ impl<'c> Walker<'c> {
         }
         let flow = self.seq(body)?;
         match mode {
-            Mode::Declared(e) => {
+            Mode::Declared(e) | Mode::Closure(e) => {
                 if flow == Flow::Normal && !self.unify_stack(&e.outputs) {
                     let actual = self.resolved_stack();
                     return Err(Diagnostic::error(
@@ -1353,9 +1481,10 @@ impl<'c> Walker<'c> {
         Ok(self.subst.resolve(&v))
     }
 
-    /// The GC array type index when `elem` is a struct: an `array S` is then a
-    /// view `( ref start len )` over a WasmGC array. `None` for linear arrays
-    /// (and for unresolved elements in the checking pass, whose code is discarded).
+    /// The GC array type index when `elem` is a struct or a function value:
+    /// an `array S` is then a view `( ref start len )` over a WasmGC array.
+    /// `None` for linear arrays (and for unresolved elements in the checking
+    /// pass, whose code is discarded).
     fn gc_array(&mut self, elem: &Ty) -> Option<u32> {
         match self.subst.resolve(elem) {
             t @ Ty::Struct(..) => {
@@ -1363,6 +1492,12 @@ impl<'c> Walker<'c> {
                     self.ctx.register_type(&t);
                 }
                 self.ctx.struct_types.get(&t.to_string()).map(|&(_, a)| a)
+            }
+            t @ Ty::Quot(_) if mentions_quot(&t) => {
+                if self.emit {
+                    self.ctx.closure_type();
+                }
+                self.ctx.struct_types.get(CLOSURE).map(|&(_, a)| a)
             }
             _ => None,
         }
@@ -1611,6 +1746,19 @@ impl<'c> Walker<'c> {
         let wide = matches!(t, Ty::I64 | Ty::F64);
         match t {
             Ty::I32 | Ty::Quot(_) | Ty::I64 | Ty::F32 | Ty::F64 => {
+                // A function value: equal when the same closure, hashed by
+                // its slot.
+                if let Ty::Quot(_) = t {
+                    if op == Op::Eq {
+                        self.op(I::RefEq);
+                        return Ok(());
+                    }
+                    let c = self.ctx.closure_type();
+                    self.op(I::StructGet {
+                        struct_type_index: c,
+                        field_index: 0,
+                    });
+                }
                 if op == Op::Eq {
                     if matches!(t, Ty::F32 | Ty::F64) {
                         let vt = if wide { ValType::I64 } else { ValType::I32 };
@@ -1760,24 +1908,69 @@ impl<'c> Walker<'c> {
                     self.stack.push(Ty::Quot(Box::new(e)));
                     if self.emit {
                         let inst = self.instance(id, &format!("'{n}"), &vars, loc)?;
-                        self.callees.push((inst, EdgeKind::AddressTaken));
-                        self.op(I::I32Const(inst as i32));
+                        self.tick(inst);
                     }
                     return Ok(Flow::Normal);
                 }
                 let e = self.ctx.words[id].effect.clone();
-                self.callees.push((id, EdgeKind::AddressTaken));
-                self.op(I::I32Const(id as i32));
+                if self.emit {
+                    self.tick(id);
+                }
                 self.stack.push(Ty::Quot(Box::new(e)));
                 Ok(Flow::Normal)
             }
-            NodeKind::Quote(body) => {
-                let mut visible: Vec<String> = self.outer_locals.clone();
-                visible.extend(self.locals.iter().map(|l| l.name.clone()));
+            NodeKind::Quote { body, effect } => {
+                let mut visible = self.outer_locals.clone();
+                for l in &self.locals {
+                    visible.push(Capture {
+                        name: l.name.clone(),
+                        ty: self.subst.resolve(&l.ty),
+                        mutable: l.mutable,
+                    });
+                }
                 let qname = format!("[quote {}:{}:{}]", self.name, loc.line, loc.column);
-                let out = compile_body(self.ctx, &qname, Mode::Derived, body, loc, &visible)?;
-                let ty = Ty::Quot(Box::new(out.effect.clone()));
+                let annotated = effect.as_ref().map(|e| {
+                    if self.ctx.type_params.is_empty() {
+                        e.clone()
+                    } else {
+                        e.substitute(&self.ctx.type_params)
+                    }
+                });
+                // Checked in both passes alike, so variables number alike.
+                let (effect, captures) = match annotated {
+                    Some(e) => {
+                        self.ctx.check_types(&e.inputs, loc, None)?;
+                        self.ctx.check_types(&e.outputs, loc, None)?;
+                        let mut w =
+                            Walker::new(self.ctx, &qname, false, self.subst.clone(), &visible);
+                        w.run(&Mode::Closure(&e), body, loc)?;
+                        self.subst = w.subst;
+                        (e, w.captures)
+                    }
+                    None => self.infer_quote(&qname, body, loc, &visible)?,
+                };
+                let ty = Ty::Quot(Box::new(effect.clone()));
                 if self.emit {
+                    let resolved = self.subst.resolve(&ty);
+                    if resolved.has_var() {
+                        return Err(Diagnostic::error(
+                            codes::E_AMBIGUOUS_TYPE,
+                            format!("the type `{resolved}` of this quotation is not fully known; write its effect directly after `[`, e.g. `[ ( i32 -- i32 ) ... ]`"),
+                            loc.clone(),
+                        ));
+                    }
+                    let Ty::Quot(effect) = resolved else {
+                        unreachable!()
+                    };
+                    let out = compile_body(
+                        self.ctx,
+                        &qname,
+                        Mode::Closure(&effect),
+                        body,
+                        loc,
+                        &visible,
+                    )?;
+                    debug_assert_eq!(captures, out.captures);
                     let id = self.ctx.add_word(Word {
                         name: qname,
                         effect: out.effect,
@@ -1796,7 +1989,19 @@ impl<'c> Walker<'c> {
                     });
                     self.callees.push((id, EdgeKind::AddressTaken));
                     self.op(I::I32Const(id as i32));
+                    for n in &out.captures {
+                        self.read_outer(n, loc)?;
+                    }
+                    let t = match out.env_type {
+                        Some(t) => t,
+                        None => self.ctx.closure_type(),
+                    };
+                    self.op(I::StructNew(t));
                 } else {
+                    // Record what an enclosing quotation must capture for it.
+                    for n in &captures {
+                        self.read_outer(n, loc)?;
+                    }
                     self.op(I::I32Const(0));
                 }
                 self.stack.push(ty);
@@ -2424,13 +2629,7 @@ impl<'c> Walker<'c> {
     }
 
     fn undefined(&self, n: &str, loc: &Location) -> Diagnostic {
-        let msg = if self.outer_locals.iter().any(|l| l == n) {
-            return self.err(
-                codes::E_CAPTURE,
-                format!("quotation values cannot use local `{n}` of the enclosing word (closures are not v1); pass it on the stack or use a named word"),
-                loc,
-            );
-        } else if self.ctx.all_names.contains(n) {
+        let msg = if self.ctx.all_names.contains(n) {
             format!("`{n}` is used before it is defined; add `declare {n} ( ... -- ... )` above this use")
         } else {
             let dictionary = self
@@ -2446,6 +2645,85 @@ impl<'c> Walker<'c> {
 
     /// A generic word's effect with a fresh variable for each type
     /// parameter, and those variables in parameter order.
+    /// Push a closure of word `id` (`'word`): a struct holding the slot of
+    /// its wrapper, a word that takes the closure parameter and calls `id`.
+    /// One wrapper per word, made on first use.
+    fn tick(&mut self, id: WordId) {
+        let wrapper = match self.ctx.tick_wrappers.get(&id) {
+            Some(&w) => w,
+            None => {
+                let e = self.ctx.words[id].effect.clone();
+                let n = e.wasm_params(&self.ctx.struct_types).len() as u32;
+                let mut code: Vec<I<'static>> = (0..n).map(I::LocalGet).collect();
+                if self.ctx.indirect_calls {
+                    let ti = self.ctx.func_type(&e, false);
+                    code.push(I::I32Const(id as i32));
+                    code.push(I::CallIndirect {
+                        type_index: ti,
+                        table_index: 0,
+                    });
+                } else {
+                    code.push(I::Call(Word::func_index(id)));
+                }
+                let w = &self.ctx.words[id];
+                let wrapper = Word {
+                    name: format!("[tick {}]", w.name),
+                    effect: e,
+                    body: Some(Compiled {
+                        locals: Vec::new(),
+                        code,
+                    }),
+                    failed: false,
+                    export: false,
+                    raw: false,
+                    origin: w.origin,
+                    kind: WordKind::Quote,
+                    loc: w.loc.clone(),
+                    callees: vec![(id, EdgeKind::Call)],
+                    inferred: false,
+                    generic: None,
+                    instance_of: None,
+                    generated: None,
+                };
+                let wid = self.ctx.add_word(wrapper);
+                self.ctx.tick_wrappers.insert(id, wid);
+                wid
+            }
+        };
+        self.callees.push((id, EdgeKind::AddressTaken));
+        self.callees.push((wrapper, EdgeKind::AddressTaken));
+        let c = self.ctx.closure_type();
+        self.op(I::I32Const(wrapper as i32));
+        self.op(I::StructNew(c));
+    }
+
+    /// The effect of an un-annotated quotation value, inferred as for an
+    /// un-annotated word (the fewest inputs for which the body checks), with
+    /// its type variables in this walker's substitution so that later use
+    /// fixes them. A failed attempt leaves the substitution untouched, so
+    /// both passes number variables alike.
+    fn infer_quote(
+        &mut self,
+        qname: &str,
+        body: &Body,
+        loc: &Location,
+        visible: &[Capture],
+    ) -> Result<(Effect, Vec<String>), Diagnostic> {
+        let mut last = None;
+        for n in 0..=crate::infer::MAX_INPUTS {
+            let mut w = Walker::new(self.ctx, qname, false, self.subst.clone(), visible);
+            match w.run(&Mode::Infer(n), body, loc) {
+                Ok(effect) => {
+                    self.subst = w.subst;
+                    return Ok((effect, w.captures));
+                }
+                Err(d) if d.code == codes::E_STACK_UNDERFLOW => last = Some(d),
+                Err(d) => return Err(d),
+            }
+        }
+        Err(last.expect("at least one attempt"))
+    }
+
     fn fresh_instance(&mut self, id: WordId) -> (Effect, Vec<Ty>) {
         let effect = self.ctx.words[id].effect.clone();
         let params = effect.params();
@@ -2481,11 +2759,80 @@ impl<'c> Walker<'c> {
         instantiate(self.ctx, id, &args).map_err(|d| d.with_word(&self.name))
     }
 
+    /// The innermost local of an enclosing word named `n`.
+    fn capture(&self, n: &str) -> Option<Capture> {
+        self.outer_locals
+            .iter()
+            .rev()
+            .find(|c| c.name == n)
+            .cloned()
+    }
+
+    /// Push the value of `n`, a local of an enclosing word, from the
+    /// environment, recording it as captured. `None` if there is no such
+    /// local; `E_CAPTURE` if it is mutable.
+    fn read_capture(&mut self, n: &str, loc: &Location) -> Result<Option<Ty>, Diagnostic> {
+        let Some(c) = self.capture(n) else {
+            return Ok(None);
+        };
+        if c.mutable {
+            return Err(self.capture_err(n, loc));
+        }
+        let k = match self.captures.iter().position(|x| x == n) {
+            Some(k) => k,
+            None => {
+                debug_assert!(!self.emit, "a capture found only in the emitting pass");
+                self.captures.push(n.to_string());
+                self.captures.len() - 1
+            }
+        };
+        if self.emit {
+            let (t, local) = self.env_view.expect("an environment");
+            let before: Vec<Ty> = self.captures[..k]
+                .iter()
+                .map(|x| self.capture(x).unwrap().ty)
+                .collect();
+            let field = 1 + self.lower_all(&before).len() as u32;
+            for f in 0..self.lower(&c.ty).len() as u32 {
+                self.op(I::LocalGet(local));
+                self.op(I::StructGet {
+                    struct_type_index: t,
+                    field_index: field + f,
+                });
+            }
+        }
+        Ok(Some(c.ty))
+    }
+
+    fn capture_err(&self, n: &str, loc: &Location) -> Diagnostic {
+        self.err(
+            codes::E_CAPTURE,
+            format!("a quotation value cannot capture `{n}`, a mutable local of the enclosing word; bind it immutably, or box shared state in a struct and capture that"),
+            loc,
+        )
+    }
+
+    /// Push the value of `n`, a local of this body or a captured one, for a
+    /// quotation value created here that captures it.
+    fn read_outer(&mut self, n: &str, loc: &Location) -> Result<(), Diagnostic> {
+        if let Some(l) = self.locals.iter().rev().find(|l| l.name == n) {
+            let idx = l.idx.clone();
+            self.unstash(&idx);
+            return Ok(());
+        }
+        self.read_capture(n, loc)?;
+        Ok(())
+    }
+
     fn name_ref(&mut self, n: &str, loc: &Location) -> Result<Flow, Diagnostic> {
         // Locals.
         if let Some(l) = self.locals.iter().find(|l| l.name == n) {
             let (ty, idx) = (l.ty.clone(), l.idx.clone());
             self.unstash(&idx);
+            self.stack.push(ty);
+            return Ok(Flow::Normal);
+        }
+        if let Some(ty) = self.read_capture(n, loc)? {
             self.stack.push(ty);
             return Ok(Flow::Normal);
         }
@@ -2504,6 +2851,16 @@ impl<'c> Walker<'c> {
                     self.op(I::LocalSet(i));
                 }
                 return Ok(Flow::Normal);
+            }
+            if let Some(c) = self.capture(base) {
+                if c.mutable {
+                    return Err(self.capture_err(base, loc));
+                }
+                return Err(self.err(
+                    codes::E_LOCAL,
+                    format!("local `{base}` is immutable; bind it with `:> {base}!` to allow assignment"),
+                    loc,
+                ));
             }
         }
         // Shuffles.
@@ -2761,11 +3118,16 @@ impl<'c> Walker<'c> {
                 let q = Ty::Quot(e.clone()).to_string();
                 self.pop_expect(&format!("call {q}"), &e.inputs, loc)?;
                 if self.emit {
-                    self.ctx.register_effect(&e);
-                    let ti = self.ctx.intern_type(
-                        e.wasm_params(&self.ctx.struct_types),
-                        e.wasm_results(&self.ctx.struct_types),
-                    );
+                    // inputs.. closure -> inputs.. closure slot
+                    let ti = self.ctx.func_type(&e, true);
+                    let c = self.ctx.closure_type();
+                    let local = self.new_local(ref_ty(c));
+                    self.op(I::LocalTee(local));
+                    self.op(I::LocalGet(local));
+                    self.op(I::StructGet {
+                        struct_type_index: c,
+                        field_index: 0,
+                    });
                     self.op(I::CallIndirect {
                         type_index: ti,
                         table_index: 0,

@@ -197,6 +197,7 @@ pub(crate) fn values(tys: &[Ty], vals: &[Val], mem: &[u8]) -> Vec<Value> {
                 )));
                 i += 1;
             }
+            Ty::Quot(_) => out.push(Value::Opaque(t.to_string())),
             _ => out.push(Value::I32(vals[i].unwrap_i32())),
         }
         i += 1;

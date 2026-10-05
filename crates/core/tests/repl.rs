@@ -1,6 +1,6 @@
 use wack_core::layout::LITERALS_BASE;
 use wack_core::repl::Forced;
-use wack_core::types::Ty;
+use wack_core::types::{Effect, Ty};
 use wack_core::{validate, Session, Step, Value};
 
 fn ok(s: &mut Session, text: &str) -> Step {
@@ -170,6 +170,20 @@ fn struct_values_cross_steps() {
 
     s.stack = vec![Ty::Array(Box::new(p))];
     let step = ok(&mut s, "array.len");
+    assert_eq!(step.line.as_ref().unwrap().stack_after, vec![Ty::I32]);
+}
+
+#[test]
+fn function_values_cross_steps() {
+    let mut s = session();
+    ok(&mut s, ": inc ( i32 -- i32 ) 1 i32.add ;");
+    let step = ok(&mut s, "'inc");
+    let q = Ty::Quot(Box::new(Effect::new(vec![Ty::I32], vec![Ty::I32])));
+    assert_eq!(step.line.as_ref().unwrap().stack_after, vec![q.clone()]);
+    assert_eq!(step.refs_size, 1);
+    assert!(has(step.module.as_ref().unwrap(), b"refs"));
+    s.stack = vec![q];
+    let step = ok(&mut s, "5 swap call");
     assert_eq!(step.line.as_ref().unwrap().stack_after, vec![Ty::I32]);
 }
 

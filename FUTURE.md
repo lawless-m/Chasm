@@ -1,6 +1,6 @@
 # Whackford: Future Directions
 
-Status: draft v0.2. **Nothing in this document is v1.** It records how later features would fit the v1 design, so that v1 decisions do not close them off.
+Status: draft v0.3. **Nothing in this document is v1.** It records how later features would fit the v1 design, so that v1 decisions do not close them off.
 
 The pattern `str` sets, a checker-level type with a fixed documented lowering, carries every feature here.
 
@@ -18,7 +18,7 @@ Both moved into v1 (`LANGUAGE.md` 4a and 7a). Left for later: nested arrays (`ar
 
 ## 3. Closures
 
-A quotation plus captured locals: an environment struct and a funcref, with the function type gaining an environment parameter. With structs as WasmGC structs (M4) the environment needs no allocator, so closures can follow structs directly.
+Implemented in M10 (`ARCHITECTURE.md` section 23): a function value is a closure, a WasmGC struct holding the slot of its code and the immutable locals it captured by value; quotation values take inputs. See `LANGUAGE.md` section 7a.
 
 ## 4. WasmGC
 
@@ -64,7 +64,7 @@ The end state is the usual fixpoint: the Rust compiler builds the Whackford comp
 
 ## 9. Concurrency: communicating processes
 
-CSP-style processes and channels, built on closures (section 3). Whackford has no globals, so if a closure captures its locals by value, a process reaches only what it is given: a channel captured by a process is its whole connection to the rest of the program. The language enforces "share by communicating" rather than asking for it.
+CSP-style processes and channels, built on closures (section 3). Whackford has no globals and closures capture their locals by value, so a process reaches only what it is given: a channel captured by a process is its whole connection to the rest of the program. The language enforces "share by communicating" rather than asking for it.
 
 ```
 chan.make ( chan action ) :> ch
@@ -98,7 +98,7 @@ ch chan.sender                                        # two senders
 
 Open questions:
 
-- **One channel or two ends.** To be settled before any channel code is written, because a program written for one shape has to be rewritten for the other. It depends on how closures capture (section 3), so it waits for that design.
+- **One channel or two ends.** To be settled before any channel code is written, because a program written for one shape has to be rewritten for the other. Closures capture immutable locals by value (section 3), so a channel end a process captures is a value it holds, and an end kept in a struct field is reached through the struct; which shape suits that best is still open.
   - *Single `chan T`*, as described above: one value, used for both sending and receiving, with an explicit sender count. This is Limbo's shape, and a process may send and receive on the same channel. A reader that stops early leaves an infinite producer blocked on `chan.send`, because every holder of the channel might still be a reader.
   - *Two typed ends*, after the pipe: `chan.make ( -- tx T rx T )`, bound as `chan.make ( action ) :> rx :> tx`, with `chan.send ( tx T T -- )` and `chan.recv ( rx T -- option T )`. Both ends are counted. A closure that captures an end is counted at `spawn`, read off the captured type, and a process's ends are released when it exits, so `chan.sender` is not needed. When the last sender is gone `chan.recv` gives `none`; when the last reader is gone the sender ends quietly at its next `chan.send`, as a writer does on a closed pipe. `chan.close` remains for letting go early: a parent that keeps its `tx` after spawning the senders must close it or the reader never sees `none`.
   - With two ends, ends are captured and not sent: a word that makes the channel, spawns a process holding one end and returns the other (a generator, a pipeline stage) takes the place of a channel of channels. Two running processes cannot then be introduced to each other, so a reply to a client needs either a call word (request and reply as one rendezvous) or ends allowed as messages with ownership moving to the receiver. Both can be added later without breaking programs.

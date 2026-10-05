@@ -65,4 +65,18 @@ export async function structScenario(repl, assert) {
   assert.ok(r.ok, JSON.stringify(r.diagnostics));
   r = await repl.step("dup 3 vec.push");
   assert.equal(JSON.stringify(top(r)), JSON.stringify({ type: "vec i32", value: "vec{chunks: <32 elements>, count: 1}" }), "vec echo");
+
+  await repl.step(": inc ( i32 -- i32 ) 1 i32.add ;");
+  r = await repl.step("drop 'inc");
+  assert.equal(JSON.stringify(top(r)), JSON.stringify({ type: "[ i32 -- i32 ]", value: "[ i32 -- i32 ]" }), "function value echo");
+  r = await repl.step("5 swap call");
+  assert.equal(JSON.stringify(top(r)), JSON.stringify({ type: "i32", value: "6" }), "call across steps");
+  await repl.step(": adder ( i32 -- [ i32 -- i32 ] ) :> k [ k i32.add ] ;");
+  r = await repl.step("drop 10 adder 5 swap call");
+  assert.equal(JSON.stringify(top(r)), JSON.stringify({ type: "i32", value: "15" }), "closure");
+  await repl.step("struct op  f: [ i32 -- i32 ]");
+  r = await repl.step("drop 'inc op.new");
+  assert.equal(top(r).value, "op{f: [ i32 -- i32 ]}", "function value field");
+  r = await repl.step("drop 2 array.new ( array [ -- i32 ] )");
+  assert.equal(top(r).value, "<2 elements>", "array of function values");
 }

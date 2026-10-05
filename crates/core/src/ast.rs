@@ -44,8 +44,12 @@ pub enum NodeKind {
     },
     /// `'name`: a word's address.
     Tick(String),
-    /// A quotation not under a combinator: a function value.
-    Quote(Body),
+    /// A quotation not under a combinator: a function value, with its
+    /// effect if written directly after `[`.
+    Quote {
+        body: Body,
+        effect: Option<Effect>,
+    },
     /// Stack assertion `( types )`.
     Assert(Vec<Ty>),
     If(Body, Body),

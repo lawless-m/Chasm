@@ -159,6 +159,31 @@ fn struct_arrays_in_the_repl() {
 }
 
 #[test]
+fn function_values_echo_their_type() {
+    let (_, out, _) = repl(&[], ": inc ( i32 -- i32 ) 1 i32.add ;\n'inc\n");
+    assert_eq!(last_line(&out), "( [ i32 -- i32 ] ) [ i32 -- i32 ]");
+    let (_, out, _) = repl(
+        &[],
+        ": adder ( i32 -- [ i32 -- i32 ] ) :> k [ k i32.add ] ;\n10 adder\n5 swap call\n",
+    );
+    assert_eq!(last_line(&out), "( i32 ) 15");
+    let (_, out, _) = repl(
+        &[],
+        "struct op  f: [ i32 -- i32 ]\n: inc ( i32 -- i32 ) 1 i32.add ;\n'inc op.new\n",
+    );
+    assert_eq!(last_stack(&out), "(\nop op{f: [ i32 -- i32 ]}\n)");
+}
+
+#[test]
+fn arrays_of_function_values() {
+    let (_, out, _) = repl(&[], "2 array.new ( array [ -- i32 ] )\n");
+    assert_eq!(last_line(&out), "( array [ -- i32 ] ) <2 elements>");
+    let (ok, _, err) = repl(&[], "3 array.new ( array [ -- i32 ] ) 0 array.at call\n");
+    assert!(!ok);
+    assert!(err.contains("null reference"), "{err}");
+}
+
+#[test]
 fn struct_survives_trap_and_gc() {
     let (ok, out, err) = repl(&[], &format!("{POINT}7 2.5 point.new\n1 0 i32.div_s\n"));
     assert!(!ok);

@@ -138,7 +138,7 @@ TCP; native only), `--no-file` (hides the host filesystem) and `--no-net` (hides
   quotation is open.
 - After each chunk the stack is printed as `( types ) values`, bottom to
   top, or `( )` when empty. Arrays print as `<n elements>`, function
-  values as `#slot`, structs with their fields, `point{x: 7, y: 2.5}`,
+  values as their type, `[ i32 -- i32 ]`, structs with their fields, `point{x: 7, y: 2.5}`,
   union values as their variant, `shape.circle{r: 1.5}` or `shape.empty{}`
   (nested values to three levels, then `seg{...}`), and an unset struct
   as `null`. A value of an instantiated generic type shows under its applied
@@ -299,7 +299,7 @@ union name P... | variant  field: type ... | ...   # a union (section 10b, 10c)
 | `array T` | mutable, fixed length; `T` not an array | `i32 i32` (addr, count); for a struct `T`, `ref i32 i32` (a view over a WasmGC array: ref, start, count) |
 | `name` | a declared struct or union (sections 10a, 10b): a reference to a garbage-collected record | `(ref null $name)` |
 | `name T...` | a generic struct or union applied to its type arguments, `pair i32 str` (section 10c) | `(ref null $name)` of that instantiation |
-| `[ ins -- outs ]` | a function value | `i32` (table index) |
+| `[ ins -- outs ]` | a function value | a reference to a closure |
 
 An effect lists types bottom to top, rightmost on top:
 `( str i32 -- i32 i32 )` takes a `str` with an `i32` above it and leaves two
@@ -363,8 +363,9 @@ Beyond three or so values, bind names instead of shuffling:
 
 - `:> x` pops into `x`; `:> x!` makes it mutable.
 - `x` pushes its value; `x!` pops into it (mutable only).
-- Locals are visible inside `[ ]` under combinators (`if`, `times`, ...) but
-  **not** inside quotation values (no closures).
+- Locals are visible inside `[ ]` under combinators (`if`, `times`, ...).
+  A quotation value captures the immutable ones it names, by value
+  (section 11); naming a mutable local in one is `E_CAPTURE`.
 - Each name is bound at most once per word.
 
 ## 7. Numeric and memory primitives
@@ -620,7 +621,7 @@ test or-zero : 5 option.some or-zero -> 5
 | `array T` | same length, elements equal in order |
 | a struct | every field equal, recursively |
 | a union | same variant, fields equal |
-| a function value | same slot |
+| a function value | the same value: two `'inc` are different |
 
 They work on a `T` inside a generic word, and need the type to be known
 (`E_AMBIGUOUS_TYPE`). A cyclic struct value makes them loop forever. The hash
@@ -651,11 +652,18 @@ function itself may change between versions.
   v ;
 test vec.at : 4 squares 3 vec.at -> 9
 test vec.fold : 4 squares 0 'add vec.fold -> 14
+
+: add-all ( vec i32 i32 -- vec i32 )
+  :> k :> v
+  vec.make ( vec i32 ) :> out
+  v [ k i32.add  out swap vec.push ] vec.each
+  out ;
+test add-all : 3 squares 10 add-all vec.to-array array.to-str -> "10 11 14"
 ```
 
-`vec.each` and `vec.fold` take function values (`'add`): a quotation value
-takes no inputs and cannot use the word's locals. For a loop body that needs
-locals, use `vec.to-array [ ... ] each`.
+`vec.each`, `vec.fold` and `map.each` take function values: a `'word`
+such as `'add`, or a quotation value, which can use the word's locals
+(`k` and `out` in `add-all`).
 
 **`map K V`**, a hash map over `hash` and `eq`:
 
@@ -695,13 +703,25 @@ a key after inserting it loses it.
 : twice ( i32 [ i32 -- i32 ] -- i32 )  :> f  f call f call ;
 : inc ( i32 -- i32 )  1 i32.add ;
 test twice : 5 'inc twice -> 7
+test twice : 5 [ 2 i32.mul ] twice -> 20
+
+: adder ( i32 -- [ i32 -- i32 ] )  :> k  [ k i32.add ] ;
+test twice : 5 3 adder twice -> 11
 ```
 
-- `'name` pushes a word's address, typed `[ effect of name ]`.
-- `[ body ]` not before a combinator is an anonymous word. It takes no inputs:
-  its effect is `( -- outputs )`, worked out from the body. It may not use
-  locals of the enclosing word.
+- `'name` pushes a word as a function value, typed `[ effect of name ]`.
+- `[ body ]` not before a combinator is a quotation value, an anonymous
+  function. Its effect is inferred from the body, as for a word whose effect
+  is left out, with its types fixed by how it is used: `[ 2 i32.mul ]` is
+  `[ i32 -- i32 ]`. When nothing fixes them (`[ dup ] drop`), it is
+  `E_AMBIGUOUS_TYPE`: write the effect right after `[`, as in
+  `[ ( i32 -- i32 i32 ) dup ]`.
+- A quotation value captures the immutable locals it names, by value, when
+  it is made: `adder` returns a closure holding its `k`. Naming a mutable
+  local in one is `E_CAPTURE`; state that changes between calls goes in a
+  struct, and the closure captures the struct.
 - `call` calls the function value on top with the inputs below it.
+- `eq` on function values is 1 only for the same value.
 - `'name` on a generic word needs something that fixes its instantiation, a
   stack assertion or a declared effect: `( [ i32 -- i32 i32 ] )`. Otherwise
   it is `E_AMBIGUOUS_TYPE`.
@@ -859,7 +879,7 @@ Collections (`vec T`, `map K V`) are in section 10d. The prelude also declares `
 | `E_LEAVE` | `leave` outside a loop or with the wrong stack |
 | `E_UNREACHABLE` | code after `leave` or `trap` |
 | `E_LOCAL` | local bound twice, assigned while immutable, or named like a primitive |
-| `E_CAPTURE` | a quotation value uses a local (no closures) |
+| `E_CAPTURE` | a quotation value uses a mutable local |
 | `E_AMBIGUOUS_TYPE` | an element type is never fixed, a generic word's or constructor's instantiation is not fixed, or `match`, `hash` or `eq` on a value whose type is not known |
 | `E_DECLARE_MISMATCH` | definition or redeclaration differs from the declaration |
 | `E_REDEFINE_EFFECT` | redefinition changes an effect, redefines a primitive, or changes a struct's fields or a union's variants or a type's parameters; lists `dependants` |
@@ -885,5 +905,7 @@ links, arrays of structs), `unions` (shapes with `match` and `else:`, a
 recursive `list T`, `option`), `generic-structs` (`pair T U`, a generic word
 over it, a struct holding an `option`), `collections` (`vec` push, `at` and
 `fold`, a word count with `map str i32`, a map keyed by `pair i32 i32`,
-`vec.clear`). Any of them can also be typed or piped into
+`vec.clear`), `function-composition` (`compose` returning a closure),
+`closures` (capture by value, a counter boxed in a struct, closures given to
+`vec.each`). Any of them can also be typed or piped into
 `wack repl`, e.g. `wack repl < examples/basics.wack`.

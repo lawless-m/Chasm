@@ -68,7 +68,8 @@ Everything below can be written with the compiler as it stands: numerics, contro
 | Tokenizer | state machine over bytes, `struct token`, arrays of structs |
 | Apply a callback to an array | `'word`, quotation values, `call`, quotation types in effects |
 | Sort with a custom comparator | insertion sort generic over `T`, taking `[ T T -- i32 ]` |
-| Function composition (wall) | quotation values; expected to want closures |
+| Function composition | `compose` returning a closure over two function values |
+| Closures | capture by value, ten closures each holding its own index, a struct as shared state, closures given to `vec.each`, `eq` on function values |
 
 ## Task statements
 
@@ -134,7 +135,9 @@ Written in our own words so the doc stands alone. Rosetta Code pages are `https:
 
 **Sort with a custom comparator** (`Sort_using_a_custom_comparator`). Insertion sort taking a `[ i32 i32 -- i32 ]` comparator; test ascending and descending.
 
-**Function composition** (`Function_composition`, wall). A word `compose` that, given two quotation values, returns one that applies both. In v1 it cannot be written: quotation values take no inputs, capture nothing, and no function can be made at run time. Write `apply-both ( i32 [ i32 -- i32 ] [ i32 -- i32 ] -- i32 )` instead and record the wall.
+**Function composition** (`Function_composition`). A word `compose ( [ i32 -- i32 ] [ i32 -- i32 ] -- [ i32 -- i32 ] )` that, given two function values, returns one that applies both.
+
+**Closures** (`Closures/Value_capture`). Make ten functions, the i-th returning i squared, each capturing its own i; calling the fourth gives 9. Also a counter whose state is shared between calls.
 
 ## Benchmark protocol
 
@@ -161,7 +164,7 @@ Append as they happen. Each entry: task, what was missing, workaround used, and 
 | Luhn test | Index alongside `fold` | `times` with the index counted from the right | Minor; an indexed fold could be a library word |
 | Word frequency | A map type; a growable array | `array str` and `array i32` side by side with linear search (quadratic); capacity fixed at the most words the text could hold | Resolved by M4 structs: a binary search tree of `struct node`, children as arrays of 0 or 1 nodes, so lookup is logarithmic on typical text and nothing is sized up front. The prelude now has a `map str i32` (M9); the example keeps its tree as a worked example of recursive structs |
 | Tokenizer | Structs | Tokens three `i32`s apart in one array (kind, start, length); every reader must know the layout | Resolved by M4 structs: `struct token`, read through `token.kind`, `token.start` and `token.len` |
-| Function composition | Closures, or making a function at run time | `compose-apply` applies f after g; composition at definition time is just `double inc` | Expected. In a concatenative language static composition is juxtaposition, so the gap is only for compositions decided at run time |
+| Function composition | Closures, or making a function at run time | `compose-apply` applies f after g; composition at definition time is just `double inc` | Resolved by closures (M10): `compose` returns `[ g call f call ]`, capturing f and g |
 
 ## Growth
 

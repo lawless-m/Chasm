@@ -63,10 +63,15 @@ export class Repl {
   }
 
   // Wasm values each checker type lowers to: a struct is one reference, an
-  // array of structs a view ( ref start len ).
+  // array of structs or of function values a view ( ref start len ).
   width(ty) {
-    if (ty.startsWith("array ")) return ty.slice(6) in this.structs ? 3 : 2;
+    if (ty.startsWith("array ")) return this.gcArray(ty) ? 3 : 2;
     return ty === "str" || ty === "bytes" ? 2 : 1;
+  }
+
+  gcArray(ty) {
+    const e = ty.slice(6);
+    return e in this.structs || e.startsWith("[");
   }
 
   install(step) {
@@ -193,7 +198,6 @@ export class Repl {
     if (tree === null) return "null";
     if (tree.elements !== undefined) return `<${tree.elements} elements>`;
     if (tree.bytes !== undefined) return `<${tree.bytes} bytes>`;
-    if (tree.quot !== undefined) return `#${tree.quot}`;
     if (tree.fields === undefined) return this.show(ty, tree);
     if (tree.fields === null) return `${tree.name}{...}`;
     const parts = tree.fields.map(([f, fty, v]) => `${f}: ${v !== null && typeof v === "object" ? this.showValue(v, fty) : v === null ? "null" : this.show(fty, v)}`);
@@ -215,14 +219,14 @@ export class Repl {
       if (ty in this.structs) {
         wanted.push({ at: out.length, index: i, name: ty });
         value = null;
-      } else if (ty.startsWith("array ") && ty.slice(6) in this.structs) value = `<${dv.getUint32(slot(i + 2), true)} elements>`;
+      } else if (ty.startsWith("array ") && this.gcArray(ty)) value = `<${dv.getUint32(slot(i + 2), true)} elements>`;
       else if (ty === "i64") value = this.show(ty, dv.getBigInt64(a, true));
       else if (ty === "f32") value = this.show(ty, dv.getFloat32(a, true));
       else if (ty === "f64") value = this.show(ty, dv.getFloat64(a, true));
       else if (ty === "str") value = this.show(ty, this.decode(["str"], [dv.getUint32(a, true), dv.getUint32(slot(i + 1), true)])[0]);
       else if (ty === "bytes") value = `<${dv.getUint32(slot(i + 1), true)} bytes>`;
       else if (ty.startsWith("array ")) value = `<${dv.getUint32(slot(i + 1), true)} elements>`;
-      else if (ty.startsWith("[")) value = `#${dv.getUint32(a, true)}`;
+      else if (ty.startsWith("[")) value = ty;
       else value = String(dv.getInt32(a, true));
       out.push({ type: ty, value });
       i += this.width(ty);

@@ -65,9 +65,10 @@ export function attach(post, onMessage) {
       } else if (f.type === "bytes") {
         v = { bytes: vals[1] >>> 0 };
       } else if (f.type.startsWith("array ")) {
-        v = { elements: (f.type.slice(6) in structs ? vals[2] : vals[1]) >>> 0 };
+        const e = f.type.slice(6);
+        v = { elements: (e in structs || e.startsWith("[") ? vals[2] : vals[1]) >>> 0 };
       } else if (f.type.startsWith("[")) {
-        v = { quot: vals[0] };
+        v = f.type;
       } else if (f.type in structs) {
         v = renderStruct(vals[0], f.type, structs, depth + 1);
       } else {

@@ -16,7 +16,8 @@ pub enum Ty {
     Bytes,
     /// `array T`: lowered to `i32 i32` (address, element count).
     Array(Box<Ty>),
-    /// `[ effect ]`: a function table index.
+    /// `[ effect ]`: a function value, a reference to a closure struct
+    /// holding the function's table slot.
     Quot(Box<Effect>),
     /// A declared struct or union, by name, with its type arguments (empty
     /// unless the type is generic): a WasmGC reference.
@@ -42,6 +43,10 @@ pub struct Effect {
 /// `pair i32 str`), to its wasm struct type index and the index of the GC
 /// array type of its elements.
 pub type StructTypes = HashMap<String, (u32, u32)>;
+
+/// The `struct_types` key of the closure type, `$closure`: a non-final
+/// struct holding a table slot, the supertype of every environment.
+pub const CLOSURE: &str = "[closure]";
 
 /// A nullable reference to concrete type `index` (nullable so locals are
 /// defaultable).
@@ -96,7 +101,9 @@ impl Ty {
     /// Wasm value types, in stack order. Unresolved variables lower to `i32`
     /// (only ever seen during the checking pass, whose code is discarded).
     /// A struct is one reference; an array of structs is a view over a
-    /// WasmGC array: `( ref start len )`.
+    /// WasmGC array: `( ref start len )`. A function value is a reference
+    /// to `$closure` once that is registered, else an `i32` placeholder;
+    /// an array of them is a view like an array of structs.
     ///
     /// An applied generic type that is not registered (only the checking
     /// pass meets one, and discards its code) lowers to an `i32` placeholder.
@@ -115,13 +122,24 @@ impl Ty {
             }
         };
         match self {
-            Ty::I32 | Ty::Quot(_) | Ty::Var(_) | Ty::Param(_) => vec![ValType::I32],
+            Ty::Quot(_) => match structs.get(CLOSURE) {
+                Some(&(c, _)) if !self.has_var() && !self.has_param() => vec![ref_ty(c)],
+                _ => vec![ValType::I32],
+            },
+            Ty::I32 | Ty::Var(_) | Ty::Param(_) => vec![ValType::I32],
             Ty::I64 => vec![ValType::I64],
             Ty::F32 => vec![ValType::F32],
             Ty::F64 => vec![ValType::F64],
             Ty::Struct(..) => vec![index(self, false)],
             Ty::Array(e) => match e.as_ref() {
                 Ty::Struct(..) => vec![index(e, true), ValType::I32, ValType::I32],
+                Ty::Quot(_) => {
+                    let r = match structs.get(CLOSURE) {
+                        Some(&(_, a)) if mentions_quot(e) => ref_ty(a),
+                        _ => ValType::I32,
+                    };
+                    vec![r, ValType::I32, ValType::I32]
+                }
                 _ => vec![ValType::I32, ValType::I32],
             },
             Ty::Str | Ty::Bytes => vec![ValType::I32, ValType::I32],
@@ -132,7 +150,7 @@ impl Ty {
     pub fn width(&self) -> u32 {
         match self {
             Ty::Str | Ty::Bytes => 2,
-            Ty::Array(e) if matches!(e.as_ref(), Ty::Struct(..)) => 3,
+            Ty::Array(e) if matches!(e.as_ref(), Ty::Struct(..) | Ty::Quot(_)) => 3,
             Ty::Array(_) => 2,
             _ => 1,
         }
@@ -219,6 +237,17 @@ pub fn applied_types(t: &Ty, out: &mut Vec<Ty>) {
             }
         }
         _ => {}
+    }
+}
+
+/// Whether `t` mentions a concrete function value type, which needs
+/// `$closure`.
+pub fn mentions_quot(t: &Ty) -> bool {
+    match t {
+        Ty::Quot(_) => !t.has_var() && !t.has_param(),
+        Ty::Array(e) => mentions_quot(e),
+        Ty::Struct(_, args) => args.iter().any(mentions_quot),
+        _ => false,
     }
 }
 

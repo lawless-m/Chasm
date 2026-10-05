@@ -1,0 +1,70 @@
+# Closures: quotation values that capture the locals of the word making them.
+# Rosetta Code: Closures/Value_capture. Exercises: capture by value, quotation
+# values with inputs, an annotated quotation, a struct as shared mutable state,
+# closures passed to vec.each, eq on function values.
+
+# A function value that adds k: k is captured when the quotation is made.
+: adder ( i32 -- [ i32 -- i32 ] )  :> k  [ k i32.add ] ;
+test adder : 4 3 adder call -> 7
+
+# Rosetta's task: ten functions, the i-th returning i squared. Each captures
+# its own i, so calling the fourth gives 9 whatever happened after it was made.
+: squares ( -- array [ -- i32 ] )
+  10 array.new ( array [ -- i32 ] ) :> fs
+  10
+  [
+    :> i
+    fs i [ i i i32.mul ] array.at!
+  ]
+  times
+  fs ;
+test squares : squares 3 array.at call -> 9
+test squares : squares 9 array.at call -> 81
+
+# Captures are values, so a mutable local cannot be captured. State shared
+# between calls lives in a struct, and the closure captures the struct.
+struct counter  n: i32
+
+: make-counter ( -- [ -- i32 ] )
+  0 counter.new :> c
+  [ c  c counter.n 1 i32.add  counter.n!  c counter.n ] ;
+test make-counter : make-counter :> next  next call drop  next call drop  next call -> 3
+
+# vec.each takes a closure, which can reach the word's locals: here a factor
+# and a struct accumulating the sum.
+: sum-scaled ( vec i32 i32 -- i32 )
+  :> k :> v
+  0 counter.new :> total
+  v
+  [
+    k i32.mul  total counter.n i32.add  total swap counter.n!
+  ]
+  vec.each
+  total counter.n ;
+: one-two-three ( -- vec i32 )
+  vec.make :> v
+  v 1 vec.push  v 2 vec.push  v 3 vec.push
+  v ;
+test sum-scaled : one-two-three 10 sum-scaled -> 60
+
+# An effect written directly after `[` annotates a quotation value: it
+# documents the type here, and is needed where nothing else fixes it.
+: halver ( -- [ f64 -- f64 ] )  [ ( f64 -- f64 ) 2.0 f64.div ] ;
+test halver : 3.0 halver call -> 1.5
+
+# eq on function values compares closures, not code: the same value is
+# equal to itself, two closures of one word are not.
+: inc ( i32 -- i32 )  1 i32.add ;
+: same-value ( -- i32 )  'inc :> f  f f eq ;
+test same-value : same-value -> 1
+: two-ticks ( -- i32 )  'inc 'inc eq ;
+test two-ticks : two-ticks -> 0
+
+: main ( -- )
+  "5 + 3 = " print  5 3 adder call i32.to-str println
+  "7 squared is " print  squares 7 array.at call i32.to-str println
+  make-counter :> next
+  next call drop  next call drop
+  "counted to " print  next call i32.to-str println
+  "1, 2, 3 scaled by 10 sum to " print  one-two-three 10 sum-scaled i32.to-str println
+  "half of 5 is " print  5.0 halver call 1 f64.fixed println ;

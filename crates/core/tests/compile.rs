@@ -79,6 +79,52 @@ fn functions_as_values() {
 : inc ( i32 -- i32 )  1 i32.add ;
 test twice : 5 'inc twice -> 7
 : k ( -- [ -- i32 ] ) [ 42 ] ;
+test twice : 5 [ 1 i32.add ] twice -> 7
+test twice : 5 [ ( i32 -- i32 ) 2 i32.mul ] twice -> 20
+: ap ( i32 [ i32 -- i32 i32 ] -- i32 i32 ) :> f f call ;
+test ap : 3 [ dup ] ap -> 3 3
+"#);
+    assert_eq!(err(": amb ( -- ) [ dup ] drop ;"), "E_AMBIGUOUS_TYPE");
+    assert_eq!(err(": f ( -- ) 3 [ ( i32 -- ) drop ] times ;"), "E_SYNTAX");
+}
+
+#[test]
+fn closures_capture_immutable_locals() {
+    ok(r#"
+: adder ( i32 -- [ i32 -- i32 ] ) :> k [ k i32.add ] ;
+test adder : 3 adder 4 swap call -> 7
+: greet ( str -- [ str -- str ] ) :> g [ g swap str.concat ] ;
+: nest ( i32 -- [ -- [ -- i32 ] ] ) :> k [ [ k ] ] ;
+test nest : 5 nest call call -> 5
+: scale ( vec i32 i32 -- ) :> k [ k i32.mul drop ] vec.each ;
+struct cell  v: i32
+: counter ( -- [ -- i32 ] ) 0 cell.new :> c [ c c cell.v 1 i32.add cell.v! c cell.v ] ;
+"#);
+    assert_eq!(err(": f ( i32 -- [ -- i32 ] ) :> n! [ n ] ;"), "E_CAPTURE");
+    assert_eq!(err(": f ( i32 -- [ -- ] ) :> n! [ 1 n! ] ;"), "E_CAPTURE");
+    assert_eq!(err(": f ( i32 -- [ -- ] ) :> n [ 1 n! ] ;"), "E_LOCAL");
+    // Misuse of a closure is a type error, not a capture error.
+    assert_eq!(
+        err(": adder ( i32 -- [ i32 -- i32 ] ) :> k [ k i32.add ] ;\ntest adder : 1 adder call -> 1"),
+        "E_STACK_UNDERFLOW"
+    );
+}
+
+#[test]
+fn function_values_in_fields_and_arrays() {
+    ok(r#"
+struct op  f: [ i32 -- i32 ]
+: run-op ( op i32 -- i32 ) swap op.f call ;
+test run-op : [ 3 i32.add ] op.new 4 run-op -> 7
+: same ( -- i32 ) [ 1 i32.add ] :> f f op.new f op.new eq ;
+test same : same -> 1
+: differ ( -- i32 ) [ 1 i32.add ] op.new [ 1 i32.add ] op.new eq ;
+test differ : differ -> 0
+: table ( -- array [ i32 -- i32 ] ) 2 array.new ( array [ i32 -- i32 ] ) :> a  a 0 [ 1 i32.add ] array.at!  a 1 [ 2 i32.mul ] array.at!  a ;
+test table : 5 table 1 array.at call -> 10
+: mapped ( -- i32 ) table [ :> f [ f call 1 i32.add ] ] map 1 array.at 5 swap call ;
+test mapped : mapped -> 11
+union act  | go  f: [ -- i32 ]  | stop
 "#);
 }
 
@@ -104,7 +150,7 @@ fn errors() {
     assert_eq!(err(": f ( -- ) leave ;"), "E_LEAVE");
     assert_eq!(err(": f ( -- ) 5 array.new drop ;"), "E_AMBIGUOUS_TYPE");
     assert_eq!(err(": f ( i32 -- ) :> x 1 x! ;"), "E_LOCAL");
-    assert_eq!(err(": f ( i32 -- [ -- i32 ] ) :> x [ x ] ;"), "E_CAPTURE");
+    assert_eq!(err(": f ( i32 -- [ -- i32 ] ) :> x! [ x ] ;"), "E_CAPTURE");
     assert_eq!(
         err(": sq ( i32 -- i32 ) dup i32.mul ;\ntest sq : 3 sq -> 9 i64"),
         "E_TEST_TYPE"
@@ -322,6 +368,38 @@ fn export(src: &str) -> wack_core::Compilation {
             wasi: false,
         },
     )
+}
+
+/// The number of struct and array types in a module's type section.
+fn gc_types(wasm: &[u8]) -> usize {
+    let mut n = 0;
+    for payload in wasmparser::Parser::new(0).parse_all(wasm) {
+        if let wasmparser::Payload::TypeSection(r) = payload.unwrap() {
+            for group in r {
+                for t in group.unwrap().types() {
+                    if !matches!(
+                        t.composite_type.inner,
+                        wasmparser::CompositeInnerType::Func(_)
+                    ) {
+                        n += 1;
+                    }
+                }
+            }
+        }
+    }
+    n
+}
+
+#[test]
+fn closures_cost_nothing_unless_used() {
+    let sieve = ": main ( -- ) 10 array.new ( array i32 ) [ drop ] each ;";
+    let c = export(sieve);
+    assert!(c.ok(), "{:?}", c.diagnostics);
+    assert_eq!(gc_types(c.wasm.as_ref().unwrap()), 0);
+    let c = export(": inc ( i32 -- i32 ) 1 i32.add ;\n: main ( -- ) 1 'inc call drop ;");
+    assert!(c.ok(), "{:?}", c.diagnostics);
+    // `$closure` and its GC array.
+    assert_eq!(gc_types(c.wasm.as_ref().unwrap()), 2);
 }
 
 fn functions(wasm: &[u8]) -> Vec<String> {
@@ -593,7 +671,10 @@ fn ticking_a_generic_word() {
         .collect();
     assert_eq!(
         callees,
-        [("twice<i32>".to_string(), EdgeKind::AddressTaken)]
+        [
+            ("[tick twice<i32>]".to_string(), EdgeKind::AddressTaken),
+            ("twice<i32>".to_string(), EdgeKind::AddressTaken)
+        ]
     );
     ok(&format!(
         "{g}: t2 ( -- ) 'twice ( [ str -- str str ] ) drop ;"

@@ -45,7 +45,8 @@ with type variables monomorphised per use, `wack infer --write`) and M8
 (sum types: `union` with `match`, generic structs and unions monomorphised
 per instantiation, `option T` in the prelude) and M9 (collections: a
 growable `vec T` and a hash map `map K V` in the prelude, on the
-by-contents primitives `hash` and `eq`) are implemented: M0 to M9
-implemented.
+by-contents primitives `hash` and `eq`) and M10 (closures: quotation
+values that take inputs and capture the immutable locals they name, every
+function value a WasmGC closure) are implemented: M0 to M10 implemented.
 
 Licence: MIT.

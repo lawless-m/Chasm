@@ -1,6 +1,6 @@
 # Whackford: Language Specification
 
-Status: draft v0.15 (M1 to M9 decisions recorded; see sections 12 to 20). Whackford source files use the `.wack` extension. Companion to `ARCHITECTURE.md`. Sections marked **TBD** are not yet decided.
+Status: draft v0.16 (M1 to M10 decisions recorded; see sections 12 to 22). Whackford source files use the `.wack` extension. Companion to `ARCHITECTURE.md`. Sections marked **TBD** are not yet decided.
 
 ## 1. Types
 
@@ -16,7 +16,7 @@ Status: draft v0.15 (M1 to M9 decisions recorded; see sections 12 to 20). Whackf
 | struct name | `(ref null $name)` | A declared struct: a reference to a WasmGC struct. See section 4b. |
 | union name | `(ref null $name)` | A declared union: a reference to one of its variants, WasmGC subtypes of the union's type. See section 4c. |
 | `name T...` | `(ref null $instance)` | A generic struct or union applied to type arguments (`pair i32 str`): its own WasmGC type per instantiation. See section 4c. |
-| `[ effect ]` | `i32` (function table index) | A quotation type: a function as a value. See section 7a. |
+| `[ effect ]` | `(ref null $closure)` | A quotation type: a function as a value, a closure. See section 7a. |
 
 Signedness is a property of operations, not types, as in wasm. There is no `bool`, `char`, `u32`, `v128` or nested array in v1.
 
@@ -108,7 +108,7 @@ The quotation body's effect is checked exactly as for `if` and `while`. `leave` 
 
 The declaration generates ordinary words: `point.new ( i32 f64 -- point )` (fields in order), and for each field `point.x ( point -- i32 )` and `point.x! ( point i32 -- )`. They are listed by `words` and appear in the dependency graph.
 
-Lowering: a WasmGC struct type, every field mutable. A `str` or linear `array` field is two `i32` fields, an `array <struct>` field three (reference, start, count), a struct field one reference, a quotation one `i32`. Each struct's type and the GC array type of its elements form one rec group.
+Lowering: a WasmGC struct type, every field mutable. A `str` or linear `array` field is two `i32` fields, an `array` of structs or of function values three (reference, start, count), a struct field one reference, a function value one reference. Each struct's type and the GC array type of its elements form one rec group.
 
 Rules: a struct can be named only after its declaration; redeclaring with the same fields is a no-op and with different fields is `E_REDEFINE_EFFECT`; field names `new` and names ending in `!` are reserved; struct values are not test literals. An `array <struct>` is a view `( ref start count )` over a WasmGC array: the array words and combinators work on it, and slicing shares storage. `array.new` fills it with null references, and reading a field of one traps; programs cannot otherwise make or test a null.
 
@@ -182,9 +182,9 @@ Both are polymorphic primitives like `dup`, instantiated at each use. They may b
 | `array T` | same length and elements equal in order |
 | a struct | every field equal, recursively |
 | a union | same variant and its fields equal |
-| a function value | same table slot: two quotations with the same text are different values |
+| a function value | the same closure (`ref.eq`): two quotation values with the same text, or two `'word` of one word, are different values |
 
-`hash` follows the same structure. Its only promise is that equal values hash alike; the function itself is not a contract and may change between versions. A cyclic struct value makes `hash` and `eq` loop forever: there is no cycle detection. Numbers and function values compile to inline code; every other type gets a generated word per concrete type (`eq<point>`, `hash<array str>`), made on first use, listed by `words` as a library word and never reported dead.
+`hash` follows the same structure. Its only promise is that equal values hash alike; the function itself is not a contract and may change between versions. A cyclic struct value makes `hash` and `eq` loop forever: there is no cycle detection. Numbers and function values compile to inline code (a function value hashes by the table slot of its code); every other type gets a generated word per concrete type (`eq<point>`, `hash<array str>`), made on first use, listed by `words` as a library word and never reported dead.
 
 **`vec T`.** A growable array in the prelude:
 
@@ -208,7 +208,7 @@ Its storage is a list of chunks whose sizes double (1, 2, 4, ...), so storage ne
 | `vec.each` | `( vec T [ T -- ] -- )` | Call the function value on each element in order. |
 | `vec.fold` | `( vec T A [ A T -- A ] -- A )` | Fold from the initial value. |
 
-The function arguments are function values (`'word`), since quotation values take no inputs and capture no locals; a loop body that needs the word's locals goes through `vec.to-array [ ... ] each`. The generated words of the two structs (`vec.new`, `vec.chunks`, `vec.count`, `chunk.*`) are an implementation detail; `vec.new` is the generated constructor, which is why the public one is `vec.make`.
+The function arguments are function values: a `'word`, or a closure that reaches the calling word's locals, as in `v [ k i32.mul i32.to-str println ] vec.each`. The generated words of the two structs (`vec.new`, `vec.chunks`, `vec.count`, `chunk.*`) are an implementation detail; `vec.new` is the generated constructor, which is why the public one is `vec.make`.
 
 **`map K V`.** A hash map in the prelude, open addressing with linear probing over `hash` and `eq`:
 
@@ -274,7 +274,7 @@ Factor-style, one binding at a time.
 | `name` | Push the local's value. |
 | `name!` | Pop the top of the stack into a mutable local. Type must match. Error on an immutable local. |
 
-A local is scoped to the word it is bound in, visible inside quotations in the same word, and never captured. Binding the same name twice in one word is an error. Locals are not visible to tests.
+A local is scoped to the word it is bound in and visible inside quotations in the same word. A quotation value captures the immutable locals it names, by value, when it is made (section 7a); naming a mutable local in one is `E_CAPTURE`. Binding the same name twice in one word is an error. Locals are not visible to tests.
 
 ```
 : sum-to ( i32 -- i32 )
@@ -292,23 +292,30 @@ Factor-style quotations and combinators, as specified in `ARCHITECTURE.md` 5c: `
 
 ## 7a. Functions as values
 
-A word's address is its index in the shared function table, an `i32`, typed in the checker as a **quotation type** `[ inputs -- outputs ]`.
+A function value is a **closure**: a reference to a WasmGC struct holding the slot of its code in the shared function table, followed by the values it captured. The checker types it as a **quotation type** `[ inputs -- outputs ]`.
 
 | Form | Effect | Notes |
 |---|---|---|
-| `'name` | `( -- [ effect of name ] )` | Takes a word's address. Records an address-taken edge in the dependency graph. |
-| `[ body ]` not under a combinator | `( -- [ effect ] )` | An anonymous word; its effect is derived by forward checking from an empty stack, so the body must be self-contained. |
-| `call` | `( ..inputs [ inputs -- outputs ] -- ..outputs )` | `call_indirect` with the matching wasm type. |
+| `'name` | `( -- [ effect of name ] )` | A closure of a word, capturing nothing; each use makes a new one. Records an address-taken edge in the dependency graph. |
+| `[ body ]` not under a combinator | `( -- [ effect ] )` | A quotation value: an anonymous word, made into a closure where it is written. Its effect is inferred as for an un-annotated word (section 18): the fewest inputs for which the body checks, with types fixed by later use. |
+| `[ ( effect ) body ]` | `( -- [ effect ] )` | A quotation value with its effect written directly after `[`. |
+| `call` | `( ..inputs [ inputs -- outputs ] -- ..outputs )` | Calls the closure's code with its inputs. |
 
 Quotation types may appear in word effects, so user words can take and return functions. A quotation type may contain type variables inside a generic effect: `( T [ T -- T ] -- T )`. `'word` on a generic word needs a context that fixes its instantiation, such as a stack assertion or a declared effect.
 
-Quotation values do **not** capture locals. A quotation value that names a local of the enclosing word is an error. Closures are not v1 (`FUTURE.md`).
+**Inference.** A quotation value whose types nothing fixes, such as `[ dup ] drop`, is `E_AMBIGUOUS_TYPE`: write its effect after `[`. A `(` group directly after `[` is an effect only when it has `--`; without, it is a stack assertion as anywhere else. Only a quotation value takes an effect: one under a combinator is inlined, and an effect on it is `E_SYNTAX`.
+
+**Capture.** A quotation value may name the locals of the word it is written in, and of the quotation values around it. Each immutable local it names is captured by value when the closure is made, so the closure keeps that value whatever happens afterwards. Naming or assigning a mutable local (`:> n!`) in a quotation value is `E_CAPTURE`: state shared between calls, or between a closure and its maker, lives in a struct, which is a reference and is captured like any value.
 
 ```
 : twice ( i32 [ i32 -- i32 ] -- i32 )  :> f  f call f call ;
 : inc ( i32 -- i32 )  1 i32.add ;
 test twice : 5 'inc twice -> 7
+: adder ( i32 -- [ i32 -- i32 ] )  :> k  [ k i32.add ] ;
+test twice : 5 3 adder twice -> 11
 ```
+
+**Lowering.** `$closure` is `(sub (struct (field i32)))`, the slot. A quotation value that captures has its own final subtype of `$closure` with the captured values as further fields, so making a closure is one allocation. Every function reached through a function value takes the closure as a last parameter, after its inputs, and casts it to its own subtype to read what it captured; `'word` reaches the word through a wrapper that ignores the closure. `call` reads the slot and calls through `call_indirect`. A function value is one reference in locals, fields, and on the REPL stack (in `wack.refs`, echoed as its type); an `array` of function values is a view over a WasmGC array, as for structs, which `array.new` fills with nulls: calling one traps.
 
 ## 8. Definitions, declarations, tests
 
@@ -369,7 +376,7 @@ Recorded here so the spec matches the compiler. `docs/reference.md` is the user-
 6. **`until`** runs its body, then its condition, and repeats until the condition is non-zero.
 7. **Tests.** The expected part of `test word : body -> expected` is the maximal run of literal tokens after `->`. Tests are processed in file order, so a test must come after its word is defined or declared. Tests may name primitives. Each test runs in a fresh module instance with a captured console.
 8. **Type variables** arise only from `array.new` and the element types of the array words. They are resolved by plain unification against later uses (assertions, locals, calls, the word's effect); if one is never fixed the error is `E_AMBIGUOUS_TYPE`. User effects may contain them too, written as uppercase-initial names (section 18).
-9. **Quotation values** take no inputs, as specified in 7a: their effect is `( -- outputs )`. Functions with inputs are passed as `'word`.
+9. **Quotation values** are specified in 7a; their inputs are decision 22.2.
 10. **Redefinition in files.** Top-level forms are processed in order. A redefinition with the same effect replaces the body for every caller; the last one wins. A word may call itself.
 11. **Names.** Primitive names cannot be defined, declared, or used as locals. Locals shadow user words.
 
@@ -377,7 +384,7 @@ Recorded here so the spec matches the compiler. `docs/reference.md` is the user-
 
 1. **REPL input.** A chunk whose first token is `:`, `export`, `declare` or `test` is top-level forms, processed exactly as in a file. Any other chunk is one line: a body checked forward from the current types of the memory data stack. A line cannot follow a definition in the same chunk (`E_SYNTAX`).
 2. **Continuation.** A chunk continues onto the next input line while a `:` definition or a `[` quotation is still open.
-3. **Stack echo.** After each chunk the REPL prints the stack as `( types ) values`, bottom to top, for example `( i32 str ) 9 "hi"`, or `( )` when empty. Arrays print as `<n elements>` and function values as `#slot`.
+3. **Stack echo.** After each chunk the REPL prints the stack as `( types ) values`, bottom to top, for example `( i32 str ) 9 "hi"`, or `( )` when empty. Arrays print as `<n elements>` and function values as their type (decision 22.6).
 4. **Tests at the REPL** run as soon as their word has a body, and again whenever the word is redefined; a test of a declared word waits for its body.
 5. **Literals in the REPL** (section 4) are placed by the host at the heap pointer, one window per step; identical literals are shared within a step only.
 
@@ -441,10 +448,20 @@ Recorded here so the spec matches the compiler. `docs/reference.md` is the user-
 7. **The memory leak is accepted**: collections live in never-freed linear memory, and `vec.clear` is the reuse path. Moving storage to the collector is `FUTURE.md` section 4.
 8. **No compact echo**: vec and map values echo as structs.
 9. **No new diagnostic codes.**
-10. **Function arguments are function values** (`'word`): quotation values take no inputs, so `vec.each`, `vec.fold` and `map.each` take words.
+10. **Function arguments are function values**: `vec.each`, `vec.fold` and `map.each` take a `'word` or a closure (decision 22.2).
 
 ## 21. Decisions taken after M9
 
 1. **`bytes`, and host words that cannot overrun.** `host.read` was `( i32 i32 i32 -- i32 )`, a bare address and a length that nothing tied to the allocation, so a length larger than the buffer silently wrote past it. It is now `( i32 bytes -- i32 )`, and `host.write` is `( i32 str -- i32 )`: the length travels with the address. Both lower to the same `i32 i32 i32` as before, so the ring, the hosts and the generated code are unchanged; only the checker's effects differ. `bytes` follows `str`: three primitives (`bytes.len`, `bytes.addr`, `bytes.from-raw`), the checked words in the prelude, trap messages named after the word. `bytes.to-str` copies, because a `str` is immutable by convention and the buffer is not; `bytes.as-str` shares instead, since memory is never freed and a copy per string built in a buffer adds up. It stays memory-safe (the string has the buffer's bounds); a later write to the buffer shows through the string, which is the caller's promise not to do. No new diagnostic codes.
 2. **The raw memory words are gated.** `mem.alloc`, loads and stores, `memory.copy`, `memory.fill`, `str.addr`, `str.from-raw`, `bytes.addr` and `bytes.from-raw` check nothing, so they are allowed only in the prelude (which is the trusted code to audit), in the generated `eq` and `hash` words, and in a word marked `raw :`; anywhere else they are `E_RAW`, a new code. `Ctx::raw` says whether the body being compiled may use them: `process_item` sets it per item from the origin and the marker, an instance takes it from its template, and a REPL line clears it. A word-level marker, not a file or command-line switch, so the unchecked code stays small and visible (`wack words` flags it `[raw]`). `memory.size` and `memory.grow` stay open: they take and give no address. `bytes.put`, `bytes.u32-at`, `bytes.u64-at` and their stores were added so that no example needs `raw`; a binary format is read through them, checked.
 3. **`bytes.as-str` is not raw.** It shares the buffer with the string, but the string has the buffer's bounds, so it is memory-safe; only the immutability of `str` is at the caller's word.
+
+## 22. Decisions taken in M10
+
+1. **Closures.** A function value is a closure: a reference to a struct holding the table slot of its code and the values it captured. There is one kind of function value, so words that take functions (`vec.each`, user words) accept a `'word` and a closure alike.
+2. **Quotation values take inputs.** Their effect is inferred as for an un-annotated word, with types fixed by later use, or written directly after `[` as `[ ( i32 -- i32 ) ... ]`. That annotation is the only new syntax. `vec.each`, `vec.fold` and `map.each` take closures (decision 20.10).
+3. **Capture by value, immutable locals only.** A quotation value captures the immutable locals it names when it is made; one inside another captures through it. Capturing a mutable local stays an error by design rather than being boxed automatically, which would hide an allocation and share mutable state between closures; shared state is boxed in a struct by the programmer. `E_CAPTURE` keeps its code and now means "captures a mutable local". No new diagnostic codes.
+4. **Lowering.** `$closure` is a non-final struct of one `i32`, the slot; a capturing quotation value has a final subtype of it with its captures as fields. Functions reached through a value take the closure as their last parameter: at `call` the closure is on top of its inputs, so it goes last without moving them. `call` is `struct.get` of the slot and `call_indirect`. `'word` reaches the word through a wrapper, one per word, and makes a new closure at each use; nothing is cached.
+5. **Equality.** `eq` on function values is `ref.eq`, so two closures are equal only when they are the same value, even two `'word` of one word; `hash` is the slot.
+6. **Fields, arrays, the REPL.** A field of quotation type is a reference field; an `array` of function values is a view over a GC array, as for structs. In the REPL, function values live in `wack.refs` like structs, and the echo shows only the type (`( [ i32 -- i32 ] ) [ i32 -- i32 ]`), as decision 13.3 records.
+7. **Byte identity.** `$closure` is registered on first use of a function value, so programs and REPL sessions without one compile byte-identically to M9, and run as fast.

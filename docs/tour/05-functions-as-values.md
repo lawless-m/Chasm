@@ -69,13 +69,40 @@ test apply-each : three 'square apply-each array.to-str -> "1 4 9"
 test apply-each : three 'negate apply-each array.to-str -> "-1 -2 -3"
 ```
 
-## No closures
+## Closures
 
-A block that is not directly before a combinator is a value too: an
-anonymous word that takes no inputs, so `[ 42 ]` has the type `[ -- i32 ]`.
-Such a block cannot use the locals of the word around it. There are no
-closures: writing `:> n  [ n ]` to hand `n` to someone else is `E_CAPTURE`.
-Pass what the function needs on the stack instead, as `apply-each` does by
-calling `f` inside an inlined block.
+A block that is not directly before a combinator is a value too: a
+quotation value, an anonymous function. Its effect comes from its body and
+from how it is used, so `[ 2 i32.mul ]` is a `[ i32 -- i32 ]`. It can use
+the locals of the word around it: each one it names is captured, by value,
+when the block becomes a value. `adder` returns a different function for
+every `k`, and each keeps its own.
+
+```wack
+: twice ( i32 [ i32 -- i32 ] -- i32 )  :> f  f call f call ;
+: adder ( i32 -- [ i32 -- i32 ] )  :> k  [ k i32.add ] ;
+
+test twice : 5 [ 2 i32.mul ] twice -> 20
+test twice : 5 3 adder twice -> 11
+
+: halver ( -- [ f64 -- f64 ] )  [ ( f64 -- f64 ) 2.0 f64.div ] ;
+test halver : 3.0 halver call -> 1.5
+
+struct counter  n: i32
+
+: make-counter ( -- [ -- i32 ] )
+  0 counter.new :> c
+  [ c  c counter.n 1 i32.add  counter.n!  c counter.n ] ;
+test make-counter : make-counter :> next  next call drop  next call -> 2
+```
+
+An effect written straight after `[`, as in `halver`, says what the block
+takes and leaves. The checker works it out without one when the block's use
+fixes the types, and asks for one (`E_AMBIGUOUS_TYPE`) when nothing does.
+
+Captured values are copies, so a block cannot capture a mutable local
+(`:> n!`): that is `E_CAPTURE`. When a function needs state that changes
+from call to call, keep it in a struct, as `make-counter` does. A struct is
+a reference, so every call sees the same `counter`.
 
 Next: [Tests and contracts](06-tests-and-contracts.md)

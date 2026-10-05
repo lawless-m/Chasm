@@ -35,9 +35,8 @@ test vec.to-array : 4 squares vec.to-array array.to-str -> "0 1 4 9"
 last element and leaves an `option T`, because the vec may be empty.
 
 `vec.each` and `vec.fold` are ordinary words, not combinators, so they
-take a function value such as `'add`. A block handed to them is a value
-too, and cannot use the word's locals. When the loop body needs locals,
-copy the vec out and use the array combinator: `vec.to-array [ ... ] each`.
+take a function value: a word such as `'add`, or a block, which can use the
+word's locals as any closure can: `v [ k i32.mul i32.to-str println ] vec.each`.
 
 ## map
 
