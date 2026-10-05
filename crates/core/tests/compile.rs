@@ -129,6 +129,12 @@ union act  | go  f: [ -- i32 ]  | stop
 }
 
 #[test]
+fn ring_submit_is_raw() {
+    ok("raw : ping ( -- i32 ) 0 0 0 0 ring.submit ;");
+    assert_eq!(err(": ping ( -- i32 ) 0 0 0 0 ring.submit ;"), "E_RAW");
+}
+
+#[test]
 fn errors() {
     assert_eq!(err(": f ( i32 -- i32 ) dup ;"), "E_EFFECT_MISMATCH");
     assert_eq!(err(": f ( -- i32 ) i32.add ;"), "E_STACK_UNDERFLOW");
@@ -402,6 +408,384 @@ fn closures_cost_nothing_unless_used() {
     assert_eq!(gc_types(c.wasm.as_ref().unwrap()), 2);
 }
 
+#[test]
+fn channels_cost_nothing_unless_used() {
+    let c = export(": main ( -- ) 10 array.new ( array i32 ) [ drop ] each ;");
+    assert!(c.ok(), "{:?}", c.diagnostics);
+    let wasm = c.wasm.as_ref().unwrap();
+    assert_eq!(gc_types(wasm), 0);
+    assert!(!functions(wasm).iter().any(|f| f.starts_with("chan.")));
+    assert_eq!(imports_and_exports(wasm).0, ["wack.ring_enter"]);
+}
+
+#[test]
+fn an_unwind_module_imports_frames_and_holds_one_frame_type() {
+    use wack_core::check::{Ctx, Unwind};
+    use wack_core::module::{assemble, ModuleOptions};
+    use wasm_encoder::ValType;
+    let mut ctx = Ctx::default();
+    ctx.unwind = Unwind::All;
+    let frame = ctx.frame_type();
+    assert_eq!(ctx.frame_type(), frame);
+    let site = ctx.site_frame_type(vec![ValType::I32, wack_core::types::ref_ty(frame)]);
+    assert_eq!(
+        ctx.site_frame_type(vec![ValType::I32, wack_core::types::ref_ty(frame)]),
+        site
+    );
+    ctx.site_frame_type(vec![ValType::I32]);
+    let wasm = assemble(
+        &mut ctx,
+        &ModuleOptions {
+            test_exports: Vec::new(),
+            live: None,
+            wasi: false,
+        },
+    );
+    wack_core::validate(&wasm).unwrap();
+    assert_eq!(
+        imports_and_exports(&wasm).0,
+        ["wack.ring_enter", "wack.frames", "wack.spawn"]
+    );
+    let mut non_final = 0;
+    for payload in wasmparser::Parser::new(0).parse_all(&wasm) {
+        if let wasmparser::Payload::TypeSection(r) = payload.unwrap() {
+            for group in r {
+                for t in group.unwrap().types() {
+                    if !t.is_final {
+                        non_final += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(non_final, 1, "$frame, once");
+    assert_eq!(gc_types(&wasm), 3, "$frame and two site frames");
+}
+
+fn unwind_all(path: &str, src: &str) -> wack_core::Compilation {
+    let c = wack_core::program::compile_with_unwind(
+        &[Source::new(path, src)],
+        &Options {
+            prelude: true,
+            test_exports: true,
+            export: false,
+            wasi: false,
+        },
+        wack_core::check::Unwind::All,
+    );
+    for d in &c.diagnostics {
+        eprintln!("{}", d.render());
+    }
+    assert!(c.ok(), "{path} compiles with Unwind::All");
+    c
+}
+
+#[test]
+fn a_transformed_process_program_validates() {
+    let c = unwind_all(
+        "t.wack",
+        r#"
+: f ( chan i32 -- i32 ) chan.recv none: [ 0 ] some: [ ] match ;
+: main ( -- )
+  chan.make ( chan i32 ) :> c
+  [ c 7 chan.send ] spawn
+  c f i32.to-str println ;
+"#,
+    );
+    let wasm = c.wasm.as_ref().unwrap();
+    wack_core::validate(wasm).unwrap();
+    let fs = functions(wasm);
+    assert!(fs.iter().any(|f| f == "f"), "{fs:?}");
+    assert!(fs.iter().any(|f| f == "chan.recv<i32>"), "{fs:?}");
+}
+
+#[test]
+fn transformed_words_skip_runs_and_validate() {
+    let c = unwind_all(
+        "t.wack",
+        r#"
+: g ( chan i32 i32 -- i32 )
+  :> n :> c
+  0 :> acc!
+  n [
+    :> i
+    c chan.recv none: [ 0 ] some: [ ] match
+    acc i32.add i i32.add acc!
+    acc 10 i32.gt_s [ leave ] when
+  ] times
+  acc 0 i32.lt_s [ "negative" trap ] when
+  1 2 swap drop acc i32.add ;
+: main ( -- )
+  chan.make ( chan i32 ) :> c
+  [ c 7 chan.send  c chan.close ] spawn
+  c 3 g i32.to-str println ;
+"#,
+    );
+    let wasm = c.wasm.as_ref().unwrap();
+    wack_core::validate(wasm).unwrap();
+}
+
+#[test]
+fn a_receive_inside_each_construct_validates_transformed() {
+    let recv = "c chan.recv none: [ 0 ] some: [ ] match";
+    let cases = [
+        ("if then", ": t ( chan i32 i32 -- i32 ) :> x :> c  x [ R ] [ 1 ] if ;"),
+        ("if else", ": t ( chan i32 i32 -- i32 ) :> x :> c  x [ 1 ] [ R ] if ;"),
+        ("when", ": t ( chan i32 i32 -- i32 ) :> x :> c  5 x [ drop R ] when ;"),
+        ("unless", ": t ( chan i32 i32 -- i32 ) :> x :> c  5 x [ drop R ] unless ;"),
+        (
+            "while body",
+            ": t ( chan i32 -- i32 ) :> c  0 :> n!  [ n 3 i32.lt_s ] [ R n i32.add 1 i32.add n! ] while  n ;",
+        ),
+        (
+            "while condition",
+            ": t ( chan i32 -- i32 ) :> c  0 :> n!  [ R 0 i32.ne ] [ n 1 i32.add n! ] while  n ;",
+        ),
+        (
+            "until body",
+            ": t ( chan i32 -- i32 ) :> c  0 :> n!  [ R n i32.add 1 i32.add n! ] [ n 3 i32.ge_s ] until  n ;",
+        ),
+        ("times", ": t ( chan i32 -- i32 ) :> c  0 3 [ drop R i32.add ] times ;"),
+        (
+            "each",
+            ": t ( chan i32 -- i32 ) :> c  0 :> n!  3 array.new ( array i32 ) [ R i32.add n i32.add n! ] each  n ;",
+        ),
+        (
+            "map",
+            ": t ( chan i32 -- i32 ) :> c  3 array.new ( array i32 ) [ R i32.add ] map  array.len ;",
+        ),
+        (
+            "filter",
+            ": t ( chan i32 -- i32 ) :> c  3 array.new ( array i32 ) [ drop R 0 i32.ne ] filter  array.len ;",
+        ),
+        (
+            "fold",
+            ": t ( chan i32 -- i32 ) :> c  3 array.new ( array i32 ) 0 [ i32.add R i32.add ] fold ;",
+        ),
+    ];
+    for (what, src) in cases {
+        let src = src.replace('R', recv);
+        let c = unwind_all(what, &src);
+        if let Err(e) = wack_core::validate(c.wasm.as_ref().unwrap()) {
+            panic!("{what}: {e}");
+        }
+    }
+}
+
+#[test]
+fn a_receive_inside_match_and_alt_arms_validates_transformed() {
+    let recv = "c chan.recv none: [ 0 ] some: [ ] match";
+    let cases = [
+        (
+            "some arm",
+            ": t ( chan i32 option i32 -- i32 ) :> o :> c  o none: [ 0 ] some: [ drop R ] match ;",
+        ),
+        (
+            "none arm",
+            ": t ( chan i32 option i32 -- i32 ) :> o :> c  o none: [ R ] some: [ ] match ;",
+        ),
+        (
+            "else arm",
+            ": t ( chan i32 option i32 -- i32 ) :> o :> c  o none: [ 0 ] else: [ drop R ] match ;",
+        ),
+        (
+            "second alt arm",
+            ": t ( chan i32 chan i32 -- i32 ) :> b :> c \
+             c recv: [ none: [ 0 ] some: [ ] match ] b recv: [ drop R ] alt ;",
+        ),
+        (
+            "alt in a while in an if",
+            ": t ( chan i32 chan i32 i32 -- i32 ) :> x :> b :> c  0 :> n! \
+             x [ [ n 3 i32.lt_s ] \
+                 [ c recv: [ drop n 1 i32.add n! ] b recv: [ drop R n i32.add n! ] alt ] \
+                 while ] [ ] if  n ;",
+        ),
+    ];
+    for (what, src) in cases {
+        let src = src.replace('R', recv);
+        let c = unwind_all(what, &src);
+        if let Err(e) = wack_core::validate(c.wasm.as_ref().unwrap()) {
+            panic!("{what}: {e}");
+        }
+    }
+}
+
+/// Whether the function named `name` reads the unwind mode cell (it is
+/// transformed).
+fn reads_unwind_mode(wasm: &[u8], name: &str) -> bool {
+    let names = functions(wasm);
+    let index = names.iter().position(|n| n == name).expect(name) as u32;
+    let mut imports = 0;
+    let mut k = 0;
+    for payload in wasmparser::Parser::new(0).parse_all(wasm) {
+        match payload.unwrap() {
+            wasmparser::Payload::ImportSection(r) => {
+                imports = r
+                    .into_imports()
+                    .filter(|i| matches!(i.as_ref().unwrap().ty, wasmparser::TypeRef::Func(_)))
+                    .count() as u32;
+            }
+            wasmparser::Payload::CodeSectionEntry(body) => {
+                if imports + k == index {
+                    let mut ops = body.get_operators_reader().unwrap();
+                    while !ops.eof() {
+                        if let wasmparser::Operator::I32Load { memarg } = ops.read().unwrap() {
+                            if memarg.offset == wack_core::layout::UNWIND_MODE as u64 {
+                                return true;
+                            }
+                        }
+                    }
+                    return false;
+                }
+                k += 1;
+            }
+            _ => {}
+        }
+    }
+    panic!("no body for {name}")
+}
+
+#[test]
+fn process_programs_are_transformed() {
+    let c = export(
+        r#"
+: add1 ( i32 -- i32 ) 1 i32.add ;
+: f ( chan i32 -- i32 ) chan.recv none: [ 0 ] some: [ ] match ;
+: main ( -- )
+  chan.make ( chan i32 ) :> c
+  [ c 7 chan.send ] spawn
+  c f add1 i32.to-str println ;
+"#,
+    );
+    assert!(c.ok(), "{:?}", c.diagnostics);
+    assert_eq!(c.processes.as_deref(), Some("main"));
+    let wasm = c.wasm.as_ref().unwrap();
+    wack_core::validate(wasm).unwrap();
+    assert_eq!(
+        imports_and_exports(wasm).0,
+        ["wack.ring_enter", "wack.frames", "wack.spawn"]
+    );
+    assert!(reads_unwind_mode(wasm, "main"));
+    assert!(reads_unwind_mode(wasm, "f"));
+    assert!(reads_unwind_mode(wasm, "chan.recv<i32>"));
+    assert!(reads_unwind_mode(wasm, "rt.ring"));
+    assert!(!reads_unwind_mode(wasm, "add1"), "never on a waiting path");
+}
+
+#[test]
+fn programs_without_processes_are_unchanged() {
+    let c = export(": add1 ( i32 -- i32 ) 1 i32.add ;\n: main ( -- ) 1 add1 i32.to-str println ;");
+    assert!(c.ok(), "{:?}", c.diagnostics);
+    let wasm = c.wasm.as_ref().unwrap();
+    assert_eq!(imports_and_exports(wasm).0, ["wack.ring_enter"]);
+    assert_eq!(gc_types(wasm), 0);
+    assert!(!reads_unwind_mode(wasm, "main"));
+}
+
+#[test]
+fn every_example_validates_transformed() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut files = Vec::new();
+    for dir in ["examples"] {
+        for e in std::fs::read_dir(root.join(dir)).unwrap() {
+            let p = e.unwrap().path();
+            if p.extension().is_some_and(|x| x == "wack") {
+                files.push(p);
+            }
+        }
+    }
+    files.sort();
+    assert!(files.len() > 10);
+    for p in files {
+        let src = std::fs::read_to_string(&p).unwrap();
+        let c = unwind_all(&p.display().to_string(), &src);
+        if let Err(e) = wack_core::validate(c.wasm.as_ref().unwrap()) {
+            panic!("{}: {e}", p.display());
+        }
+    }
+}
+
+#[test]
+fn spawn_imports_the_global_only_when_used() {
+    let c = export(": main ( -- ) [ \"hi\" println ] spawn ;");
+    assert!(c.ok(), "{:?}", c.diagnostics);
+    let wasm = c.wasm.as_ref().unwrap();
+    wack_core::validate(wasm).unwrap();
+    // A program using processes is transformed: `wack.frames` comes first.
+    assert_eq!(
+        imports_and_exports(wasm).0,
+        ["wack.ring_enter", "wack.frames", "wack.spawn"]
+    );
+    let c = export(": main ( -- ) 10 array.new ( array i32 ) [ drop ] each ;");
+    assert_eq!(
+        imports_and_exports(c.wasm.as_ref().unwrap()).0,
+        ["wack.ring_enter"]
+    );
+    assert_eq!(err(": main ( -- ) [ 1 ] spawn ;"), "E_TYPE_MISMATCH");
+}
+
+#[test]
+fn alt_over_two_channels() {
+    let pick = ": pick ( chan i32 chan str -- i32 ) :> b :> a  a recv: [ none: [ -1 ] some: [ ] match ] b recv: [ none: [ -2 ] some: [ str.len ] match ] alt ;";
+    let c = export(&format!(
+        "{pick}\n: main ( -- ) chan.make ( chan i32 ) :> a  chan.make ( chan str ) :> b  a b pick i32.to-str println ;"
+    ));
+    assert!(c.ok(), "{:?}", c.diagnostics);
+    let wasm = c.wasm.as_ref().unwrap();
+    wack_core::validate(wasm).unwrap();
+    let fs = functions(wasm);
+    assert!(fs.iter().any(|f| f == "chan.taken<i32>"), "{fs:?}");
+    assert!(fs.iter().any(|f| f == "chan.taken<str>"), "{fs:?}");
+    ok(pick);
+    assert_eq!(
+        err(": f ( chan i32 chan str -- i32 ) :> b :> a  a recv: [ drop 1 ] b recv: [ drop \"x\" ] alt ;"),
+        "E_BRANCH_MISMATCH"
+    );
+    assert_eq!(err(": f ( -- ) 1 recv: [ drop ] alt ;"), "E_TYPE_MISMATCH");
+}
+
+#[test]
+fn processes_names_the_first_offending_word() {
+    let c = export(": main ( -- ) [ \"hi\" println ] spawn ;");
+    assert_eq!(c.processes.as_deref(), Some("main"));
+    let c = export(": main ( -- ) chan.make ( chan i32 ) chan.recv drop ;");
+    assert!(
+        c.processes
+            .as_deref()
+            .is_some_and(|w| w.starts_with("chan.")),
+        "{:?}",
+        c.processes
+    );
+    let dead = ": unused ( -- ) chan.make ( chan i32 ) chan.recv drop ;\n: main ( -- ) 1 drop ;";
+    assert_eq!(export(dead).processes, None);
+    assert!(ok(dead).processes.is_some(), "no roots: every word counts");
+    assert_eq!(
+        export(": main ( -- ) 10 array.new ( array i32 ) [ drop ] each ;").processes,
+        None
+    );
+    assert_eq!(ok(": f ( -- ) [ ] spawn ;").processes.as_deref(), Some("f"));
+}
+
+#[test]
+fn prelude_chan() {
+    ok(": f ( -- chan i32 ) chan.make ( chan i32 ) ;");
+    let src = r#"
+: show ( option i32 -- )  none: [ "done" println ] some: [ i32.to-str println ] match ;
+: main ( -- )
+  chan.make ( chan i32 ) :> c
+  c chan.sender
+  c 1 chan.send
+  c chan.recv show
+  c chan.close c chan.close ;
+"#;
+    let c = export(src);
+    assert!(c.ok(), "{:?}", c.diagnostics);
+    wack_core::validate(c.wasm.as_ref().unwrap()).unwrap();
+    assert!(functions(c.wasm.as_ref().unwrap())
+        .iter()
+        .any(|f| f == "chan.recv<i32>"));
+}
+
 fn functions(wasm: &[u8]) -> Vec<String> {
     let mut names = Vec::new();
     for payload in wasmparser::Parser::new(0).parse_all(wasm) {
@@ -462,6 +846,39 @@ fn imports_and_exports(wasm: &[u8]) -> (Vec<String>, Vec<String>) {
         }
     }
     (imports, exports)
+}
+
+fn wasi(src: &str) -> wack_core::Compilation {
+    compile(
+        &[Source::new("t.wack", src)],
+        &Options {
+            prelude: true,
+            test_exports: false,
+            export: true,
+            wasi: true,
+        },
+    )
+}
+
+#[test]
+fn wasi_build_refuses_processes() {
+    let src = ": main ( -- ) [ ] spawn ;";
+    let c = wasi(src);
+    assert_eq!(
+        c.diagnostics[0].code, "E_WASI_UNSUPPORTED",
+        "{:?}",
+        c.diagnostics
+    );
+    assert!(c.wasm.is_none());
+    assert!(export(src).ok());
+    // Channels and spawning only in dead words: nothing to refuse, and no
+    // `wack.spawn` import.
+    let c = wasi(": unused ( -- ) chan.make ( chan i32 ) :> c c 1 chan.send [ ] spawn ;\n: main ( -- ) \"hi\" println ;");
+    assert!(c.ok(), "{:?}", c.diagnostics);
+    assert!(!imports_and_exports(c.wasm.as_ref().unwrap())
+        .0
+        .iter()
+        .any(|i| i == "wack.spawn"));
 }
 
 #[test]

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Whackford process check</title></head>
+<body>
+<pre id="out">running</pre>
+<script type="module">
+import { loadCompiler } from "../compiler.js";
+import { Repl } from "../driver.js";
+import { procScenario } from "./procs-scenario.mjs";
+
+const out = document.getElementById("out");
+const assert = {
+  ok: (c, m) => { if (!c) throw new Error(m ?? "assertion failed"); },
+  equal: (a, b, m) => { if (a !== b) throw new Error(`${m ?? "not equal"}: ${a} !== ${b}`); },
+};
+let console_ = "";
+try {
+  const compiler = await loadCompiler(await (await fetch("../wack_web.wasm")).arrayBuffer());
+  const L = compiler.layout;
+  const memory = new WebAssembly.Memory({ initial: L.INITIAL_PAGES, maximum: L.SHARED_MAX_PAGES, shared: true });
+  const worker = new Worker("../worker.js", { type: "module" });
+  const repl = new Repl({
+    compiler,
+    memory,
+    worker: { post: (m) => worker.postMessage(m), onMessage: (h) => worker.addEventListener("message", (e) => h(e.data)) },
+    onOutput: (t) => (console_ += t),
+  });
+  await procScenario(repl, assert, () => console_);
+  console.log("output " + JSON.stringify(console_));
+  out.textContent = "PROCS ok";
+  console.log("PROCS ok");
+} catch (e) {
+  out.textContent = `PROCS FAIL ${e.message}`;
+  console.log(`PROCS FAIL ${e.message}`);
+}
+</script>
+</body>
+</html>

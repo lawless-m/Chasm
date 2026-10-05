@@ -47,6 +47,12 @@ per instantiation, `option T` in the prelude) and M9 (collections: a
 growable `vec T` and a hash map `map K V` in the prelude, on the
 by-contents primitives `hash` and `eq`) and M10 (closures: quotation
 values that take inputs and capture the immutable locals they name, every
-function value a WasmGC closure) are implemented: M0 to M10 implemented.
+function value a WasmGC closure) and M11 (processes and channels:
+cooperative green threads, `chan T` with an explicit counted close,
+`spawn`, `alt`, first in the browser REPL) and M12 (processes natively:
+a waiting process unwinds its wasm stack into GC frames and is rewound when
+it resumes, on synchronous wasmtime) and M13 (one mechanism: the browser
+REPL runs processes by the same unwind/rewind transform, so they run in any
+WasmGC browser and under node 22) are implemented: M0 to M13 implemented.
 
 Licence: MIT.

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Whackford process examples</title></head>
+<body>
+<pre id="out">running</pre>
+<script type="module">
+import { loadCompiler } from "../compiler.js";
+import { Repl } from "../driver.js";
+import { examplesScenario } from "./examples-scenario.mjs";
+
+const out = document.getElementById("out");
+const assert = {
+  ok: (c, m) => { if (!c) throw new Error(m ?? "assertion failed"); },
+  equal: (a, b, m) => { if (a !== b) throw new Error(`${m ?? "not equal"}: ${a} !== ${b}`); },
+};
+try {
+  const bytes = await (await fetch("../wack_web.wasm")).arrayBuffer();
+  const makeRepl = async () => {
+    const compiler = await loadCompiler(bytes);
+    const L = compiler.layout;
+    const memory = new WebAssembly.Memory({ initial: L.INITIAL_PAGES, maximum: L.SHARED_MAX_PAGES, shared: true });
+    const worker = new Worker("../worker.js", { type: "module" });
+    let text = "";
+    const repl = new Repl({
+      compiler,
+      memory,
+      worker: { post: (m) => worker.postMessage(m), onMessage: (h) => worker.addEventListener("message", (e) => h(e.data)) },
+      onOutput: (t) => (text += t),
+    });
+    return { repl, output: () => text };
+  };
+  const fetchText = async (path) => {
+    const r = await fetch(path);
+    if (!r.ok) throw new Error(`${path}: ${r.status}`);
+    return r.text();
+  };
+  await examplesScenario(makeRepl, assert, fetchText);
+  out.textContent = "EXAMPLES ok";
+  console.log("EXAMPLES ok");
+} catch (e) {
+  out.textContent = `EXAMPLES FAIL ${e.message}`;
+  console.log(`EXAMPLES FAIL ${e.message}`);
+}
+</script>
+</body>
+</html>

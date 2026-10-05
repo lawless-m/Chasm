@@ -365,6 +365,16 @@ fn words_json(c: &Compilation) -> J {
     json!(c.words)
 }
 
+/// A trap object as text, as `RunError` displays it.
+fn trap_text(t: &J) -> String {
+    let m = s(&t["message"]);
+    match (t["word"].as_str(), t["process"].as_u64()) {
+        (Some(w), Some(p)) => format!("trap in `{w}` (process {p}): {m}"),
+        (Some(w), None) => format!("trap in `{w}`: {m}"),
+        (None, _) => format!("trap: {m}"),
+    }
+}
+
 fn failed(command: &'static str, diagnostics: Vec<Diagnostic>) -> Report {
     Report {
         command,
@@ -420,6 +430,7 @@ fn exec(cli: Cli) -> (Report, bool) {
                                     "optimised": !no_opt && note.is_none(),
                                     "note": note,
                                     "wasi": wasi,
+                                    "processes": comp.processes.is_some(),
                                 }),
                                 diagnostics: comp.diagnostics,
                             },
@@ -501,7 +512,7 @@ fn exec(cli: Cli) -> (Report, bool) {
                 Err(e) => Report {
                     command: "run",
                     ok: false,
-                    results: json!({ "output": output, "trap": { "message": e.message, "word": e.word }, "optimised": opt && note.is_none(), "note": note }),
+                    results: json!({ "output": output, "trap": { "message": e.message, "word": e.word, "process": e.process }, "optimised": opt && note.is_none(), "note": note }),
                     diagnostics: comp.diagnostics,
                 },
             };
@@ -551,7 +562,7 @@ fn exec(cli: Cli) -> (Report, bool) {
                         "status": r.status.as_str(),
                         "expected": r.test.expected.iter().map(|v| v.to_string()).collect::<Vec<_>>(),
                         "actual": r.actual.as_ref().map(|a| a.iter().map(|v| v.to_string()).collect::<Vec<_>>()),
-                        "trap": r.error.as_ref().map(|e| json!({ "message": e.message, "word": e.word })),
+                        "trap": r.error.as_ref().map(|e| json!({ "message": e.message, "word": e.word, "process": e.process })),
                         "output": String::from_utf8_lossy(&r.output),
                         "location": r.test.location,
                     })
@@ -759,7 +770,7 @@ fn exec(cli: Cli) -> (Report, bool) {
 
 fn repl_report(o: Outcome, output: Vec<u8>) -> Report {
     let failed_test = o.tests.iter().any(|t| t.status == TestStatus::Fail);
-    let trap = |e: &wack_runtime::native::RunError| json!({ "message": e.message, "word": e.word });
+    let trap = |e: &wack_runtime::native::RunError| json!({ "message": e.message, "word": e.word, "process": e.process });
     let results = json!({
         "defined": o.defined.iter().map(|d| json!({
             "name": d.name, "effect": d.effect, "declared": d.declared, "inferred": d.inferred,
@@ -778,6 +789,7 @@ fn repl_report(o: Outcome, output: Vec<u8>) -> Report {
             "location": t.location,
         })).collect::<Vec<_>>(),
         "trap": o.trap.as_ref().map(trap),
+        "process_traps": o.process_traps.iter().map(trap).collect::<Vec<_>>(),
         "stack": o.stack.iter().map(|e| json!({ "type": e.ty, "value": e.value })).collect::<Vec<_>>(),
         "output": String::from_utf8_lossy(&output),
         "timing": o.timing,
@@ -925,6 +937,9 @@ fn render(report: &J) -> (String, String) {
             if let Some(n) = r["note"].as_str() {
                 err.push_str(&format!("note: {n}\n"));
             }
+            if r["processes"] == true {
+                err.push_str("note: the module uses processes: its host must provide the `wack.spawn` and `wack.frames` globals and service ring opcodes 5 to 11 (wasmtime and the browser REPL do, by unwind and rewind)\n");
+            }
         }
         "run" => {
             if let Some(n) = r["note"].as_str() {
@@ -934,10 +949,7 @@ fn render(report: &J) -> (String, String) {
             // is only filled when the console was captured.
             out.push_str(&s(&r["output"]));
             if let Some(t) = r.get("trap").filter(|t| !t.is_null()) {
-                match t["word"].as_str() {
-                    Some(w) => err.push_str(&format!("trap in `{w}`: {}\n", s(&t["message"]))),
-                    None => err.push_str(&format!("trap: {}\n", s(&t["message"]))),
-                }
+                err.push_str(&format!("{}\n", trap_text(t)));
             }
         }
         "test" => {
@@ -964,11 +976,7 @@ fn render(report: &J) -> (String, String) {
                             ));
                         }
                         if !t["trap"].is_null() {
-                            out.push_str(&format!(
-                                "    trap in `{}`: {}\n",
-                                s(&t["trap"]["word"]),
-                                s(&t["trap"]["message"])
-                            ));
+                            out.push_str(&format!("    {}\n", trap_text(&t["trap"])));
                         }
                     }
                 }
@@ -1148,11 +1156,7 @@ fn render(report: &J) -> (String, String) {
                     out.push_str(&format!("    actual:   {}\n", strs(&t["actual"]).join(" ")));
                 }
                 if !t["trap"].is_null() {
-                    out.push_str(&format!(
-                        "    trap in `{}`: {}\n",
-                        s(&t["trap"]["word"]),
-                        s(&t["trap"]["message"])
-                    ));
+                    out.push_str(&format!("    {}\n", trap_text(&t["trap"])));
                 }
             }
             if r["tested"] == true {
@@ -1162,10 +1166,11 @@ fn render(report: &J) -> (String, String) {
                 ));
             }
             if let Some(t) = r.get("trap").filter(|t| !t.is_null()) {
-                match t["word"].as_str() {
-                    Some(w) => err.push_str(&format!("trap in `{w}`: {}\n", s(&t["message"]))),
-                    None => err.push_str(&format!("trap: {}\n", s(&t["message"]))),
-                }
+                err.push_str(&format!("{}\n", trap_text(t)));
+            }
+            // A trap in a spawned process ended only that process.
+            for t in r["process_traps"].as_array().into_iter().flatten() {
+                err.push_str(&format!("{}\n", trap_text(t)));
             }
             out.push_str(&s(&r["output"]));
             let stack = r["stack"].as_array().cloned().unwrap_or_default();

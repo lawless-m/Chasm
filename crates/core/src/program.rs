@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::{Item, Lit};
 use crate::check::{
-    compile_body, Compiled, Ctx, Mode, Origin, StructDef, UnionDef, Word, WordId, WordKind,
+    compile_body, Compiled, Ctx, Mode, Origin, StructDef, UnionDef, Unwind, Word, WordId, WordKind,
 };
 use crate::diag::{codes, Diagnostic, Location};
 use crate::graph::{Edge, Graph};
@@ -159,6 +159,10 @@ pub struct Compilation {
     pub tests: Vec<TestInfo>,
     pub graph: Graph,
     pub has_main: bool,
+    /// The first word that starts a process or uses a channel (a user word
+    /// before a library one), among the live words when the program has
+    /// roots, else among all: processes run only in the browser REPL.
+    pub processes: Option<String>,
 }
 
 impl Compilation {
@@ -202,8 +206,72 @@ impl Compilation {
     }
 }
 
+/// Compile a program. One that uses processes is compiled a second time
+/// with the words that can be on the stack when a process waits
+/// transformed to unwind and rewind (M12); any other is left as it is.
 pub fn compile(sources: &[Source], opts: &Options) -> Compilation {
+    let (c, ctx) = compile_ctx(sources, opts, Unwind::Off);
+    if c.ok() && !opts.wasi && c.processes.is_some() {
+        return compile_with_unwind(sources, opts, Unwind::Only(suspendable(&ctx)));
+    }
+    c
+}
+
+/// The names of the words that can be on the stack when a process waits:
+/// those that submit a parking opcode or make an indirect call, and every
+/// word that calls one; a generic template is named with its instances.
+fn suspendable(ctx: &Ctx) -> HashSet<String> {
+    use crate::layout as L;
+    let parks = |op| matches!(op, L::OP_CHAN_SEND | L::OP_CHAN_RECV | L::OP_ALT);
+    let mut member: Vec<bool> = ctx
+        .words
+        .iter()
+        .map(|w| {
+            w.body.as_ref().is_some_and(|c| {
+                crate::check::submits(c, parks)
+                    || c.code
+                        .iter()
+                        .any(|i| matches!(i, wasm_encoder::Instruction::CallIndirect { .. }))
+            })
+        })
+        .collect();
+    loop {
+        let mut changed = false;
+        for (id, w) in ctx.words.iter().enumerate() {
+            if !member[id]
+                && w.callees
+                    .iter()
+                    .any(|&(c, k)| k == crate::graph::EdgeKind::Call && member[c])
+            {
+                member[id] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let mut names = HashSet::new();
+    for (id, w) in ctx.words.iter().enumerate() {
+        if member[id] {
+            names.insert(w.name.clone());
+            if let Some((t, _)) = &w.instance_of {
+                names.insert(ctx.words[*t].name.clone());
+            }
+        }
+    }
+    names
+}
+
+/// `compile` with the words `unwind` names transformed to unwind and
+/// rewind (M12), and nothing compiled twice.
+pub fn compile_with_unwind(sources: &[Source], opts: &Options, unwind: Unwind) -> Compilation {
+    compile_ctx(sources, opts, unwind).0
+}
+
+fn compile_ctx(sources: &[Source], opts: &Options, unwind: Unwind) -> (Compilation, Ctx) {
     let mut ctx = Ctx::default();
+    ctx.unwind = unwind;
     let mut diags = Vec::new();
 
     let mut all: Vec<(Source, Origin)> = Vec::new();
@@ -316,6 +384,34 @@ pub fn compile(sources: &[Source], opts: &Options) -> Compilation {
         None
     };
 
+    let uses = |id: usize| {
+        let w = &ctx.words[id];
+        live.as_ref().is_none_or(|l| l.contains(&id))
+            && w.generic.is_none()
+            && w.body.as_ref().is_some_and(crate::check::process_ops)
+    };
+    let ids: Vec<usize> = (0..ctx.words.len()).filter(|&id| uses(id)).collect();
+    let processes = ids
+        .iter()
+        .find(|&&id| ctx.words[id].origin == Origin::User)
+        .or(ids.first())
+        .copied();
+
+    // A WASI build has no scheduler.
+    if opts.wasi && !diags.iter().any(Diagnostic::is_error) {
+        if let Some(id) = processes {
+            let w = &ctx.words[id];
+            diags.push(
+                Diagnostic::error(
+                    codes::E_WASI_UNSUPPORTED,
+                    format!("`build --wasi` cannot run processes: `{}` spawns, or sends or receives on a channel; build without --wasi", w.name),
+                    w.loc.clone(),
+                )
+                .with_word(&w.name),
+            );
+        }
+    }
+
     let ok = !diags.iter().any(Diagnostic::is_error);
     let wasm = if ok {
         let test_exports = if opts.test_exports {
@@ -350,14 +446,19 @@ pub fn compile(sources: &[Source], opts: &Options) -> Compilation {
         None
     };
 
-    Compilation {
-        diagnostics: diags,
-        wasm,
-        words,
-        tests,
-        graph,
-        has_main,
-    }
+    let processes = processes.map(|id| ctx.words[id].name.clone());
+    (
+        Compilation {
+            diagnostics: diags,
+            wasm,
+            words,
+            tests,
+            graph,
+            has_main,
+            processes,
+        },
+        ctx,
+    )
 }
 
 /// Program state the per-item rules accumulate into.

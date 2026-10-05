@@ -109,9 +109,10 @@ pub mod api {
         }
     }
 
-    /// Start a session with a shared memory; returns the prelude step.
+    /// Start a session with a shared memory, every step module transformed
+    /// to unwind and rewind (as the native REPL); returns the prelude step.
     pub fn new_session(prelude: bool, heap_ptr: u32) -> StepJson {
-        let (session, step) = Session::new(prelude, true, heap_ptr);
+        let (session, step) = Session::new(prelude, true, heap_ptr, true);
         let out = to_json(step, &session.stack, &session);
         SESSION.with(|s| *s.borrow_mut() = Some(session));
         out

@@ -5,17 +5,17 @@
 //! substitution and produces wasm instructions. Both passes see identical
 //! input, so type-variable numbering lines up.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use wasm_encoder::{BlockType, HeapType, Instruction as I, MemArg, ValType};
 
-use crate::ast::{Arm, Body, Lit, Node, NodeKind};
+use crate::ast::{AltArm, Arm, Body, Lit, Node, NodeKind};
 use crate::diag::{codes, Diagnostic, Location};
 use crate::graph::EdgeKind;
 use crate::layout;
 use crate::prims;
 use crate::types::{
-    lower_all, mentions_quot, names, ref_ty, Effect, StructTypes, Subst, Ty, CLOSURE,
+    lower_all, mentions_quot, names, ref_ty, Effect, StructTypes, Subst, Ty, CLOSURE, FRAME,
 };
 
 pub type WordId = usize;
@@ -142,6 +142,23 @@ pub struct Ctx {
     pub tick_wrappers: HashMap<WordId, WordId>,
     /// Environment types (subtypes of `$closure`), by their fields.
     env_types: HashMap<Vec<ValType>, u32>,
+    /// Some emitted code uses `spawn`: modules import the `wack.spawn`
+    /// global that hands the host the closure to start.
+    pub uses_spawn: bool,
+    /// Which words are transformed to unwind and rewind (M12).
+    pub unwind: Unwind,
+    /// Call-site frame types (subtypes of `$frame`), by their added fields.
+    site_frame_types: HashMap<Vec<ValType>, u32>,
+}
+
+/// Which words the unwind/rewind transform applies to (M12): none, every
+/// word (the native REPL), or the named ones (a whole program's
+/// suspendable set).
+#[derive(Clone, PartialEq)]
+pub enum Unwind {
+    Off,
+    All,
+    Only(std::collections::HashSet<String>),
 }
 
 /// A declared struct: its fields in order and its wasm type index.
@@ -238,6 +255,9 @@ impl Default for Ctx {
             raw: false,
             tick_wrappers: HashMap::new(),
             env_types: HashMap::new(),
+            uses_spawn: false,
+            unwind: Unwind::Off,
+            site_frame_types: HashMap::new(),
         }
     }
 }
@@ -559,6 +579,49 @@ impl Ctx {
             supertype: Some(closure),
         }]);
         self.env_types.insert(fields, t);
+        t
+    }
+
+    /// Whether the word named `word_name` is transformed to unwind and rewind.
+    pub fn transforms(&self, word_name: &str) -> bool {
+        match &self.unwind {
+            Unwind::Off => false,
+            Unwind::All => true,
+            Unwind::Only(s) => s.contains(word_name),
+        }
+    }
+
+    /// The index of `$frame` (next, site), registered on first use only.
+    pub fn frame_type(&mut self) -> u32 {
+        if let Some(&(i, _)) = self.struct_types.get(FRAME) {
+            return i;
+        }
+        let i = self.types.len() as u32;
+        self.register_rec(vec![Member::Struct {
+            fields: vec![ref_ty(i), ValType::I32],
+            is_final: false,
+            supertype: None,
+        }]);
+        self.struct_types.insert(FRAME.to_string(), (i, i));
+        i
+    }
+
+    /// The frame type of a call site: a final subtype of `$frame` adding
+    /// `fields` (the function's locals, params first, then the operand
+    /// values below the call), in a rec group of its own.
+    pub fn site_frame_type(&mut self, fields: Vec<ValType>) -> u32 {
+        if let Some(&t) = self.site_frame_types.get(&fields) {
+            return t;
+        }
+        let frame = self.frame_type();
+        let mut all = vec![ref_ty(frame), ValType::I32];
+        all.extend(fields.iter().copied());
+        let t = self.register_rec(vec![Member::Struct {
+            fields: all,
+            is_final: true,
+            supertype: Some(frame),
+        }]);
+        self.site_frame_types.insert(fields, t);
         t
     }
 
@@ -1091,6 +1154,56 @@ struct Walker<'c> {
     /// In the emitting pass of a body with captures: the environment type
     /// and the local holding the closure cast to it.
     env_view: Option<(u32, u32)>,
+    /// The emitting pass of a function transformed to unwind and rewind.
+    transformed: bool,
+    /// In a transformed function: the wasm types of its parameters, the
+    /// locals holding the popped frame and the site being resumed, the
+    /// stack at entry, and its suspendable call sites in emission order.
+    param_types: Vec<ValType>,
+    frame_local: u32,
+    resume_local: u32,
+    entry_stack: Vec<ValType>,
+    sites: Vec<Site>,
+}
+
+/// An arm of `match` or `alt` walked into its own buffer: how it ends, the
+/// stack it leaves, its code, and its sites (first index, count).
+type WalkedArm = (Flow, Vec<Ty>, Vec<I<'static>>, (u32, u32));
+
+/// A suspendable call site of a transformed function: the operand values
+/// below the call's inputs, its outputs, and the scratch locals the
+/// operands are popped into when unwinding.
+struct Site {
+    below: Vec<ValType>,
+    outputs: Vec<ValType>,
+    scratch: Vec<u32>,
+}
+
+/// Placeholders in a transformed function's code, replaced once its locals
+/// are final: the entry restore, and each site's operand rebuild
+/// (`MARK + 1 + 2k`) and unwind save (`MARK + 2 + 2k`).
+const MARK: u32 = 0xF000_0000;
+
+/// `[mode] == value`, the unwind mode cell.
+fn mode_is(value: i32) -> [I<'static>; 4] {
+    [
+        I::I32Const(0),
+        I::I32Load(memarg(layout::UNWIND_MODE, ValType::I32)),
+        I::I32Const(value),
+        I::I32Eq,
+    ]
+}
+
+/// A zero or null of `vt`, standing in for a value not computed.
+fn dummy(vt: ValType) -> I<'static> {
+    match vt {
+        ValType::I32 => I::I32Const(0),
+        ValType::I64 => I::I64Const(0),
+        ValType::F32 => I::F32Const(0.0.into()),
+        ValType::F64 => I::F64Const(0.0.into()),
+        ValType::Ref(r) => I::RefNull(r.heap_type),
+        ValType::V128 => unreachable!("no v128 values"),
+    }
 }
 
 impl<'c> Walker<'c> {
@@ -1119,10 +1232,250 @@ impl<'c> Walker<'c> {
             env: None,
             captures: Vec::new(),
             env_view: None,
+            transformed: false,
+            param_types: Vec::new(),
+            frame_local: 0,
+            resume_local: 0,
+            entry_stack: Vec::new(),
+            sites: Vec::new(),
         }
     }
 
     fn run(&mut self, mode: &Mode<'_>, body: &Body, loc: &Location) -> Result<Effect, Diagnostic> {
+        self.transformed = self.emit && self.ctx.transforms(&self.name);
+        let effect = self.run_body(mode, body, loc)?;
+        if self.transformed {
+            let results = if matches!(mode, Mode::Line(_)) {
+                Vec::new()
+            } else {
+                self.lower_all(&effect.outputs)
+            };
+            self.splice_unwind(&results);
+        }
+        Ok(effect)
+    }
+
+    /// A block type from lowered params and results.
+    fn block_type_vt(&mut self, p: Vec<ValType>, r: Vec<ValType>) -> BlockType {
+        if p.is_empty() && r.is_empty() {
+            return BlockType::Empty;
+        }
+        if p.is_empty() && r.len() == 1 {
+            return BlockType::Result(r[0]);
+        }
+        BlockType::FunctionType(self.ctx.intern_type(p, r))
+    }
+
+    /// Emit a call with wasm inputs `ins` and outputs `outs` (the checker
+    /// stack already below its inputs). In a transformed function it is a
+    /// suspendable site (design steps 5 and 1): rewinding to it, the stack
+    /// is rebuilt from the frame and `rewound` (after dummies of
+    /// `rewound_ins`) calls again; rewinding to a later site, it is skipped;
+    /// after it, an unwinding callee makes this function save its frame and
+    /// return.
+    fn site_call(
+        &mut self,
+        ins: Vec<ValType>,
+        outs: Vec<ValType>,
+        call: Vec<I<'static>>,
+        rewound: Vec<I<'static>>,
+        rewound_ins: Vec<ValType>,
+    ) {
+        if !self.transformed {
+            self.code.extend(call);
+            return;
+        }
+        let stack = self.stack.clone();
+        let below = self.lower_all(&stack);
+        let k = self.sites.len() as u32;
+        let scratch = below.iter().map(|&vt| self.new_local(vt)).collect();
+        let mut pin = below.clone();
+        pin.extend(&ins);
+        let mut pout = below.clone();
+        pout.extend(&outs);
+        let bt = self.block_type_vt(pin.clone(), pout);
+        self.code.extend(mode_is(layout::REWINDING));
+        self.op(I::If(bt));
+        self.op(I::LocalGet(self.resume_local));
+        self.op(I::I32Const(k as i32));
+        self.op(I::I32Eq);
+        self.op(I::If(bt));
+        for _ in &pin {
+            self.op(I::Drop);
+        }
+        self.op(I::Call(MARK + 1 + 2 * k));
+        for &vt in &rewound_ins {
+            self.op(dummy(vt));
+        }
+        self.code.extend(rewound);
+        self.op(I::Else);
+        for _ in &ins {
+            self.op(I::Drop);
+        }
+        for &vt in &outs {
+            self.op(dummy(vt));
+        }
+        self.op(I::End);
+        self.op(I::Else);
+        self.code.extend(call);
+        self.op(I::End);
+        self.op(I::Call(MARK + 2 + 2 * k));
+        self.sites.push(Site {
+            below,
+            outputs: outs,
+            scratch,
+        });
+    }
+
+    /// A call to word `id` (effect `e`): direct, or through table 0 in the
+    /// REPL. A suspendable site when the callee is transformed, and every
+    /// table call is.
+    fn word_call(&mut self, id: WordId, e: &Effect) {
+        self.callees.push((id, EdgeKind::Call));
+        let direct = !self.ctx.indirect_calls;
+        if direct && !(self.transformed && self.ctx.transforms(&self.ctx.words[id].name)) {
+            self.op(I::Call(Word::func_index(id)));
+            return;
+        }
+        self.ctx.register_effect(e);
+        let ins = e.wasm_params(&self.ctx.struct_types);
+        let outs = e.wasm_results(&self.ctx.struct_types);
+        let call = if direct {
+            vec![I::Call(Word::func_index(id))]
+        } else {
+            let ti = self.ctx.intern_type(ins.clone(), outs.clone());
+            vec![
+                I::I32Const(id as i32),
+                I::CallIndirect {
+                    type_index: ti,
+                    table_index: 0,
+                },
+            ]
+        };
+        self.site_call(ins.clone(), outs, call.clone(), call, ins);
+    }
+
+    /// Replace the placeholders of a transformed function now that its
+    /// locals are final: each site's frame type holds every local (params
+    /// first) and then the operands below the call.
+    fn splice_unwind(&mut self, results: &[ValType]) {
+        let frame = self.ctx.frame_type();
+        let locals: Vec<ValType> = self
+            .param_types
+            .iter()
+            .chain(&self.local_types)
+            .copied()
+            .collect();
+        let n = locals.len() as u32;
+        let types: Vec<u32> = self
+            .sites
+            .iter()
+            .map(|s| locals.iter().chain(&s.below).copied().collect())
+            .collect::<Vec<Vec<ValType>>>()
+            .into_iter()
+            .map(|f| self.ctx.site_frame_type(f))
+            .collect();
+        let (fl, rl) = (self.frame_local, self.resume_local);
+        let cast = |t: u32| I::RefCastNullable(HeapType::Concrete(t));
+        let code = std::mem::take(&mut self.code);
+        let mut out = Vec::with_capacity(code.len());
+        for i in code {
+            let I::Call(x) = i else {
+                out.push(i);
+                continue;
+            };
+            if x < MARK {
+                out.push(i);
+            } else if x == MARK {
+                // Step 2: pop this function's frame and restore its locals.
+                if self.sites.is_empty() {
+                    continue;
+                }
+                let s = self.entry_stack.clone();
+                let bt = self.block_type_vt(s.clone(), s);
+                out.extend(mode_is(layout::REWINDING));
+                out.push(I::If(bt));
+                out.extend([
+                    I::GlobalGet(0),
+                    cast(frame),
+                    I::LocalTee(fl),
+                    I::StructGet {
+                        struct_type_index: frame,
+                        field_index: 0,
+                    },
+                    I::GlobalSet(0),
+                    I::LocalGet(fl),
+                    I::StructGet {
+                        struct_type_index: frame,
+                        field_index: 1,
+                    },
+                    I::LocalSet(rl),
+                ]);
+                for (k, &t) in types.iter().enumerate() {
+                    out.extend([
+                        I::LocalGet(rl),
+                        I::I32Const(k as i32),
+                        I::I32Eq,
+                        I::If(BlockType::Empty),
+                    ]);
+                    for j in (0..n).filter(|&j| j != fl && j != rl) {
+                        out.extend([
+                            I::LocalGet(fl),
+                            cast(t),
+                            I::StructGet {
+                                struct_type_index: t,
+                                field_index: 2 + j,
+                            },
+                            I::LocalSet(j),
+                        ]);
+                    }
+                    out.push(I::End);
+                }
+                out.push(I::End);
+            } else if (x - MARK) % 2 == 1 {
+                // Step 5: the saved operands below the call.
+                let k = ((x - MARK - 1) / 2) as usize;
+                let t = types[k];
+                for j in 0..self.sites[k].below.len() as u32 {
+                    out.extend([
+                        I::LocalGet(fl),
+                        cast(t),
+                        I::StructGet {
+                            struct_type_index: t,
+                            field_index: 2 + n + j,
+                        },
+                    ]);
+                }
+            } else {
+                // Step 1: unwinding, save this function's frame and return.
+                let k = ((x - MARK - 2) / 2) as usize;
+                let t = types[k];
+                let site = &self.sites[k];
+                let mut p = site.below.clone();
+                p.extend(&site.outputs);
+                let (nouts, scratch) = (site.outputs.len(), site.scratch.clone());
+                let bt = self.block_type_vt(p.clone(), p);
+                out.extend(mode_is(layout::UNWINDING));
+                out.push(I::If(bt));
+                out.extend((0..nouts).map(|_| I::Drop));
+                out.extend(scratch.iter().rev().map(|&l| I::LocalSet(l)));
+                out.extend([I::GlobalGet(0), cast(frame), I::I32Const(k as i32)]);
+                out.extend((0..n).map(I::LocalGet));
+                out.extend(scratch.iter().map(|&l| I::LocalGet(l)));
+                out.extend([I::StructNew(t), I::GlobalSet(0)]);
+                out.extend(results.iter().map(|&vt| dummy(vt)));
+                out.extend([I::Return, I::End]);
+            }
+        }
+        self.code = out;
+    }
+
+    fn run_body(
+        &mut self,
+        mode: &Mode<'_>,
+        body: &Body,
+        loc: &Location,
+    ) -> Result<Effect, Diagnostic> {
         if let Mode::Declared(e) | Mode::Closure(e) = mode {
             self.stack = e.inputs.clone();
             if self.emit {
@@ -1153,10 +1506,32 @@ impl<'c> Walker<'c> {
                 }
             }
         }
+        if self.transformed {
+            if let Mode::Declared(e) | Mode::Closure(e) = mode {
+                self.param_types = e.wasm_params(&self.ctx.struct_types);
+                self.entry_stack = self.lower_all(&e.inputs);
+                if matches!(mode, Mode::Closure(_)) {
+                    let c = self.ctx.closure_type();
+                    self.param_types.push(ref_ty(c));
+                }
+            }
+            let frame = self.ctx.frame_type();
+            self.frame_local = self.new_local(ref_ty(frame));
+            self.resume_local = self.new_local(ValType::I32);
+            self.op(I::Call(MARK));
+        }
         let mut line_base = None;
         if let Mode::Line(inputs) = mode {
-            self.stack = inputs.to_vec();
-            line_base = Some(self.line_prologue(inputs));
+            if self.transformed {
+                self.skip_in_rewind(|w| {
+                    w.stack = inputs.to_vec();
+                    line_base = Some(w.line_prologue(inputs));
+                    Ok(Flow::Normal)
+                })?;
+            } else {
+                self.stack = inputs.to_vec();
+                line_base = Some(self.line_prologue(inputs));
+            }
         }
         let mut infer_inputs = Vec::new();
         if let Mode::Infer(n) = mode {
@@ -1632,16 +2007,26 @@ impl<'c> Walker<'c> {
             (true, Some(i)) => self.new_local(ref_ty(i)),
             _ => self.new_local(ValType::I32),
         };
-        self.op(I::LocalSet(v));
-        self.op(I::LocalGet(v));
-        self.op(I::RefAsNonNull);
-        self.op(I::Drop);
+        let hs = self.transformed
+            && arms
+                .iter()
+                .any(|a| self.body_has_site(&a.body, &mut HashSet::new()));
+        // Rewinding, `v` is restored and the value matched is a dummy.
+        let mut with_u = s.clone();
+        with_u.push(ut.clone());
+        self.segment(hs, with_u, s.clone(), |w| {
+            w.op(I::LocalSet(v));
+            w.op(I::LocalGet(v));
+            w.op(I::RefAsNonNull);
+            w.op(I::Drop);
+        });
         // Walk each arm in order, variants first then `else:`.
         let mut order: Vec<&Arm> = arms.iter().filter(|a| a.label != "else").collect();
         order.extend(arms.iter().filter(|a| a.label == "else"));
-        let mut walked: Vec<(Flow, Vec<Ty>, Vec<I<'static>>, &Arm)> = Vec::new();
+        let mut walked: Vec<(WalkedArm, &Arm)> = Vec::new();
         let named = order.len() - has_else as usize;
         for (i, a) in order.iter().enumerate() {
+            let lo = self.sites.len() as u32;
             self.stack = s.clone();
             let mut pre: Vec<I<'static>> = Vec::new();
             if a.label == "else" {
@@ -1674,10 +2059,11 @@ impl<'c> Walker<'c> {
             self.depth -= nest;
             let (flow, code) = r?;
             pre.extend(code);
-            walked.push((flow, std::mem::take(&mut self.stack), pre, a));
+            let range = (lo, self.sites.len() as u32 - lo);
+            walked.push(((flow, std::mem::take(&mut self.stack), pre, range), a));
         }
         let mut result: Option<(Vec<Ty>, &Arm)> = None;
-        for (flow, st, _, a) in &walked {
+        for ((flow, st, _, _), a) in &walked {
             if *flow != Flow::Normal {
                 continue;
             }
@@ -1709,7 +2095,7 @@ impl<'c> Walker<'c> {
         };
         let bt = self.block_type(&s, &result);
         let mut ends = 0;
-        for (_, _, code, a) in walked {
+        for ((_, _, code, (lo, len)), a) in walked {
             if a.label == "else" {
                 self.code.extend(code);
                 continue;
@@ -1718,15 +2104,194 @@ impl<'c> Walker<'c> {
             let vi = base.map(|i| i + 1 + k as u32).unwrap_or(0);
             self.op(I::LocalGet(v));
             self.op(I::RefTestNonNull(HeapType::Concrete(vi)));
+            if hs {
+                self.rewind_cond(lo, len, true);
+            }
             self.op(I::If(bt));
             self.code.extend(code);
             self.op(I::Else);
             ends += 1;
         }
         if !has_else {
-            self.op(I::Unreachable);
+            self.no_arm(hs, &s, &result);
         }
         for _ in 0..ends {
+            self.op(I::End);
+        }
+        self.stack = result;
+        Ok(flow)
+    }
+
+    /// `a recv: [ ... ] b recv: [ ... ] alt`: wait for the first channel with
+    /// a value (or closed and drained) through `OP_ALT`, then run its arm with
+    /// `option T`, from `chan.taken`.
+    fn alt_(&mut self, arms: &[AltArm]) -> Result<Flow, Diagnostic> {
+        // Each arm's channel, into a local.
+        let mut chans: Vec<(Ty, u32, u32)> = Vec::new();
+        let tr = self.transformed;
+        for a in arms {
+            // Rewinding, a site-free channel expression is skipped.
+            let flow = if tr && !self.has_site(&a.chan, &mut HashSet::new()) {
+                self.skip_in_rewind(|w| w.node(&a.chan))?
+            } else {
+                self.node(&a.chan)?
+            };
+            if flow != Flow::Normal {
+                return Err(self.err(
+                    codes::E_UNREACHABLE,
+                    "an `alt` channel cannot diverge",
+                    &a.chan.loc,
+                ));
+            }
+            let top = self.pop_any("alt", 1, &a.chan.loc)?.remove(0);
+            let v = self.subst.fresh();
+            let want = Ty::Struct("chan".into(), vec![v.clone()]);
+            if !self.subst.unify(&top, &want) {
+                let t = self.subst.resolve(&top);
+                return Err(self
+                    .err(
+                        codes::E_TYPE_MISMATCH,
+                        format!("an `alt` arm needs a channel before `recv:` but found ( {t} )"),
+                        &a.loc,
+                    )
+                    .with_stacks(vec!["chan T".into()], vec![t.to_string()]));
+            }
+            let ct = self.subst.resolve(&want);
+            if self.emit && ct.has_var() {
+                return Err(self.err(
+                    codes::E_AMBIGUOUS_TYPE,
+                    "the type of this `alt` channel is not known; write the effect or add a stack assertion",
+                    &a.loc,
+                ));
+            }
+            let vt = self.lower(&ct)[0];
+            let si = self
+                .ctx
+                .struct_types
+                .get(&ct.to_string())
+                .map_or(0, |&(i, _)| i);
+            let local = self.new_local(vt);
+            let stack = self.stack.clone();
+            let with_c = [stack.clone(), vec![ct.clone()]].concat();
+            self.segment(tr, with_c, stack, |w| w.op(I::LocalSet(local)));
+            chans.push((ct, local, si));
+        }
+        // Their ids, in memory, for the host.
+        let n = arms.len() as u32;
+        let buf = self.new_local(ValType::I32);
+        let r = self.new_local(ValType::I32);
+        let s = self.stack.clone();
+        let with_args = [s.clone(), vec![Ty::I32; 3]].concat();
+        self.segment(tr, s.clone(), with_args, |w| {
+            w.op(I::I32Const((4 * n) as i32));
+            w.op(I::Call(FN_ALLOC));
+            w.op(I::LocalSet(buf));
+            for (i, (_, local, si)) in chans.iter().enumerate() {
+                w.op(I::LocalGet(buf));
+                w.op(I::LocalGet(*local));
+                w.op(I::StructGet {
+                    struct_type_index: *si,
+                    field_index: 0,
+                });
+                w.op(I::I32Store(memarg(4 * i as u32, ValType::I32)));
+            }
+            w.op(I::LocalGet(buf));
+            w.op(I::I32Const(n as i32));
+            w.op(I::I32Const(0));
+        });
+        let ring = vec![I::I32Const(layout::OP_ALT), I::Call(FN_RING)];
+        self.site_call(
+            vec![ValType::I32; 3],
+            vec![ValType::I32],
+            ring.clone(),
+            ring,
+            vec![ValType::I32; 3],
+        );
+        // Rewinding to a later site, the ring's dummy result never reaches `r`.
+        let with_r = [s.clone(), vec![Ty::I32]].concat();
+        self.segment(tr, with_r, s.clone(), |w| w.op(I::LocalSet(r)));
+        // Walk each arm: it receives `option T` from `chan.taken`.
+        let taken_site = tr && self.name_is_site("chan.taken", &HashSet::new());
+        let mut walked: Vec<WalkedArm> = Vec::new();
+        for (i, (a, (ct, local, _))) in arms.iter().zip(&chans).enumerate() {
+            let saved = std::mem::take(&mut self.code);
+            let lo = self.sites.len() as u32;
+            // Arm i sits inside i + 1 nested `if`s.
+            let nest = i as u32 + 1;
+            self.depth += nest;
+            let pushes = |w: &mut Self| {
+                w.op(I::LocalGet(*local));
+                w.op(I::LocalGet(r));
+                w.op(I::I32Const(1));
+                w.op(I::I32And);
+            };
+            let with_taken = [s.clone(), vec![ct.clone(), Ty::I32]].concat();
+            let taken = if !tr || taken_site {
+                self.segment(tr, s.clone(), with_taken.clone(), pushes);
+                self.stack = with_taken;
+                self.name_ref("chan.taken", &a.loc)
+            } else {
+                // Not a site: `chan.taken` is skipped with its pushes.
+                self.stack = s.clone();
+                self.skip_in_rewind(|w| {
+                    pushes(w);
+                    w.stack = with_taken;
+                    w.name_ref("chan.taken", &a.loc)
+                })
+            };
+            let flow = taken.and_then(|_| self.seq(&a.body));
+            self.depth -= nest;
+            let code = std::mem::replace(&mut self.code, saved);
+            let range = (lo, self.sites.len() as u32 - lo);
+            walked.push((flow?, std::mem::take(&mut self.stack), code, range));
+        }
+        let mut result: Option<(Vec<Ty>, usize)> = None;
+        for (k, (flow, st, _, _)) in walked.iter().enumerate() {
+            if *flow != Flow::Normal {
+                continue;
+            }
+            match &result {
+                None => result = Some((st.clone(), k)),
+                Some((rs, first)) => {
+                    if !self.subst.unify_all(rs, st) {
+                        let (x, y) = (self.subst.resolve_all(rs), self.subst.resolve_all(st));
+                        return Err(self
+                            .err(
+                                codes::E_BRANCH_MISMATCH,
+                                format!(
+                                    "arms of `alt` disagree: arm {} leaves {}, arm {} leaves {}",
+                                    first + 1,
+                                    fmt_stack(&x),
+                                    k + 1,
+                                    fmt_stack(&y)
+                                ),
+                                &arms[k].loc,
+                            )
+                            .with_stacks(names(&x), names(&y)));
+                    }
+                }
+            }
+        }
+        let (flow, result) = match result {
+            Some((rs, _)) => (Flow::Normal, rs),
+            None => (Flow::Diverged, s.clone()),
+        };
+        let bt = self.block_type(&s, &result);
+        for (i, (_, _, code, (lo, len))) in walked.into_iter().enumerate() {
+            self.op(I::LocalGet(r));
+            self.op(I::I32Const(1));
+            self.op(I::I32ShrU);
+            self.op(I::I32Const(i as i32));
+            self.op(I::I32Eq);
+            if tr {
+                self.rewind_cond(lo, len, true);
+            }
+            self.op(I::If(bt));
+            self.code.extend(code);
+            self.op(I::Else);
+        }
+        self.no_arm(tr, &s, &result);
+        for _ in 0..n {
             self.op(I::End);
         }
         self.stack = result;
@@ -1797,21 +2362,7 @@ impl<'c> Walker<'c> {
             _ => {
                 let id = self.ctx.hash_eq_word(op, t, loc)?;
                 let e = self.ctx.words[id].effect.clone();
-                if !self.ctx.indirect_calls {
-                    self.op(I::Call(Word::func_index(id)));
-                } else {
-                    self.ctx.register_effect(&e);
-                    let ti = self.ctx.intern_type(
-                        e.wasm_params(&self.ctx.struct_types),
-                        e.wasm_results(&self.ctx.struct_types),
-                    );
-                    self.op(I::I32Const(id as i32));
-                    self.op(I::CallIndirect {
-                        type_index: ti,
-                        table_index: 0,
-                    });
-                }
-                self.callees.push((id, EdgeKind::Call));
+                self.word_call(id, &e);
                 Ok(())
             }
         }
@@ -1840,8 +2391,15 @@ impl<'c> Walker<'c> {
     }
 
     fn seq(&mut self, body: &Body) -> Result<Flow, Diagnostic> {
-        let mut flow = Flow::Normal;
-        for node in body {
+        if self.transformed {
+            return self.seq_transformed(body);
+        }
+        self.seq_nodes(body, Flow::Normal)
+    }
+
+    /// Walk `nodes` in order after code that ended with `flow`.
+    fn seq_nodes(&mut self, nodes: &[Node], mut flow: Flow) -> Result<Flow, Diagnostic> {
+        for node in nodes {
             if flow == Flow::Diverged {
                 return Err(self.err(
                     codes::E_UNREACHABLE,
@@ -1850,6 +2408,228 @@ impl<'c> Walker<'c> {
                 ));
             }
             flow = self.node(node)?;
+        }
+        Ok(flow)
+    }
+
+    /// `seq` in a transformed function (design step 3): each maximal run of
+    /// nodes without a suspendable site is skipped in rewind mode.
+    fn seq_transformed(&mut self, body: &Body) -> Result<Flow, Diagnostic> {
+        let mut bound = HashSet::new();
+        let sites = self.site_flags(body, &mut bound);
+        let mut flow = Flow::Normal;
+        let mut i = 0;
+        while i < body.len() {
+            if sites[i] {
+                flow = self.seq_nodes(&body[i..i + 1], flow)?;
+                i += 1;
+                continue;
+            }
+            let j = (i..body.len()).find(|&j| sites[j]).unwrap_or(body.len());
+            let run = &body[i..j];
+            if flow == Flow::Diverged {
+                // Reported by `seq_nodes` without wrapping.
+                return self.seq_nodes(run, flow);
+            }
+            flow = self.skip_in_rewind(|w| w.seq_nodes(run, Flow::Normal))?;
+            i = j;
+        }
+        Ok(flow)
+    }
+
+    /// Whether `node` may hold a suspendable call site, before it is walked
+    /// (a superset is safe: it only costs code). `bound` collects the
+    /// locals bound so far in the scan.
+    fn has_site(&self, node: &Node, bound: &mut HashSet<String>) -> bool {
+        match &node.kind {
+            NodeKind::Name(n) => self.name_is_site(n, bound),
+            NodeKind::Bind { name, .. } => {
+                bound.insert(name.clone());
+                false
+            }
+            NodeKind::Alt(_) => true,
+            NodeKind::If(a, b) | NodeKind::While(a, b) | NodeKind::Until(a, b) => {
+                let a = self.body_has_site(a, bound);
+                self.body_has_site(b, bound) || a
+            }
+            NodeKind::When(b)
+            | NodeKind::Unless(b)
+            | NodeKind::Times(b)
+            | NodeKind::Each(b)
+            | NodeKind::Map(b)
+            | NodeKind::Filter(b)
+            | NodeKind::Fold(b) => self.body_has_site(b, bound),
+            NodeKind::Match(arms) => {
+                // Scan every arm: each may bind locals.
+                let mut any = false;
+                for a in arms {
+                    any |= self.body_has_site(&a.body, bound);
+                }
+                any
+            }
+            NodeKind::Lit(_)
+            | NodeKind::Tick(_)
+            | NodeKind::Quote { .. }
+            | NodeKind::Assert(_)
+            | NodeKind::Leave => false,
+        }
+    }
+
+    fn body_has_site(&self, body: &Body, bound: &mut HashSet<String>) -> bool {
+        self.site_flags(body, bound).contains(&true)
+    }
+
+    /// `has_site` of each node of `body`. A parking opcode literal directly
+    /// before `ring.submit` belongs to that site: emitted with it, so the
+    /// call sees its opcode.
+    fn site_flags(&self, body: &Body, bound: &mut HashSet<String>) -> Vec<bool> {
+        let mut flags: Vec<bool> = body.iter().map(|n| self.has_site(n, bound)).collect();
+        for i in 1..body.len() {
+            if matches!(&body[i].kind, NodeKind::Name(n) if n == "ring.submit")
+                && matches!(
+                    body[i - 1].kind,
+                    NodeKind::Lit(Lit::I32(
+                        layout::OP_CHAN_SEND | layout::OP_CHAN_RECV | layout::OP_ALT
+                    ))
+                )
+            {
+                flags[i - 1] = true;
+                flags[i] = true;
+            }
+        }
+        flags
+    }
+
+    fn name_is_site(&self, n: &str, bound: &HashSet<String>) -> bool {
+        if n == "call" {
+            return true;
+        }
+        let base = n.strip_suffix('!').unwrap_or(n);
+        if bound.contains(base)
+            || self.locals.iter().any(|l| l.name == base)
+            || self.capture(base).is_some()
+            || prims::is_builtin(n)
+        {
+            return false;
+        }
+        match &self.ctx.unwind {
+            Unwind::Off => false,
+            Unwind::All => true,
+            Unwind::Only(s) => s.contains(n),
+        }
+    }
+
+    /// Emit a straight-line segment of a construct that holds a site: when
+    /// `on`, it is skipped in rewind mode, its stack going from `before` to
+    /// `after` (dummies). The checker stack is left as it was.
+    fn segment(&mut self, on: bool, before: Vec<Ty>, after: Vec<Ty>, emit: impl FnOnce(&mut Self)) {
+        if !on {
+            emit(self);
+            return;
+        }
+        let saved = std::mem::replace(&mut self.stack, before);
+        self.skip_in_rewind(|w| {
+            emit(w);
+            w.stack = after;
+            Ok(Flow::Normal)
+        })
+        .expect("a segment reports nothing");
+        self.stack = saved;
+    }
+
+    /// Design step 4: rewinding, replace the condition on top of the stack
+    /// with whether the resume site is (`inside`) or is not in
+    /// `[lo, lo + len)`. Returns where `len` is, for `patch_range`.
+    fn rewind_cond(&mut self, lo: u32, len: u32, inside: bool) -> usize {
+        self.op(I::LocalGet(self.resume_local));
+        self.op(I::I32Const(lo as i32));
+        self.op(I::I32Sub);
+        let at = self.code.len();
+        self.op(I::I32Const(len as i32));
+        self.op(I::I32LtU);
+        if !inside {
+            self.op(I::I32Eqz);
+        }
+        self.op(I::I32Const(0));
+        self.op(I::I32Load(memarg(layout::UNWIND_MODE, ValType::I32)));
+        self.op(I::I32Const(layout::REWINDING));
+        self.op(I::I32Ne);
+        self.op(I::Select);
+        at
+    }
+
+    /// Where no arm of a `match` or `alt` was taken: unreachable, except
+    /// (`rewinding`) when rewinding to a site after the construct, which
+    /// passes dummies through.
+    fn no_arm(&mut self, rewinding: bool, s: &[Ty], result: &[Ty]) {
+        if !rewinding {
+            self.op(I::Unreachable);
+            return;
+        }
+        let bt = self.block_type(s, result);
+        self.code.extend(mode_is(layout::REWINDING));
+        self.op(I::If(bt));
+        for _ in self.lower_all(s) {
+            self.op(I::Drop);
+        }
+        for vt in self.lower_all(result) {
+            self.op(dummy(vt));
+        }
+        self.op(I::Else);
+        self.op(I::Unreachable);
+        self.op(I::End);
+    }
+
+    /// The range of a `rewind_cond` at `at` ends at the sites walked so far.
+    fn patch_range(&mut self, at: usize, lo: u32) {
+        self.code[at] = I::I32Const((self.sites.len() as u32 - lo) as i32);
+    }
+
+    /// Whether `node` holds a suspendable site in a transformed function.
+    fn node_has_site(&self, node: &Node) -> bool {
+        self.transformed && self.has_site(node, &mut HashSet::new())
+    }
+
+    fn body_site(&self, b: &Body) -> bool {
+        self.transformed && self.body_has_site(b, &mut HashSet::new())
+    }
+
+    /// Emit `walk`'s code so that it runs only when not rewinding; rewinding,
+    /// its inputs are dropped and dummies of its outputs pushed instead. The
+    /// block type is filled in once the walk has left its stack.
+    fn skip_in_rewind(
+        &mut self,
+        walk: impl FnOnce(&mut Self) -> Result<Flow, Diagnostic>,
+    ) -> Result<Flow, Diagnostic> {
+        let before = self.stack.clone();
+        self.op(I::I32Const(0));
+        self.op(I::I32Load(memarg(layout::UNWIND_MODE, ValType::I32)));
+        self.op(I::I32Const(layout::REWINDING));
+        self.op(I::I32Ne);
+        let at = self.code.len();
+        self.op(I::If(BlockType::Empty));
+        self.open_label();
+        let flow = walk(self)?;
+        let after = if flow == Flow::Diverged {
+            before.clone()
+        } else {
+            self.stack.clone()
+        };
+        self.code[at] = I::If(self.block_type(&before, &after));
+        self.op(I::Else);
+        if flow == Flow::Diverged {
+            self.op(I::Unreachable);
+        } else {
+            for _ in self.lower_all(&before) {
+                self.op(I::Drop);
+            }
+            for vt in self.lower_all(&after) {
+                self.op(dummy(vt));
+            }
+        }
+        self.close_label();
+        if flow == Flow::Diverged {
+            self.op(I::Unreachable);
         }
         Ok(flow)
     }
@@ -2038,8 +2818,11 @@ impl<'c> Walker<'c> {
             NodeKind::If(t, e) => {
                 self.pop_expect("if", &[Ty::I32], loc)?;
                 let s = self.stack.clone();
+                let hs = self.node_has_site(node);
                 self.open_label();
+                let lo = self.sites.len() as u32;
                 let (ft, ct) = self.seq_into(t)?;
+                let mid = self.sites.len() as u32;
                 let st = std::mem::replace(&mut self.stack, s.clone());
                 let (fe, ce) = self.seq_into(e)?;
                 let se = std::mem::replace(&mut self.stack, s.clone());
@@ -2067,6 +2850,10 @@ impl<'c> Walker<'c> {
                     (Flow::Diverged, Flow::Diverged) => (Flow::Diverged, s.clone()),
                 };
                 let bt = self.block_type(&s, &result);
+                if hs {
+                    // Rewinding, take the branch holding the resume site.
+                    self.rewind_cond(lo, mid - lo, true);
+                }
                 self.op(I::If(bt));
                 self.code.extend(ct);
                 self.op(I::Else);
@@ -2083,6 +2870,10 @@ impl<'c> Walker<'c> {
                 };
                 self.pop_expect(what, &[Ty::I32], loc)?;
                 let s = self.stack.clone();
+                let lo = self.sites.len() as u32;
+                let at = self
+                    .node_has_site(node)
+                    .then(|| self.rewind_cond(lo, 0, what == "when"));
                 if what == "unless" {
                     self.op(I::I32Eqz);
                 }
@@ -2091,6 +2882,9 @@ impl<'c> Walker<'c> {
                 self.open_label();
                 let flow = self.seq(b)?;
                 self.expect_identity(flow, &s, what, "body", loc)?;
+                if let Some(at) = at {
+                    self.patch_range(at, lo);
+                }
                 self.close_label();
                 self.stack = s;
                 Ok(Flow::Normal)
@@ -2106,6 +2900,7 @@ impl<'c> Walker<'c> {
                     exit: Some(s.clone()),
                     level: exit,
                 });
+                let hs = self.node_has_site(node);
                 let fc = self.seq(c)?;
                 if fc == Flow::Normal {
                     let mut want = s.clone();
@@ -2113,10 +2908,17 @@ impl<'c> Walker<'c> {
                     self.expect_shape(&want, "while", "condition", "plus one i32", loc)?;
                     self.stack.pop();
                 }
+                // Rewinding (to the body: the condition's sites are behind),
+                // enter the loop only when the resume site is in the body.
+                let mid = self.sites.len() as u32;
+                let at = hs.then(|| self.rewind_cond(mid, 0, true));
                 self.op(I::I32Eqz);
                 self.op(I::BrIf(self.rel(exit)));
                 let fb = self.seq(b)?;
                 self.expect_identity(fb, &s, "while", "body", loc)?;
+                if let Some(at) = at {
+                    self.patch_range(at, mid);
+                }
                 self.op(I::Br(self.rel(top)));
                 self.loops.pop();
                 self.close_label();
@@ -2135,6 +2937,8 @@ impl<'c> Walker<'c> {
                     exit: Some(s.clone()),
                     level: exit,
                 });
+                let hs = self.node_has_site(node);
+                let lo = self.sites.len() as u32;
                 let fb = self.seq(b)?;
                 self.expect_identity(fb, &s, "until", "body", loc)?;
                 let fc = self.seq(c)?;
@@ -2143,6 +2947,12 @@ impl<'c> Walker<'c> {
                     want.push(Ty::I32);
                     self.expect_shape(&want, "until", "condition", "plus one i32", loc)?;
                     self.stack.pop();
+                }
+                // Still rewinding here, the resume site lies after the loop:
+                // leave it rather than run it again.
+                if hs {
+                    let len = self.sites.len() as u32 - lo;
+                    self.rewind_cond(lo, len, false);
                 }
                 self.op(I::I32Eqz);
                 self.op(I::BrIf(self.rel(top)));
@@ -2157,9 +2967,14 @@ impl<'c> Walker<'c> {
                 let s = self.stack.clone();
                 let n = self.new_local(ValType::I32);
                 let i = self.new_local(ValType::I32);
-                self.op(I::LocalSet(n));
-                self.op(I::I32Const(0));
-                self.op(I::LocalSet(i));
+                let hs = self.node_has_site(node);
+                let mut before = s.clone();
+                before.push(Ty::I32);
+                self.segment(hs, before, s.clone(), |w| {
+                    w.op(I::LocalSet(n));
+                    w.op(I::I32Const(0));
+                    w.op(I::LocalSet(i));
+                });
                 let bt = self.block_type(&s, &s);
                 self.op(I::Block(bt));
                 let exit = self.open_label();
@@ -2168,6 +2983,8 @@ impl<'c> Walker<'c> {
                 self.op(I::LocalGet(i));
                 self.op(I::LocalGet(n));
                 self.op(I::I32GeS);
+                let lo = self.sites.len() as u32;
+                let at = hs.then(|| self.rewind_cond(lo, 0, false));
                 self.op(I::BrIf(self.rel(exit)));
                 self.op(I::LocalGet(i));
                 self.stack.push(Ty::I32);
@@ -2177,6 +2994,9 @@ impl<'c> Walker<'c> {
                 });
                 let fb = self.seq(b)?;
                 self.expect_identity(fb, &s, "times", "body (which receives the index)", loc)?;
+                if let Some(at) = at {
+                    self.patch_range(at, lo);
+                }
                 self.loops.pop();
                 self.op(I::LocalGet(i));
                 self.op(I::I32Const(1));
@@ -2226,6 +3046,7 @@ impl<'c> Walker<'c> {
             NodeKind::Filter(b) => self.filter(b, loc),
             NodeKind::Fold(b) => self.fold(b, loc),
             NodeKind::Match(arms) => self.match_(arms, loc),
+            NodeKind::Alt(arms) => self.alt_(arms),
         }
     }
 
@@ -2379,11 +3200,23 @@ impl<'c> Walker<'c> {
         }
     }
 
-    /// Common loop head for collection combinators. Returns (exit level, top level).
-    fn coll_loop_open(&mut self, s: &[Ty], i: u32, len: u32) -> (u32, u32) {
+    /// Common loop head for collection combinators. Returns (exit level, top
+    /// level). With `rewind` (the first site of a body holding sites), the
+    /// counter's reset is skipped in rewind mode and the exit test leaves
+    /// unless the resume site is in the body; the returned position is for
+    /// `patch_range`.
+    fn coll_loop_open(
+        &mut self,
+        s: &[Ty],
+        i: u32,
+        len: u32,
+        rewind: Option<u32>,
+    ) -> (u32, u32, Option<usize>) {
         let bt = self.block_type(s, s);
-        self.op(I::I32Const(0));
-        self.op(I::LocalSet(i));
+        self.segment(rewind.is_some(), s.to_vec(), s.to_vec(), |w| {
+            w.op(I::I32Const(0));
+            w.op(I::LocalSet(i));
+        });
         self.op(I::Block(bt));
         let exit = self.open_label();
         self.op(I::Loop(bt));
@@ -2391,8 +3224,9 @@ impl<'c> Walker<'c> {
         self.op(I::LocalGet(i));
         self.op(I::LocalGet(len));
         self.op(I::I32GeU);
+        let at = rewind.map(|lo| self.rewind_cond(lo, 0, false));
         self.op(I::BrIf(self.rel(exit)));
-        (exit, top)
+        (exit, top, at)
     }
 
     fn coll_loop_close(&mut self, i: u32, top: u32) {
@@ -2421,13 +3255,20 @@ impl<'c> Walker<'c> {
         let t = self.pop_array("each", loc)?;
         let t = self.concrete_elem(&t, "each", loc)?;
         let s = self.stack.clone();
+        let hs = self.body_site(b);
         let len = self.new_local(ValType::I32);
         let addr = self.new_local(ValType::I32);
         let i = self.new_local(ValType::I32);
         let arr = self.source_array(&t, addr);
-        self.array_prologue(&arr, len);
-        let (exit, top) = self.coll_loop_open(&s, i, len);
-        self.load_elem(&t, &arr, i, &mut TempAlloc::default());
+        let mut with_t = s.clone();
+        with_t.push(t.clone());
+        let with_arr = [s.clone(), vec![Ty::Array(Box::new(t.clone()))]].concat();
+        self.segment(hs, with_arr, s.clone(), |w| w.array_prologue(&arr, len));
+        let lo = self.sites.len() as u32;
+        let (exit, top, at) = self.coll_loop_open(&s, i, len, hs.then_some(lo));
+        self.segment(hs, s.clone(), with_t, |w| {
+            w.load_elem(&t, &arr, i, &mut TempAlloc::default())
+        });
         self.stack.push(t);
         self.loops.push(LoopCtx {
             exit: Some(s.clone()),
@@ -2435,6 +3276,9 @@ impl<'c> Walker<'c> {
         });
         let f = self.seq(b)?;
         self.expect_identity(f, &s, "each", "body (which receives each element)", loc)?;
+        if let Some(at) = at {
+            self.patch_range(at, lo);
+        }
         self.loops.pop();
         self.coll_loop_close(i, top);
         self.stack = s;
@@ -2450,16 +3294,22 @@ impl<'c> Walker<'c> {
         let dst = self.new_local(ValType::I32);
         let i = self.new_local(ValType::I32);
         let src_arr = self.source_array(&t, src);
+        let hs = self.body_site(b);
         // Walk the body first (into its own buffer) to learn U.
         self.depth += 2;
         self.loops.push(LoopCtx {
             exit: None,
             level: 0,
         });
-        self.stack.push(t.clone());
         let saved = std::mem::take(&mut self.code);
         let mut ta = TempAlloc::default();
-        self.load_elem(&t, &src_arr, i, &mut ta);
+        let mut with_t = s.clone();
+        with_t.push(t.clone());
+        self.segment(hs, s.clone(), with_t, |w| {
+            w.load_elem(&t, &src_arr, i, &mut ta)
+        });
+        self.stack.push(t.clone());
+        let lo = self.sites.len() as u32;
         let f = self.seq(b);
         let body_code = std::mem::replace(&mut self.code, saved);
         let f = f?;
@@ -2491,29 +3341,37 @@ impl<'c> Walker<'c> {
         let u = self.stack.pop().unwrap();
         let u = self.concrete_elem(&u, "map", loc)?;
         // Prologue: the result follows U, a fresh linear block or GC array.
-        self.array_prologue(&src_arr, len);
-        let dst_arr = match self.gc_array(&u) {
-            Some(ti) => {
-                let r = self.new_local(ref_ty(ti));
-                self.op(I::LocalGet(len));
-                self.op(I::ArrayNewDefault(ti));
-                self.op(I::LocalSet(r));
-                ArrLocals::Gc {
-                    arr: r,
-                    start: None,
-                    ti,
+        let with_arr = [s.clone(), vec![Ty::Array(Box::new(t.clone()))]].concat();
+        self.segment(hs, with_arr, s.clone(), |w| w.array_prologue(&src_arr, len));
+        let mut dst_arr = None;
+        self.segment(hs, s.clone(), s.clone(), |w| {
+            dst_arr = Some(match w.gc_array(&u) {
+                Some(ti) => {
+                    let r = w.new_local(ref_ty(ti));
+                    w.op(I::LocalGet(len));
+                    w.op(I::ArrayNewDefault(ti));
+                    w.op(I::LocalSet(r));
+                    ArrLocals::Gc {
+                        arr: r,
+                        start: None,
+                        ti,
+                    }
                 }
-            }
-            None => {
-                self.op(I::LocalGet(len));
-                self.op(I::I32Const(u.elem_size() as i32));
-                self.op(I::I32Mul);
-                self.op(I::Call(FN_ALLOC));
-                self.op(I::LocalSet(dst));
-                ArrLocals::Linear(dst)
-            }
-        };
-        let (_exit, top) = self.coll_loop_open(&s, i, len);
+                None => {
+                    w.op(I::LocalGet(len));
+                    w.op(I::I32Const(u.elem_size() as i32));
+                    w.op(I::I32Mul);
+                    w.op(I::Call(FN_ALLOC));
+                    w.op(I::LocalSet(dst));
+                    ArrLocals::Linear(dst)
+                }
+            })
+        });
+        let dst_arr = dst_arr.expect("set by the segment");
+        let (_exit, top, at) = self.coll_loop_open(&s, i, len, hs.then_some(lo));
+        if let Some(at) = at {
+            self.patch_range(at, lo);
+        }
         self.code.extend(body_code);
         let val = self.stash(std::slice::from_ref(&u), None).pop().unwrap();
         self.store_elem(&u, &dst_arr, i, &val, &mut TempAlloc::default());
@@ -2534,35 +3392,47 @@ impl<'c> Walker<'c> {
         let i = self.new_local(ValType::I32);
         let cnt = self.new_local(ValType::I32);
         let src_arr = self.source_array(&t, src);
-        self.array_prologue(&src_arr, len);
-        let dst_arr = match src_arr {
-            ArrLocals::Gc { ti, .. } => {
-                // A view of the first `cnt` slots of a fresh GC array.
-                let r = self.new_local(ref_ty(ti));
-                self.op(I::LocalGet(len));
-                self.op(I::ArrayNewDefault(ti));
-                self.op(I::LocalSet(r));
-                ArrLocals::Gc {
-                    arr: r,
-                    start: None,
-                    ti,
+        let hs = self.body_site(b);
+        let with_arr = [s.clone(), vec![Ty::Array(Box::new(t.clone()))]].concat();
+        self.segment(hs, with_arr, s.clone(), |w| w.array_prologue(&src_arr, len));
+        let mut dst_arr = None;
+        self.segment(hs, s.clone(), s.clone(), |w| {
+            dst_arr = Some(match src_arr {
+                ArrLocals::Gc { ti, .. } => {
+                    // A view of the first `cnt` slots of a fresh GC array.
+                    let r = w.new_local(ref_ty(ti));
+                    w.op(I::LocalGet(len));
+                    w.op(I::ArrayNewDefault(ti));
+                    w.op(I::LocalSet(r));
+                    ArrLocals::Gc {
+                        arr: r,
+                        start: None,
+                        ti,
+                    }
                 }
-            }
-            ArrLocals::Linear(_) => {
-                self.op(I::LocalGet(len));
-                self.op(I::I32Const(t.elem_size() as i32));
-                self.op(I::I32Mul);
-                self.op(I::Call(FN_ALLOC));
-                self.op(I::LocalSet(dst));
-                ArrLocals::Linear(dst)
-            }
-        };
-        self.op(I::I32Const(0));
-        self.op(I::LocalSet(cnt));
-        let (_exit, top) = self.coll_loop_open(&s, i, len);
-        self.load_elem(&t, &src_arr, i, &mut TempAlloc::default());
-        let val = self.stash(std::slice::from_ref(&t), None).pop().unwrap();
-        self.unstash(&val);
+                ArrLocals::Linear(_) => {
+                    w.op(I::LocalGet(len));
+                    w.op(I::I32Const(t.elem_size() as i32));
+                    w.op(I::I32Mul);
+                    w.op(I::Call(FN_ALLOC));
+                    w.op(I::LocalSet(dst));
+                    ArrLocals::Linear(dst)
+                }
+            });
+            w.op(I::I32Const(0));
+            w.op(I::LocalSet(cnt));
+        });
+        let dst_arr = dst_arr.expect("set by the segment");
+        let lo = self.sites.len() as u32;
+        let (_exit, top, at) = self.coll_loop_open(&s, i, len, hs.then_some(lo));
+        let mut with_t = s.clone();
+        with_t.push(t.clone());
+        let mut val = Vec::new();
+        self.segment(hs, s.clone(), with_t, |w| {
+            w.load_elem(&t, &src_arr, i, &mut TempAlloc::default());
+            val = w.stash(std::slice::from_ref(&t), None).pop().unwrap();
+            w.unstash(&val);
+        });
         self.stack.push(t.clone());
         self.loops.push(LoopCtx {
             exit: None,
@@ -2570,6 +3440,9 @@ impl<'c> Walker<'c> {
         });
         let f = self.seq(b)?;
         self.loops.pop();
+        if let Some(at) = at {
+            self.patch_range(at, lo);
+        }
         if f == Flow::Normal {
             let mut want = s.clone();
             want.push(Ty::I32);
@@ -2599,19 +3472,31 @@ impl<'c> Walker<'c> {
         let s = self.stack.clone();
         let mut su = s.clone();
         su.push(u.clone());
-        let mut ta = TempAlloc::default();
-        let acc = self
-            .stash(std::slice::from_ref(&u), Some(&mut ta))
-            .pop()
-            .unwrap();
-        let len = self.new_local(ValType::I32);
-        let src = self.new_local(ValType::I32);
-        let i = self.new_local(ValType::I32);
-        let src_arr = self.source_array(&t, src);
-        self.array_prologue(&src_arr, len);
-        self.unstash(&acc);
-        let (exit, top) = self.coll_loop_open(&su, i, len);
-        self.load_elem(&t, &src_arr, i, &mut TempAlloc::default());
+        let hs = self.body_site(b);
+        let before = [s.clone(), vec![Ty::Array(Box::new(t.clone())), u.clone()]].concat();
+        let mut locals = None;
+        self.segment(hs, before, su.clone(), |w| {
+            let mut ta = TempAlloc::default();
+            let acc = w
+                .stash(std::slice::from_ref(&u), Some(&mut ta))
+                .pop()
+                .unwrap();
+            let len = w.new_local(ValType::I32);
+            let src = w.new_local(ValType::I32);
+            let i = w.new_local(ValType::I32);
+            let src_arr = w.source_array(&t, src);
+            w.array_prologue(&src_arr, len);
+            w.unstash(&acc);
+            locals = Some((len, i, src_arr));
+        });
+        let (len, i, src_arr) = locals.expect("set by the segment");
+        let lo = self.sites.len() as u32;
+        let (exit, top, at) = self.coll_loop_open(&su, i, len, hs.then_some(lo));
+        let mut with_t = su.clone();
+        with_t.push(t.clone());
+        self.segment(hs, su.clone(), with_t, |w| {
+            w.load_elem(&t, &src_arr, i, &mut TempAlloc::default())
+        });
         self.stack = su.clone();
         self.stack.push(t);
         self.loops.push(LoopCtx {
@@ -2621,6 +3506,9 @@ impl<'c> Walker<'c> {
         let f = self.seq(b)?;
         if f == Flow::Normal {
             self.expect_shape(&su, "fold", "body", "with the accumulator replaced", loc)?;
+        }
+        if let Some(at) = at {
+            self.patch_range(at, lo);
         }
         self.loops.pop();
         self.coll_loop_close(i, top);
@@ -2897,6 +3785,35 @@ impl<'c> Walker<'c> {
             self.stack.extend(outs);
             return Ok(Flow::Normal);
         }
+        if n == "spawn" {
+            let process = Ty::Quot(Box::new(Effect::new(Vec::new(), Vec::new())));
+            self.pop_expect(n, &[process], loc)?;
+            if self.emit {
+                // The closure goes to the host through the `wack.spawn`
+                // global (global 0, or 1 after `wack.frames`); the ring entry
+                // carries its slot.
+                let c = self.ctx.closure_type();
+                let local = self.new_local(ref_ty(c));
+                self.op(I::LocalTee(local));
+                self.op(I::GlobalSet(if self.ctx.unwind != Unwind::Off {
+                    1
+                } else {
+                    0
+                }));
+                self.op(I::LocalGet(local));
+                self.op(I::StructGet {
+                    struct_type_index: c,
+                    field_index: 0,
+                });
+                self.op(I::I32Const(0));
+                self.op(I::I32Const(0));
+                self.op(I::I32Const(layout::OP_SPAWN));
+                self.op(I::Call(FN_RING));
+                self.op(I::Drop);
+                self.ctx.uses_spawn = true;
+            }
+            return Ok(Flow::Normal);
+        }
         if let Some((ins, outs)) = prims::special(n) {
             self.pop_expect(n, &ins, loc)?;
             match n {
@@ -2910,6 +3827,24 @@ impl<'c> Walker<'c> {
                 "str.addr" | "bytes.addr" => self.op(I::Drop),
                 "str.from-raw" | "bytes.from-raw" => {}
                 "mem.alloc" => self.op(I::Call(FN_ALLOC)),
+                // ( a0 a1 a2 op -- result ): exactly `rt.ring`'s parameters.
+                "ring.submit" => match self.code.last() {
+                    // A channel operation that may park: its opcode moves
+                    // into the site's call.
+                    Some(&I::I32Const(op))
+                        if self.transformed
+                            && matches!(
+                                op,
+                                layout::OP_CHAN_SEND | layout::OP_CHAN_RECV | layout::OP_ALT
+                            ) =>
+                    {
+                        self.code.pop();
+                        let ring = vec![I::I32Const(op), I::Call(FN_RING)];
+                        let i3 = vec![ValType::I32; 3];
+                        self.site_call(i3.clone(), vec![ValType::I32], ring.clone(), ring, i3);
+                    }
+                    _ => self.op(I::Call(FN_RING)),
+                },
                 "trap" => {
                     let (wa, wl) = self.ctx.intern_str(&self.name.clone());
                     self.op(I::I32Const(wa));
@@ -3122,16 +4057,27 @@ impl<'c> Walker<'c> {
                     let ti = self.ctx.func_type(&e, true);
                     let c = self.ctx.closure_type();
                     let local = self.new_local(ref_ty(c));
-                    self.op(I::LocalTee(local));
-                    self.op(I::LocalGet(local));
-                    self.op(I::StructGet {
-                        struct_type_index: c,
-                        field_index: 0,
-                    });
-                    self.op(I::CallIndirect {
-                        type_index: ti,
-                        table_index: 0,
-                    });
+                    let rewound = vec![
+                        I::LocalGet(local),
+                        I::StructGet {
+                            struct_type_index: c,
+                            field_index: 0,
+                        },
+                        I::CallIndirect {
+                            type_index: ti,
+                            table_index: 0,
+                        },
+                    ];
+                    let mut call = vec![I::LocalTee(local)];
+                    call.extend(rewound.iter().cloned());
+                    // Rewound, the restored closure is the call's last argument.
+                    let mut rewound = rewound;
+                    rewound.insert(0, I::LocalGet(local));
+                    let args = e.wasm_params(&self.ctx.struct_types);
+                    let mut ins = args.clone();
+                    ins.push(ref_ty(c));
+                    let outs = e.wasm_results(&self.ctx.struct_types);
+                    self.site_call(ins, outs, call, rewound, args);
                 }
                 self.stack.extend(e.outputs.iter().cloned());
                 return Ok(Flow::Normal);
@@ -3155,26 +4101,29 @@ impl<'c> Walker<'c> {
                 self.pop_expect(n, &e.inputs, loc)?;
                 (e, id)
             };
-            if !self.ctx.indirect_calls {
-                self.op(I::Call(Word::func_index(id)));
-            } else if self.emit {
-                self.ctx.register_effect(&e);
-                let ti = self.ctx.intern_type(
-                    e.wasm_params(&self.ctx.struct_types),
-                    e.wasm_results(&self.ctx.struct_types),
-                );
-                self.op(I::I32Const(id as i32));
-                self.op(I::CallIndirect {
-                    type_index: ti,
-                    table_index: 0,
-                });
+            if !self.ctx.indirect_calls || self.emit {
+                self.word_call(id, &e);
+            } else {
+                self.callees.push((id, EdgeKind::Call));
             }
-            self.callees.push((id, EdgeKind::Call));
             self.stack.extend(e.outputs);
             return Ok(Flow::Normal);
         }
         Err(self.undefined(n, loc))
     }
+}
+
+/// Whether compiled code submits a ring entry whose opcode passes `op`: every
+/// submission writes its opcode as a constant directly before `call rt.ring`.
+pub fn submits(c: &Compiled, op: impl Fn(i32) -> bool) -> bool {
+    c.code
+        .windows(2)
+        .any(|w| matches!(w, [I::I32Const(o), I::Call(f)] if *f == FN_RING && op(*o)))
+}
+
+/// Whether compiled code starts a process or uses a channel.
+pub fn process_ops(c: &Compiled) -> bool {
+    submits(c, |op| op >= layout::OP_SPAWN)
 }
 
 /// The placeholder body of a generic template: it traps, and is never
@@ -3245,6 +4194,71 @@ mod tests {
         )
         .unwrap();
         out.compiled.code
+    }
+
+    /// A REPL line under `Unwind::All` (a step module: table calls, the
+    /// line prologue and epilogue) mixing literals, binds, a site, a
+    /// `leave` after a site in a `times` body and a `trap` in a run.
+    #[test]
+    fn a_transformed_line_validates() {
+        let mut ctx = Ctx {
+            indirect_calls: true,
+            ..Ctx::default()
+        };
+        ctx.unwind = Unwind::All;
+        let e = Effect::new(vec![Ty::I32], vec![Ty::I32]);
+        let word = |name: &str, effect: Effect, kind, compiled| Word {
+            name: name.into(),
+            effect,
+            body: Some(compiled),
+            failed: false,
+            export: false,
+            raw: false,
+            origin: Origin::User,
+            kind,
+            loc: Location::default(),
+            callees: vec![],
+            inferred: false,
+            generic: None,
+            instance_of: None,
+            generated: None,
+        };
+        let f = ctx.add_word(word(
+            "f",
+            e.clone(),
+            WordKind::Named,
+            Compiled {
+                locals: vec![],
+                code: vec![I::LocalGet(0)],
+            },
+        ));
+        let src = "1 :> x  x f :> y!  3 [ :> i  x f y i32.add y!  i 1 i32.eq [ leave ] when ] times                     y 100 i32.gt_s [ \"big\" trap ] when  y";
+        let toks = crate::lexer::lex("line", src).unwrap();
+        let crate::parser::ReplInput::Body(body) =
+            crate::parser::parse_repl_with("line", &toks, &HashMap::new()).unwrap()
+        else {
+            panic!("a body");
+        };
+        let out = compile_body(
+            &mut ctx,
+            "[line 1]",
+            Mode::Line(&[Ty::I32]),
+            &body,
+            &Location::default(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(out.effect.outputs, vec![Ty::I32, Ty::I32]);
+        let skips = out
+            .compiled
+            .code
+            .windows(2)
+            .filter(|w| matches!(w, [I::I32Const(layout::REWINDING), I::I32Ne]))
+            .count();
+        assert!(skips >= 4, "the prologue and the runs are skipped: {skips}");
+        let line = ctx.add_word(word("[line 1]", out.effect, WordKind::Line, out.compiled));
+        let wasm = crate::module::assemble_step(&mut ctx, &[f, line], false);
+        crate::validate(&wasm).unwrap();
     }
 
     /// A step module holding one `( ref -- ref )` word over a registered struct.

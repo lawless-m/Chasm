@@ -4,12 +4,14 @@
 use wasm_encoder::{
     ArrayType, BlockType, CodeSection, CompositeInnerType, CompositeType, ConstExpr, CustomSection,
     DataSection, ElementSection, Elements, EntityType, ExportKind, ExportSection, FieldType,
-    Function, FunctionSection, ImportSection, Instruction as I, MemArg, MemorySection, MemoryType,
-    Module, NameMap, NameSection, RefType, StorageType, StructType, SubType, TableSection,
-    TableType, TypeSection, ValType,
+    Function, FunctionSection, GlobalType, ImportSection, Instruction as I, MemArg, MemorySection,
+    MemoryType, Module, NameMap, NameSection, RefType, StorageType, StructType, SubType,
+    TableSection, TableType, TypeSection, ValType,
 };
 
-use crate::check::{Ctx, Member, TypeDef, Word, WordId, WordKind, FN_ALLOC, FN_RING, FN_TRAP};
+use crate::check::{
+    Ctx, Member, TypeDef, Unwind, Word, WordId, WordKind, FN_ALLOC, FN_RING, FN_TRAP,
+};
 use crate::layout as L;
 use crate::types::ref_ty;
 
@@ -102,12 +104,10 @@ fn rt_trap() -> Function {
     f
 }
 
-/// `ring(a0, a1, a2, op) -> result`: submit one request, ring the doorbell,
-/// take one completion.
-fn rt_ring() -> Function {
-    // params a0=0 a1=1 a2=2 op=3; locals t=4 e=5
-    let mut f = Function::new([(2, ValType::I32)]);
-    let ins = [
+/// Submit one request (params a0=0 a1=1 a2=2 op=3; locals t=4 e=5) and
+/// ring the doorbell.
+fn ring_submit() -> Vec<I<'static>> {
+    vec![
         I::I32Const(0),
         I::I32Load(m(L::SQ_TAIL)),
         I::LocalTee(4),
@@ -139,7 +139,12 @@ fn rt_ring() -> Function {
         I::I32Add,
         I::I32Store(m(L::SQ_TAIL)),
         I::Call(crate::check::FN_RING_ENTER),
-        // completion
+    ]
+}
+
+/// Take one completion: its result is left on the stack.
+fn ring_complete() -> Vec<I<'static>> {
+    vec![
         I::I32Const(0),
         I::I32Load(m(L::CQ_HEAD)),
         I::LocalTee(4),
@@ -155,8 +160,53 @@ fn rt_ring() -> Function {
         I::I32Const(1),
         I::I32Add,
         I::I32Store(m(L::CQ_HEAD)),
-        I::End,
-    ];
+    ]
+}
+
+/// `[mode] == value`.
+fn unwind_mode_is(value: i32) -> [I<'static>; 4] {
+    [
+        I::I32Const(0),
+        I::I32Load(m(L::UNWIND_MODE)),
+        I::I32Const(value),
+        I::I32Eq,
+    ]
+}
+
+/// `ring(a0, a1, a2, op) -> result`: submit one request, ring the doorbell,
+/// take one completion.
+fn rt_ring() -> Function {
+    let mut f = Function::new([(2, ValType::I32)]);
+    for i in ring_submit()
+        .iter()
+        .chain(&ring_complete())
+        .chain(&[I::End])
+    {
+        f.instruction(i);
+    }
+    f
+}
+
+/// `rt_ring` in a transformed module (M12): rewinding, it is the call the
+/// process parked in, so it takes the completion the host has written
+/// without submitting; when `ring_enter` returns unwinding, the process
+/// parks and the result is a dummy.
+fn rt_ring_unwind() -> Function {
+    let mut f = Function::new([(2, ValType::I32)]);
+    let mut ins: Vec<I> = unwind_mode_is(L::REWINDING).to_vec();
+    ins.extend([
+        I::If(BlockType::Empty),
+        I::I32Const(0),
+        I::I32Const(L::UNWIND_OFF),
+        I::I32Store(m(L::UNWIND_MODE)),
+    ]);
+    ins.extend(ring_complete());
+    ins.extend([I::Return, I::End]);
+    ins.extend(ring_submit());
+    ins.extend(unwind_mode_is(L::UNWINDING));
+    ins.extend([I::If(BlockType::Empty), I::I32Const(0), I::Return, I::End]);
+    ins.extend(ring_complete());
+    ins.push(I::End);
     for i in &ins {
         f.instruction(i);
     }
@@ -187,6 +237,8 @@ fn runtime_helpers(
     let (trap, ring) = if wasi {
         let (newline, _) = ctx.intern_str("\n");
         (crate::wasi::rt_trap(newline), crate::wasi::rt_ring())
+    } else if ctx.unwind != Unwind::Off {
+        (rt_trap(), rt_ring_unwind())
     } else {
         (rt_trap(), rt_ring())
     };
@@ -257,6 +309,15 @@ fn version_section() -> CustomSection<'static> {
     }
 }
 
+/// A mutable `anyref` global import (`wack.frames`, `wack.spawn`).
+fn anyref_global() -> EntityType {
+    EntityType::Global(GlobalType {
+        val_type: ValType::Ref(RefType::ANYREF),
+        mutable: true,
+        shared: false,
+    })
+}
+
 pub fn assemble(ctx: &mut Ctx, opts: &ModuleOptions) -> Vec<u8> {
     register_word_types(ctx, &(0..ctx.words.len()).collect::<Vec<_>>());
     let void = ctx.intern_type(vec![], vec![]);
@@ -325,6 +386,22 @@ pub fn assemble(ctx: &mut Ctx, opts: &ModuleOptions) -> Vec<u8> {
     for (module, name, ty) in &import_fns {
         imports.import(module, name, EntityType::Function(*ty));
     }
+    // Only a word kept in the module that spawns needs the global.
+    let spawns = kept.iter().any(|&id| {
+        ctx.words[id]
+            .body
+            .as_ref()
+            .is_some_and(|c| crate::check::submits(c, |op| op == L::OP_SPAWN))
+    });
+    // A transformed module imports `wack.frames` (global 0) and, since a
+    // transformed program uses processes, `wack.spawn` (global 1).
+    let unwind = ctx.unwind != Unwind::Off;
+    if unwind {
+        imports.import(L::IMPORT_MODULE, L::IMPORT_FRAMES, anyref_global());
+    }
+    if spawns || unwind {
+        imports.import(L::IMPORT_MODULE, L::IMPORT_SPAWN, anyref_global());
+    }
 
     // Templates made last (prelude generics no word used) take no slot.
     let trailing = ctx
@@ -356,6 +433,9 @@ pub fn assemble(ctx: &mut Ctx, opts: &ModuleOptions) -> Vec<u8> {
 
     let mut exports = ExportSection::new();
     exports.export(L::EXPORT_MEMORY, ExportKind::Memory, 0);
+    if unwind {
+        exports.export(L::EXPORT_TABLE, ExportKind::Table, 0);
+    }
     let mut exported = std::collections::HashSet::new();
     for (id, w) in ctx.words.iter().enumerate() {
         if (w.export || w.name == "main")
@@ -579,6 +659,12 @@ pub fn assemble_step(ctx: &mut Ctx, ids: &[WordId], shared_memory: bool) -> Vec<
                 shared: false,
             }),
         );
+    }
+    if ctx.unwind != Unwind::Off {
+        imports.import(L::IMPORT_MODULE, L::IMPORT_FRAMES, anyref_global());
+    }
+    if ctx.uses_spawn {
+        imports.import(L::IMPORT_MODULE, L::IMPORT_SPAWN, anyref_global());
     }
 
     let mut module = Module::new();

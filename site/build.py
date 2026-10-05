@@ -35,7 +35,7 @@ KINDS = {"wack": "wack", "wack fragment": "fragment", "wack-repl": "repl"}
 FORBIDDEN = ("rams" + "den", "vs" + "prod")
 BUILD = "RUSTUP_TOOLCHAIN=1.99.0 cargo build --release -p wack-cli"
 EMPTY = "tmp/site-build/empty.wack"
-REPL = "index.html main.js compiler.js driver.js ring.js worker.js worker-core.js coi.js coi-sw.js wack_web.wasm".split()
+REPL = "index.html main.js compiler.js driver.js ring.js proc.js drive.js worker.js worker-core.js coi.js coi-sw.js wack_web.wasm".split()
 
 # The word index: (anchor, heading) in page order. A word goes by the part
 # of its name before the first `.`; names without one go by these lists.

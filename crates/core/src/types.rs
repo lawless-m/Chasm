@@ -48,6 +48,11 @@ pub type StructTypes = HashMap<String, (u32, u32)>;
 /// struct holding a table slot, the supertype of every environment.
 pub const CLOSURE: &str = "[closure]";
 
+/// The `struct_types` key of the frame type, `$frame`: a non-final struct
+/// (next frame, call-site index), the supertype of every call site's frame
+/// in a transformed function (M12).
+pub const FRAME: &str = "[frame]";
+
 /// A nullable reference to concrete type `index` (nullable so locals are
 /// defaultable).
 pub fn ref_ty(index: u32) -> ValType {

@@ -3,8 +3,8 @@
 
 Fence convention (the project convention for Markdown in this repo):
 
-- info string exactly `wack`: a complete program; it is checked, and the
-  site gives it a Try-it button.
+- info string exactly `wack`: a complete program; its tests are run
+  (processes included), and the site gives it a Try-it button.
 - info string `wack fragment`: Whackford shown for its shape (relies on
   declarations not shown); highlighted on the site, never checked.
 - info string `wack-repl`: a REPL transcript (`> ` prompt lines and

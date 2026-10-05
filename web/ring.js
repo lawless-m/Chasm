@@ -238,39 +238,45 @@ export class Namespace {
   }
 }
 
+/// Perform one submission entry against `host` and return its result,
+/// leaving the ring's heads and completions alone. A host call may return a
+/// promise (an HTTP request); it is awaited.
+export async function serviceEntry(memory, L, host, { op, a0, a1, a2 }) {
+  const u8 = new Uint8Array(memory.buffer);
+  const range = (addr, len) =>
+    addr < 0 || len < 0 || addr + len > u8.length ? null : u8.subarray(addr, addr + len);
+  if (op === L.OP_OPEN) {
+    const r = range(a0, a1);
+    return r ? await host.open(decode(r), a2) : L.E_IO;
+  }
+  if (op === L.OP_READ || op === L.OP_WRITE) {
+    const r = range(a1, a2);
+    return !r ? L.E_IO : await (op === L.OP_READ ? host.read(a0, r) : host.write(a0, r));
+  }
+  if (op === L.OP_CLOSE) return await host.close(a0);
+  return L.E_NOT_SUPPORTED;
+}
+
 /// Process every pending submission, in order, and post its completion. A
 /// host call may return a promise (an HTTP request); it is awaited before
 /// the next entry.
 export async function serviceRing(memory, L, host) {
   const i32 = new Int32Array(memory.buffer);
   const dv = new DataView(memory.buffer);
-  const u8 = new Uint8Array(memory.buffer);
   const load = (addr) => Atomics.load(i32, addr >> 2) >>> 0;
   const store = (addr, v) => Atomics.store(i32, addr >> 2, v | 0);
-  const range = (addr, len) =>
-    addr < 0 || len < 0 || addr + len > u8.length ? null : u8.subarray(addr, addr + len);
   for (;;) {
     const head = load(L.SQ_HEAD);
     const tail = load(L.SQ_TAIL);
     if (head === tail) return;
     const e = L.SQ_BASE + (head % L.RING_ENTRIES) * L.SQE_SIZE;
-    const op = dv.getInt32(e + L.SQE_OP, true);
     const user = dv.getUint32(e + L.SQE_USER, true);
-    const a0 = dv.getInt32(e + L.SQE_A0, true);
-    const a1 = dv.getInt32(e + L.SQE_A1, true);
-    const a2 = dv.getInt32(e + L.SQE_A2, true);
-    let result;
-    if (op === L.OP_OPEN) {
-      const r = range(a0, a1);
-      result = r ? await host.open(decode(r), a2) : L.E_IO;
-    } else if (op === L.OP_READ || op === L.OP_WRITE) {
-      const r = range(a1, a2);
-      result = !r ? L.E_IO : await (op === L.OP_READ ? host.read(a0, r) : host.write(a0, r));
-    } else if (op === L.OP_CLOSE) {
-      result = await host.close(a0);
-    } else {
-      result = L.E_NOT_SUPPORTED;
-    }
+    const result = await serviceEntry(memory, L, host, {
+      op: dv.getInt32(e + L.SQE_OP, true),
+      a0: dv.getInt32(e + L.SQE_A0, true),
+      a1: dv.getInt32(e + L.SQE_A1, true),
+      a2: dv.getInt32(e + L.SQE_A2, true),
+    });
     const ctail = load(L.CQ_TAIL);
     const c = L.CQ_BASE + (ctail % L.RING_ENTRIES) * L.CQE_SIZE;
     dv.setUint32(c + L.CQE_USER, user, true);

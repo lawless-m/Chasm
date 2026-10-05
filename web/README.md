@@ -29,6 +29,10 @@ On a host that cannot send them, `coi.js` registers the service worker
 `coi-sw.js`, which adds the two headers to every response, and reloads the
 page once. It does nothing when the page is already cross-origin isolated.
 
+Every step module uses WasmGC (the transformed modules keep a waiting
+process's frames as GC structs), so the REPL needs a browser with WasmGC,
+and the node checks need node 22 or later.
+
 ## Saved program
 
 The page keeps the program in the browser's `localStorage` (key
@@ -82,19 +86,41 @@ program.
   instantiates each step module against the shared memory and its table,
   installs the functions at their slots, runs the step's tests and line, and
   reports traps from the trap cells.
-- **Doorbell.** The compiled code's one import, `wack.ring_enter`, stores 0
-  in the doorbell cell (`DOORBELL` in the layout), posts `ring` to the main
-  thread and blocks in `Atomics.wait`. The main thread services the ring,
-  stores 1 and calls `Atomics.notify`.
+- **Doorbell.** For host I/O, `wack.ring_enter` stores 0 in the doorbell
+  cell (`DOORBELL` in the layout), posts `ring` to the main thread and
+  blocks in `Atomics.wait`; the main thread services the ring, stores 1 and
+  calls `Atomics.notify`. So I/O completes inline: no other process runs
+  during the wait.
+- **Processes** (`docs/reference.md` section 14a). The session is compiled
+  with the same unwind/rewind transform as the native REPL
+  (`crates/core/src/repl.rs`, `Session::new(.., unwind: true)`), and
+  `drive.js` is the JavaScript twin of the native driver
+  (`crates/runtime/src/native.rs`), over the scheduler `proc.js` (a state
+  machine with no wasm calls; its native twin is
+  `crates/runtime/src/proc.rs`). A process that must wait gets no
+  completion: `ring_enter` sets the mode cell to unwinding, the transformed
+  functions save their frames into `wack.frames` and return, and the driver
+  keeps the chain by pid. To resume, it puts the chain back, writes the
+  completion, sets rewinding and calls the same entry again. A step runs
+  each test and the line as process 0, then every ready process, and ends
+  when process 0 has returned and nothing is ready; processes still waiting
+  stay for later steps. When nothing can run and process 0 waits, the entry
+  traps `all processes blocked: ...`, naming `[line]` or the test's word. A
+  trap in a spawned process goes to `processTraps` and ends only that
+  process; the step does not fail. `/prog` is answered in the worker, from
+  the scheduler, and never reaches the main thread; a process that kills
+  itself ends with a thrown `killed` error. The worker creates the
+  `anyref` globals `wack.frames` and `wack.spawn` at `init`, and every step
+  module imports them.
 - **Messages.** Main to worker: `init` (memory, layout), `run` (module,
-  installs, table size, `refsSize`, line slot, test slots) and `render`
-  (struct slots and layouts). Worker to main: `ring`, `done` (trap, test
-  results) and `rendered` (struct values).
+  installs, table size, `refsSize`, line slot, test slots and words) and
+  `render` (struct slots and layouts). Worker to main: `ring`, `done` (trap,
+  test results, `processTraps`: traps in spawned processes) and `rendered`
+  (struct values).
 - **Structs.** References cannot live in shared memory, so a struct on the
   stack is a slot holding its index into `wack.refs`, an `anyref` table the
   worker owns. The worker creates it the first time a step module imports it
-  or a step's `refs_size` is above 0, so engines without WasmGC run sessions
-  without structs unchanged. JavaScript cannot read WasmGC struct fields, so
+  or a step's `refs_size` is above 0. JavaScript cannot read WasmGC struct fields, so
   for the stack echo the worker calls the generated accessor words
   (`point.x`, ...) through the table; the step JSON gives each struct's fields
   and their accessor slots. A union value is read through its `tag` word,
@@ -104,7 +130,7 @@ program.
 - **Layout.** The JavaScript never hard-codes an address: `compiler.js`
   reads the layout from the compiler (`wack_core::layout::constants`).
 
-`compiler.js`, `ring.js`, `worker-core.js` and `driver.js` use no DOM or
+`compiler.js`, `ring.js`, `worker-core.js`, `drive.js`, `proc.js` and `driver.js` use no DOM or
 Node API, so the node checks below exercise the same code the page runs.
 
 ## The browser namespace
@@ -114,6 +140,9 @@ Node API, so the node checks below exercise the same code the page runs.
 `/net/https` go through `fetch`, so a server on another origin must allow
 CORS. There is no `/file` and there are no mounts: those paths return not
 found.
+
+`/prog` lists the live processes and `/prog/<pid>/ctl` takes `kill`; the
+worker answers them from the scheduler.
 
 `/local/<name>` is a flat directory of files in the page's `localStorage`,
 item `wack/local/<name>`, the bytes kept as a string of char codes 0 to 255.
@@ -131,15 +160,23 @@ node web/test/compiler.mjs    # the compiler wrapper
 node web/test/ring.mjs        # ring servicing and the namespace
 node web/test/node-repl.mjs   # end to end: driver, worker thread, shared memory, doorbell
 node web/test/net.mjs         # /net/http through fetch, against a local server
-node web/test/node-structs.mjs  # structs end to end; needs node 22 or later (WasmGC)
+node web/test/proc.mjs        # the process scheduler, without wasm
+node web/test/node-structs.mjs    # structs end to end
+node web/test/node-procs.mjs      # processes and channels through the REPL
+node web/test/node-examples.mjs   # examples/pipeline.wack, examples/alt.wack: tests and main
 ```
 
-With node older than 22, run the struct scenario in a headless browser
-instead:
+The last three need node 22 or later (WasmGC). The same scenarios run in a
+real browser:
 
 ```
-sh web/test/headless.sh test/structs.html STRUCTS   # prints STRUCTS ok
+sh web/test/headless.sh test/structs.html STRUCTS     # prints STRUCTS ok
+sh web/test/headless.sh test/procs.html PROCS
+sh web/test/headless.sh test/examples.html EXAMPLES
 ```
+
+`serve.py` also serves the repository's `examples/` at `/examples/`, for
+the examples page.
 
 It serves `web/` with `serve.py` on port 8765, starts headless Vivaldi (or
 the browser given as a third argument) with a throwaway profile under

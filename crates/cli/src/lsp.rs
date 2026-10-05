@@ -294,6 +294,8 @@ pub(crate) fn primitive_effect(name: &str) -> Option<String> {
         "filter" => "arr [ T -- i32 ] filter: leaves array T",
         "fold" => "arr init [ U T -- U ] fold: leaves U",
         "match" => "value v1: [ ... ] v2: [ ... ] else: [ ... ] match",
+        "spawn" => "( [ -- ] -- ): starts the function value as a process",
+        "alt" => "c1 recv: [ ... ] c2 recv: [ ... ] alt: runs the arm of the first channel with a value; the arm receives option T",
         _ => return None,
     };
     Some(fixed.to_string())

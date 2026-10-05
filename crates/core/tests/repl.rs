@@ -23,7 +23,7 @@ fn code(s: &mut Session, text: &str) -> String {
 }
 
 fn session() -> Session {
-    let (s, step) = Session::new(true, false, LITERALS_BASE);
+    let (s, step) = Session::new(true, false, LITERALS_BASE, false);
     // The REPL processes the prelude eagerly, so this is what checks the
     // prelude's generic templates (whole programs make them lazily, unchecked).
     assert!(step.ok(), "{:?}", step.diagnostics);
@@ -171,6 +171,34 @@ fn struct_values_cross_steps() {
     s.stack = vec![Ty::Array(Box::new(p))];
     let step = ok(&mut s, "array.len");
     assert_eq!(step.line.as_ref().unwrap().stack_after, vec![Ty::I32]);
+}
+
+fn imports(wasm: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm) {
+        if let wasmparser::Payload::ImportSection(r) = payload.unwrap() {
+            for i in r.into_imports() {
+                let i = i.unwrap();
+                out.push(format!("{}.{}", i.module, i.name));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn spawn_imports_its_global_from_its_step_on() {
+    let mut s = session();
+    let step = ok(&mut s, "1 2 i32.add");
+    assert!(!imports(step.module.as_ref().unwrap()).contains(&"wack.spawn".to_string()));
+    let step = ok(&mut s, ": f ( -- ) [ \"x\" println ] spawn ;");
+    assert!(imports(step.module.as_ref().unwrap()).contains(&"wack.spawn".to_string()));
+}
+
+#[test]
+fn alt_in_a_line() {
+    let mut s = session();
+    ok(&mut s, "chan.make ( chan i32 ) :> c c recv: [ drop ] alt");
 }
 
 #[test]
@@ -532,4 +560,35 @@ fn words_follows_force() {
          test h : h -> 1\n"
     );
     ok(&mut session(), &listing);
+}
+
+#[test]
+fn transformed_sessions_validate() {
+    let (mut s, step) = Session::new(true, false, LITERALS_BASE, true);
+    assert!(step.ok(), "{:?}", step.diagnostics);
+    let m = step.module.as_ref().unwrap();
+    validate(m).unwrap();
+    let mut imports = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(m) {
+        if let wasmparser::Payload::ImportSection(r) = payload.unwrap() {
+            for i in r.into_imports() {
+                let i = i.unwrap();
+                imports.push(format!("{}.{}", i.module, i.name));
+            }
+        }
+    }
+    assert!(imports.iter().any(|i| i == "wack.frames"), "{imports:?}");
+    for text in [
+        ": r ( chan i32 -- i32 ) chan.recv none: [ 0 ] some: [ ] match ;",
+        ": sends ( chan i32 i32 -- ) :> n :> c  n [ c swap chan.send ] times ;",
+        ": either ( chan i32 chan i32 -- i32 ) :> b :> a \
+         a recv: [ none: [ 0 ] some: [ ] match ] b recv: [ none: [ 1 ] some: [ ] match ] alt ;",
+        ": opt ( option i32 -- i32 ) none: [ 0 ] some: [ 1 i32.add ] match ;",
+        "chan.make ( chan i32 ) :> c  [ c 3 sends ] spawn",
+        ": sq ( i32 -- i32 ) dup i32.mul ;",
+        "3 sq",
+    ] {
+        // `ok` validates each step's module.
+        ok(&mut s, text);
+    }
 }

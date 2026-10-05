@@ -196,6 +196,11 @@ fn referenced(
                 }
             }
             kind => {
+                if let NodeKind::Alt(arms) = kind {
+                    for a in arms {
+                        referenced(&vec![a.chan.clone()], bound, index, out);
+                    }
+                }
                 for b in children(kind) {
                     referenced(b, bound, index, out);
                 }
@@ -216,6 +221,7 @@ fn children(kind: &NodeKind) -> Vec<&Body> {
         | NodeKind::Fold(b) => vec![b],
         NodeKind::If(a, b) | NodeKind::While(a, b) | NodeKind::Until(a, b) => vec![a, b],
         NodeKind::Match(arms) => arms.iter().map(|a| &a.body).collect(),
+        NodeKind::Alt(arms) => arms.iter().map(|a| &a.body).collect(),
         _ => Vec::new(),
     }
 }

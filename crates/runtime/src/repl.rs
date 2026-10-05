@@ -20,11 +20,22 @@ use wasmtime::{
 };
 
 use crate::namespace::{Config, NativeHost};
-use crate::native::{describe, same, values, RunError, TestStatus};
-use crate::service_ring;
+use crate::native::{drive, process_ring_enter, same, values, Procs, RunError, TestStatus};
 
+/// The host namespace and the processes, which outlive the step that
+/// started them.
 struct ReplState {
     host: NativeHost,
+    /// Set once the store exists.
+    procs: Option<Procs>,
+}
+
+fn repl_parts(s: &mut ReplState) -> (&mut NativeHost, &mut Procs) {
+    (&mut s.host, s.procs.as_mut().expect("made with the store"))
+}
+
+fn repl_procs(s: &mut ReplState) -> &mut Procs {
+    s.procs.as_mut().expect("made with the store")
 }
 
 /// Wall time of one step, in microseconds.
@@ -57,6 +68,8 @@ pub struct Outcome {
     /// The program as it stands, from `)words`.
     pub listing: Option<String>,
     pub trap: Option<RunError>,
+    /// Traps in spawned processes: each ended only its process.
+    pub process_traps: Vec<RunError>,
     /// Tests run, then any pending ones.
     pub tests: Vec<ReplTestResult>,
     /// The step was `)test`.
@@ -84,8 +97,12 @@ impl NativeRepl {
             &engine,
             ReplState {
                 host: NativeHost::new(config),
+                procs: None,
             },
         );
+        let procs = Procs::new(&mut store).map_err(e)?;
+        let (spawn, frames) = (procs.spawn, procs.frames);
+        store.data_mut().procs = Some(procs);
         let memory =
             Memory::new(&mut store, MemoryType::new(L::INITIAL_PAGES as u32, None)).map_err(e)?;
         let table = Table::new(
@@ -128,13 +145,20 @@ impl NativeRepl {
             .func_wrap(
                 L::IMPORT_MODULE,
                 L::IMPORT_RING_ENTER,
-                move |mut caller: Caller<'_, ReplState>| {
-                    let (data, state) = memory.data_and_store_mut(&mut caller);
-                    service_ring(data, &mut state.host);
+                move |mut caller: Caller<'_, ReplState>| -> wasmtime::Result<()> {
+                    process_ring_enter(&mut caller, memory, repl_parts)
                 },
             )
             .map_err(e)?;
-        let (session, step) = Session::new(prelude, false, L::LITERALS_BASE);
+        // Every step module is transformed: it imports the frame chain, and
+        // those that use `spawn` the closure to start.
+        linker
+            .define(&store, L::IMPORT_MODULE, L::IMPORT_SPAWN, spawn)
+            .map_err(e)?;
+        linker
+            .define(&store, L::IMPORT_MODULE, L::IMPORT_FRAMES, frames)
+            .map_err(e)?;
+        let (session, step) = Session::new(prelude, false, L::LITERALS_BASE, true);
         let mut repl = NativeRepl {
             engine,
             store,
@@ -226,30 +250,39 @@ impl NativeRepl {
         Ok(())
     }
 
-    /// Clear the trap cells so the next trap is reported cleanly.
-    fn clear_trap(&mut self) {
-        self.write_u32(L::TRAP_MSG_LEN, 0);
-    }
-
-    /// Call the function in table `slot` with no arguments.
-    fn call_slot(&mut self, slot: u32, results: &mut [wasmtime::Val]) -> Result<(), RunError> {
+    /// Run the function in table `slot` (no arguments) as process 0, named
+    /// `name`, then every process that can run; processes still parked
+    /// stay for later steps. Traps in spawned processes go to `traps`.
+    fn call_slot(
+        &mut self,
+        slot: u32,
+        name: &str,
+        results: &mut [wasmtime::Val],
+        traps: &mut Vec<RunError>,
+    ) -> Result<(), RunError> {
         let f = match self.table.get(&mut self.store, slot as u64) {
             Some(Ref::Func(Some(f))) => f,
             _ => {
                 return Err(RunError {
                     message: format!("no function in table slot {slot}"),
                     word: None,
+                    process: None,
                 })
             }
         };
-        match f.call(&mut self.store, &[], results) {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                let err = describe(&e, self.memory.data(&self.store));
-                self.clear_trap();
-                Err(err)
-            }
-        }
+        let (memory, table, n) = (self.memory, self.table, results.len());
+        let out = drive(
+            &mut self.store,
+            repl_procs,
+            memory,
+            f,
+            table,
+            name,
+            n,
+            Some(traps),
+        )?;
+        results.clone_from_slice(&out);
+        Ok(())
     }
 
     /// Compile, install and run one chunk of input.
@@ -268,13 +301,15 @@ impl NativeRepl {
         }
         let t2 = Instant::now();
         let mut trap = None;
+        let mut process_traps = Vec::new();
         let installed = !diagnostics.iter().any(Diagnostic::is_error);
         let mut tests = Vec::new();
         if installed {
             for t in &step.tests {
                 let n = t.result_types.iter().map(|t| t.width() as usize).sum();
                 let mut vals = vec![wasmtime::Val::I32(0); n];
-                let (status, actual, error) = match self.call_slot(t.slot, &mut vals) {
+                let r = self.call_slot(t.slot, &t.word, &mut vals, &mut process_traps);
+                let (status, actual, error) = match r {
                     Ok(()) => {
                         let actual = values(&t.result_types, &vals, self.memory.data(&self.store));
                         let pass = actual.len() == t.expected.len()
@@ -310,7 +345,7 @@ impl NativeRepl {
             let sp = self.read_u32(L::DATA_STACK_PTR);
             let saved =
                 self.memory.data(&self.store)[L::DATA_STACK_BASE as usize..sp as usize].to_vec();
-            match self.call_slot(line.slot, &mut []) {
+            match self.call_slot(line.slot, "[line]", &mut [], &mut process_traps) {
                 Ok(()) => self.session.stack = line.stack_after.clone(),
                 Err(e) => {
                     trap = Some(e);
@@ -331,6 +366,7 @@ impl NativeRepl {
             rechecked: step.rechecked,
             listing: step.listing,
             trap,
+            process_traps,
             tests,
             tested: step.tested,
             stack: {

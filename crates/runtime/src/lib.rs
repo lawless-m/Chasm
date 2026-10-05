@@ -13,6 +13,7 @@ pub mod namespace;
 pub mod native;
 pub mod net;
 pub mod ninep;
+pub mod proc;
 #[cfg(feature = "native")]
 pub mod repl;
 
@@ -24,17 +25,17 @@ pub trait Host {
     fn close(&mut self, handle: i32) -> i32;
 }
 
-fn rd(mem: &[u8], addr: u32) -> u32 {
+pub(crate) fn rd(mem: &[u8], addr: u32) -> u32 {
     let a = addr as usize;
     u32::from_le_bytes(mem[a..a + 4].try_into().unwrap())
 }
 
-fn wr(mem: &mut [u8], addr: u32, v: u32) {
+pub(crate) fn wr(mem: &mut [u8], addr: u32, v: u32) {
     let a = addr as usize;
     mem[a..a + 4].copy_from_slice(&v.to_le_bytes());
 }
 
-fn range(mem: &[u8], addr: i32, len: i32) -> Option<std::ops::Range<usize>> {
+pub(crate) fn range(mem: &[u8], addr: i32, len: i32) -> Option<std::ops::Range<usize>> {
     if addr < 0 || len < 0 {
         return None;
     }
@@ -42,7 +43,10 @@ fn range(mem: &[u8], addr: i32, len: i32) -> Option<std::ops::Range<usize>> {
     (a.checked_add(n)? <= mem.len()).then_some(a..a + n)
 }
 
-/// Process every pending submission and post its completion.
+/// Process every pending submission of a module that is not transformed
+/// and post its completion. Such a module makes no process operations (the
+/// compiler transforms every program that does); one would complete with
+/// `E_NOT_SUPPORTED`.
 pub fn service_ring(mem: &mut [u8], host: &mut dyn Host) {
     loop {
         let head = rd(mem, L::SQ_HEAD);
@@ -56,35 +60,53 @@ pub fn service_ring(mem: &mut [u8], host: &mut dyn Host) {
         let a0 = rd(mem, e + L::SQE_A0) as i32;
         let a1 = rd(mem, e + L::SQE_A1) as i32;
         let a2 = rd(mem, e + L::SQE_A2) as i32;
-        let result = match op {
-            L::OP_OPEN => match range(mem, a0, a1) {
-                Some(r) => match std::str::from_utf8(&mem[r]) {
-                    Ok(path) => {
-                        let path = path.to_string();
-                        host.open(&path, a2)
-                    }
-                    Err(_) => L::E_NOT_FOUND,
-                },
-                None => L::E_IO,
-            },
-            L::OP_READ => match range(mem, a1, a2) {
-                Some(r) => host.read(a0, &mut mem[r]),
-                None => L::E_IO,
-            },
-            L::OP_WRITE => match range(mem, a1, a2) {
-                Some(r) => host.write(a0, &mem[r]),
-                None => L::E_IO,
-            },
-            L::OP_CLOSE => host.close(a0),
-            _ => L::E_NOT_SUPPORTED,
-        };
-        let ctail = rd(mem, L::CQ_TAIL);
-        let c = L::CQ_BASE + (ctail % L::RING_ENTRIES) * L::CQE_SIZE;
-        wr(mem, c + L::CQE_USER, user);
-        wr(mem, c + L::CQE_RESULT, result as u32);
-        wr(mem, L::CQ_TAIL, ctail.wrapping_add(1));
+        let result = service_entry(mem, host, op, a0, a1, a2);
+        complete(mem, user, result);
         wr(mem, L::SQ_HEAD, head.wrapping_add(1));
     }
+}
+
+/// Perform one I/O submission against `host`; any other opcode is
+/// `E_NOT_SUPPORTED`.
+pub fn service_entry(
+    mem: &mut [u8],
+    host: &mut dyn Host,
+    op: i32,
+    a0: i32,
+    a1: i32,
+    a2: i32,
+) -> i32 {
+    match op {
+        L::OP_OPEN => match range(mem, a0, a1) {
+            Some(r) => match std::str::from_utf8(&mem[r]) {
+                Ok(path) => {
+                    let path = path.to_string();
+                    host.open(&path, a2)
+                }
+                Err(_) => L::E_NOT_FOUND,
+            },
+            None => L::E_IO,
+        },
+        L::OP_READ => match range(mem, a1, a2) {
+            Some(r) => host.read(a0, &mut mem[r]),
+            None => L::E_IO,
+        },
+        L::OP_WRITE => match range(mem, a1, a2) {
+            Some(r) => host.write(a0, &mem[r]),
+            None => L::E_IO,
+        },
+        L::OP_CLOSE => host.close(a0),
+        _ => L::E_NOT_SUPPORTED,
+    }
+}
+
+/// Post a completion.
+pub(crate) fn complete(mem: &mut [u8], user: u32, result: i32) {
+    let ctail = rd(mem, L::CQ_TAIL);
+    let c = L::CQ_BASE + (ctail % L::RING_ENTRIES) * L::CQE_SIZE;
+    wr(mem, c + L::CQE_USER, user);
+    wr(mem, c + L::CQE_RESULT, result as u32);
+    wr(mem, L::CQ_TAIL, ctail.wrapping_add(1));
 }
 
 /// Read the trap message cells a Whackford `trap` leaves behind, if any.

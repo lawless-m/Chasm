@@ -61,6 +61,35 @@ fn json_session() {
     assert_eq!(reports[1]["results"]["stack"][0]["value"], "9");
     assert!(reports[1]["results"]["timing"]["compile_us"].is_u64());
     assert_eq!(reports[2]["results"]["output"], "hi\n");
+    assert!(reports
+        .iter()
+        .all(|r| r["results"]["process_traps"].is_array()));
+}
+
+#[test]
+fn processes_run_in_the_repl() {
+    let (ok, out, err) = repl(
+        &[],
+        ": schan ( -- chan str ) chan.make ;\n\
+         schan :> c  c  [ c chan.recv none: [ \"closed\" println ] some: [ println ] match ] spawn\n\
+         dup \"hello\" chan.send\n",
+    );
+    assert!(ok, "{out}{err}");
+    assert!(out.lines().any(|l| l == "hello"), "{out}");
+}
+
+#[test]
+fn blocked_line_traps_and_keeps_the_stack() {
+    let (ok, out, err) = repl(
+        &[],
+        ": ichan ( -- chan i32 ) chan.make ;\n1\nichan chan.recv\n",
+    );
+    assert!(!ok);
+    assert!(
+        err.contains("trap in `[line]`: all processes blocked: [line] waits to receive on chan 1"),
+        "{err}"
+    );
+    assert_eq!(out.lines().last(), Some("( i32 ) 1"));
 }
 
 #[test]

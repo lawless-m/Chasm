@@ -66,6 +66,17 @@ pub enum NodeKind {
     /// `value v1: [ ... ] v2: [ ... ] else: [ ... ] match`, arms in the order
     /// written.
     Match(Vec<Arm>),
+    /// `a recv: [ ... ] b recv: [ ... ] alt`, arms in the order written.
+    Alt(Vec<AltArm>),
+}
+
+/// An arm of `alt`: the node that pushes its channel, and its body, which
+/// receives `option T`. `loc` is the `recv:` label's.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AltArm {
+    pub chan: Node,
+    pub body: Body,
+    pub loc: Location,
 }
 
 /// A labelled arm of `match`; the label of `else:` is `else`.

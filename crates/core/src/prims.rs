@@ -238,6 +238,7 @@ pub fn special(name: &str) -> Option<(Vec<Ty>, Vec<Ty>)> {
         "host.read" => (vec![I32, Bytes], vec![I32]),
         "host.write" => (vec![I32, Str], vec![I32]),
         "host.close" => (vec![I32], vec![I32]),
+        "ring.submit" => (vec![I32, I32, I32, I32], vec![I32]),
         _ => return None,
     })
 }
@@ -430,6 +431,7 @@ pub fn names() -> impl Iterator<Item = &'static str> {
         "host.read",
         "host.write",
         "host.close",
+        "ring.submit",
         "array.new",
         "array.len",
         "array.at",
@@ -450,6 +452,8 @@ pub fn names() -> impl Iterator<Item = &'static str> {
         "match",
         "hash",
         "eq",
+        "spawn",
+        "alt",
     ];
     NUMERIC_NAMES.iter().chain(OTHER).copied()
 }
@@ -566,6 +570,7 @@ pub fn is_raw(name: &str) -> bool {
             | "str.from-raw"
             | "bytes.addr"
             | "bytes.from-raw"
+            | "ring.submit"
     ) {
         return true;
     }
@@ -594,6 +599,8 @@ pub fn is_builtin(name: &str) -> bool {
                 | "match"
                 | "hash"
                 | "eq"
+                | "spawn"
+                | "alt"
         )
         || crate::parser::combinator_arity(name).is_some()
 }

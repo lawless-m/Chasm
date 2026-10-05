@@ -48,7 +48,7 @@ The REPL page of this site runs the same compiler, built for WebAssembly.
 It keeps your program in the browser: a reload brings your words back,
 `)program` lists what is saved and `)clear` forgets it. A Try-it link
 loads its example without saving it. Nothing calls `main` for you: type
-`main` to run it.
+`main` to run it. Processes run there too, as in the terminal REPL.
 
 ```wack
 : sq ( i32 -- i32 )  dup i32.mul ;
@@ -80,8 +80,4 @@ A program is the files you name, in order, so a library goes first:
 `wack test lib.wack prog.wack`. Add `--json` to any command and it
 prints a machine-readable report in place of the text.
 
-## Where next
-
-- The [reference](../reference.md): every form, primitive and diagnostic.
-- The Words page of this site: each word with its effect.
-- The [examples](https://github.com/lawless-m/Whackford/tree/main/examples) on GitHub: complete programs, each with tests.
+Next: [Processes and channels](13-processes-and-channels.md)

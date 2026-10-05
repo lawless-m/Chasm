@@ -1,7 +1,7 @@
 // The browser REPL page: wires the compiler, the shared memory and the
 // worker together, and renders each step as the CLI's text mode does.
 import { loadCompiler } from "./compiler.js";
-import { Repl } from "./driver.js";
+import { chunks, Repl } from "./driver.js";
 
 const out = document.getElementById("out");
 const input = document.getElementById("in");
@@ -50,6 +50,7 @@ function render(r) {
     print(`${n("pass")} passed, ${n("fail")} failed, ${n("pending")} pending\n`);
   }
   if (r.trap) print(r.trap.word ? `trap in \`${r.trap.word}\`: ${r.trap.message}\n` : `trap: ${r.trap.message}\n`, "err");
+  for (const t of r.processTraps ?? []) print(`trap in \`${t.word ?? "?"}\` (process ${t.pid}): ${t.message}\n`, "err");
   const s = r.stack;
   // A struct or union value (`point{..}`, `option.some{..}`) gets a line of
   // its own, as in `wack repl`.
@@ -99,17 +100,6 @@ function linkText() {
   const b64 = location.hash.slice("#code=".length).replace(/-/g, "+").replace(/_/g, "/");
   const bytes = Uint8Array.from(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4)), (c) => c.charCodeAt(0));
   return new TextDecoder().decode(bytes);
-}
-
-// Split a file into chunks: one begins at every line starting, at column 0,
-// with a top-level keyword; every other line continues the current chunk.
-function chunks(text) {
-  const out = [[]];
-  for (const line of text.split("\n")) {
-    if (/^(:|export|raw|declare|test|struct|union)(\s|$)/.test(line)) out.push([]);
-    out.at(-1).push(line);
-  }
-  return out.map((lines) => lines.join("\n").trim()).filter((c) => c);
 }
 
 // Run the example a link carries. It goes into the history but not into the

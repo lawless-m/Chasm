@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { loadCompiler } from "../compiler.js";
-import { Namespace, serviceRing } from "../ring.js";
+import { Namespace, serviceEntry, serviceRing } from "../ring.js";
 
 const { layout: L } = await loadCompiler(
   readFileSync(new URL("../wack_web.wasm", import.meta.url)),
@@ -57,6 +57,16 @@ assert.ok(dv.getBigUint64(0x300200, true) > 1_600_000_000_000_000_000n);
 assert.equal(await submit(L.OP_READ, t, 0x300200, 8), 0);
 assert.equal(await submit(L.OP_CLOSE, t, 0, 0), 0);
 assert.equal(await submit(L.OP_CLOSE, t, 0, 0), L.E_BAD_HANDLE);
+
+// One entry serviced directly: the ring is not touched.
+{
+  const cq = dv.getUint32(L.CQ_TAIL, true);
+  const len = put(0x300000, "/dev/time");
+  const th = await serviceEntry(memory, L, ns, { op: L.OP_OPEN, a0: 0x300000, a1: len, a2: L.MODE_READ });
+  assert.ok(th >= 3);
+  assert.equal(await serviceEntry(memory, L, ns, { op: L.OP_READ, a0: th, a1: 0x300200, a2: 8 }), 8);
+  assert.equal(dv.getUint32(L.CQ_TAIL, true), cq);
+}
 
 // `/local`: blobs in the namespace's Storage (in memory here).
 const open = async (path, mode) => submit(L.OP_OPEN, 0x300000, put(0x300000, path), mode);

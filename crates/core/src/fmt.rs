@@ -332,6 +332,28 @@ mod tests {
     }
 
     #[test]
+    fn alt_arms_keep_their_bracket() {
+        let src = "\
+: f ( chan i32 chan i32 -- )
+  a recv: [ drop ]
+  b recv: [ drop
+    1 drop ] alt ;
+";
+        assert_eq!(
+            f(src),
+            "\
+: f ( chan i32 chan i32 -- )
+  a recv: [ drop ]
+  b recv: [
+    drop
+    1 drop
+  ]
+  alt ;
+"
+        );
+    }
+
+    #[test]
     fn spacing_comments_and_blank_lines() {
         let src = "\n\n#  a comment   \n:  sq   (  i32 --   i32 )  dup    i32.mul ;   # square\n\n\n\n    test sq : 3 sq -> 9\nstruct p  x: i32\n   y: i32\n";
         assert_eq!(

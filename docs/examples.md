@@ -6,7 +6,7 @@ Status: draft v0.3. The programs live in `examples/`.
 
 One set of programs does three jobs:
 
-1. **Acceptance suite** for the compiler: every file in `examples/` must check and pass its tests at every milestone. `crates/cli/tests/examples.rs` enforces this, running `wack check` and `wack test` on each file separately (passing several files to one command compiles them as one program).
+1. **Acceptance suite** for the compiler: every file in `examples/` must check and pass its tests at every milestone. `crates/cli/tests/examples.rs` enforces this, running `wack check` and `wack test` on each file separately (passing several files to one command compiles them as one program). The programs that use processes (`pipeline` and `alt`) run natively like any other, and the headless page `web/test/examples.html` also runs their tests and `main` in the browser REPL.
 2. **Example corpus**: the main way a model (or a person) learns idiomatic Whackford, since the language is in no training data.
 3. **Benchmark** for how well Claude Code writes Whackford, tracked over time.
 
@@ -21,7 +21,7 @@ Tasks are taken from Rosetta Code **task descriptions** only. Every solution is 
 - `test` compares the stack exactly and does not look at console output. Test words that return values; keep `main` as the thin printing wrapper.
 - Idiomatic over clever. These are the programs the model will imitate.
 
-The files already in `examples/` (`hello`, `basics`, `strings`, `arrays`, `contract`, `files`, `bytes`, `http`, `ninep`, `wasi`, `generics`, `inferred`, and `collections`, which shows the prelude's `vec T` and `map K V` with struct keys compared by contents) are the core teaching set and stay alongside the tasks below.
+The files already in `examples/` (`hello`, `basics`, `strings`, `arrays`, `contract`, `files`, `bytes`, `http`, `ninep`, `wasi`, `generics`, `inferred`, `collections`, which shows the prelude's `vec T` and `map K V` with struct keys compared by contents, and `pipeline` and `alt` for processes and channels) are the core teaching set and stay alongside the tasks below.
 
 ## Task list
 
@@ -70,6 +70,8 @@ Everything below can be written with the compiler as it stands: numerics, contro
 | Sort with a custom comparator | insertion sort generic over `T`, taking `[ T T -- i32 ]` |
 | Function composition | `compose` returning a closure over two function values |
 | Closures | capture by value, ten closures each holding its own index, a struct as shared state, closures given to `vec.each`, `eq` on function values |
+| Synchronous concurrency (`pipeline`) | `spawn`, `chan T`, `chan.sender`, the counted close, `chan.recv` with `none:`/`some:` |
+| Merge two streams (`alt`) | `alt` over two channels, stopping on a closed one, a ping-pong between two processes |
 
 ## Task statements
 
@@ -139,6 +141,10 @@ Written in our own words so the doc stands alone. Rosetta Code pages are `https:
 
 **Closures** (`Closures/Value_capture`). Make ten functions, the i-th returning i squared, each capturing its own i; calling the fourth gives 9. Also a counter whose state is shared between calls.
 
+**Synchronous concurrency** (`Synchronous_concurrency`, two producers). Two processes each send 1 to n on one channel and close their share of it; the reader sums until the channel is closed: `10 sum-of` is 110.
+
+**Merge two streams** (no Rosetta task). Two producers send the even and the odd numbers below a bound on two channels; a reader counts each with `alt` until both are closed. Also a ping-pong: the main process and an echo process pass a counter back and forth n times, each adding one, so `4 ping-pong` is 8.
+
 ## Benchmark protocol
 
 Run at the end of each milestone and whenever the examples directory grows substantially.
@@ -164,6 +170,7 @@ Append as they happen. Each entry: task, what was missing, workaround used, and 
 | Luhn test | Index alongside `fold` | `times` with the index counted from the right | Minor; an indexed fold could be a library word |
 | Word frequency | A map type; a growable array | `array str` and `array i32` side by side with linear search (quadratic); capacity fixed at the most words the text could hold | Resolved by M4 structs: a binary search tree of `struct node`, children as arrays of 0 or 1 nodes, so lookup is logarithmic on typical text and nothing is sized up front. The prelude now has a `map str i32` (M9); the example keeps its tree as a worked example of recursive structs |
 | Tokenizer | Structs | Tokens three `i32`s apart in one array (kind, start, length); every reader must know the layout | Resolved by M4 structs: `struct token`, read through `token.kind`, `token.start` and `token.len` |
+| Processes, natively | A wasmtime mechanism that resumes parked activations in any order (its async support nests them last-in-first-out) | The compiler unwinds a waiting process's wasm stack into GC frames and rewinds it on resume | Resolved by M12: processes run natively on synchronous wasmtime |
 | Function composition | Closures, or making a function at run time | `compose-apply` applies f after g; composition at definition time is just `double inc` | Resolved by closures (M10): `compose` returns `[ g call f call ]`, capturing f and g |
 
 ## Growth

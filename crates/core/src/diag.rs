@@ -139,4 +139,6 @@ pub mod codes {
     pub const E_MATCH_ARM: &str = "E_MATCH_ARM";
     pub const E_MATCH_MISSING: &str = "E_MATCH_MISSING";
     pub const E_RAW: &str = "E_RAW";
+    pub const E_WASI_UNSUPPORTED: &str = "E_WASI_UNSUPPORTED";
+    pub const E_PROCESSES_UNSUPPORTED: &str = "E_PROCESSES_UNSUPPORTED";
 }

@@ -19,6 +19,12 @@ pub const HEAP_PTR: u32 = 0x110;
 pub const DATA_STACK_PTR: u32 = 0x114;
 /// Browser doorbell: the worker stores 0 and waits here in `ring_enter`; the main thread services the ring, stores 1 and notifies.
 pub const DOORBELL: u32 = 0x118;
+/// Unwind/rewind mode of the running process (M12): 0 normal, 1 unwinding,
+/// 2 rewinding. A cell, not a wasm global, so every REPL step module sees it.
+pub const UNWIND_MODE: u32 = 0x11C;
+pub const UNWIND_OFF: i32 = 0;
+pub const UNWINDING: i32 = 1;
+pub const REWINDING: i32 = 2;
 /// WASI builds only: two iovecs for `fd_read`/`fd_write` (16 bytes).
 pub const WASI_IOVEC: u32 = 0x120;
 /// WASI builds only: a call's out-parameter (bytes moved, an opened fd).
@@ -54,6 +60,31 @@ pub const OP_OPEN: i32 = 1;
 pub const OP_READ: i32 = 2;
 pub const OP_WRITE: i32 = 3;
 pub const OP_CLOSE: i32 = 4;
+/// Start a process: a0 = the funcref-table slot of the closure's code; the
+/// closure value itself is in the imported mutable `anyref` global
+/// `wack.spawn` (see `IMPORT_SPAWN`). Result 0.
+pub const OP_SPAWN: i32 = 5;
+/// Make a channel. Result: a new channel id (from 1, in creation order) with
+/// one sender.
+pub const OP_CHAN_MAKE: i32 = 6;
+/// a0 = channel id: one more sender. Result 0.
+pub const OP_CHAN_SENDER: i32 = 7;
+/// a0 = channel id. The sender has pushed its value onto the channel's queue
+/// in wasm; the process parks until a receiver takes that value. Result 0, or
+/// `E_CLOSED` when the channel is closed.
+pub const OP_CHAN_SEND: i32 = 8;
+/// a0 = channel id. Parks until a value is queued or the channel is closed
+/// and drained. Result 1: take the front value from the queue; 0: closed and
+/// drained.
+pub const OP_CHAN_RECV: i32 = 9;
+/// a0 = channel id: one sender fewer; closed at zero. Result 0, or
+/// `E_CLOSED` when it already had no senders.
+pub const OP_CHAN_CLOSE: i32 = 10;
+/// a0 = address of `a1` little-endian i32 channel ids, a1 = their count.
+/// Parks until one of them has a value or is closed and drained. Result
+/// `2 * i + v` for arm `i`: `v` = 1 take a value from channel `i`, 0 that
+/// channel is closed and drained. The lowest ready arm wins.
+pub const OP_ALT: i32 = 11;
 
 /// Data stack: 128 KiB to 1 MiB.
 pub const DATA_STACK_BASE: u32 = 0x2_0000;
@@ -79,9 +110,18 @@ pub const IMPORT_TABLE: &str = "table";
 /// Shared anyref table of REPL step modules that use structs: a reference
 /// on the memory data stack is a slot holding its own index into this table.
 pub const IMPORT_REFS: &str = "refs";
+/// The mutable `anyref` global a module imports from `wack` only when it uses
+/// `spawn`: the closure of the process being started (`OP_SPAWN`).
+pub const IMPORT_SPAWN: &str = "spawn";
+/// The mutable `anyref` global a transformed module imports from `wack`: the
+/// head of the frame chain of the running process.
+pub const IMPORT_FRAMES: &str = "frames";
 /// Table index of `wack.refs` in a step module (0 is `wack.table`).
 pub const REFS_TABLE: u32 = 1;
 pub const EXPORT_MEMORY: &str = "memory";
+/// A transformed module (M12) exports its funcref table, for the native
+/// driver to start a process at its closure's slot.
+pub const EXPORT_TABLE: &str = "table";
 
 /// I/O error codes (negative i32).
 pub const E_NOT_FOUND: i32 = -1;
@@ -91,6 +131,8 @@ pub const E_IO: i32 = -4;
 pub const E_BAD_HANDLE: i32 = -5;
 /// A malformed request written to a handle (a `/net/http` header block).
 pub const E_MALFORMED: i32 = -6;
+/// A closed channel.
+pub const E_CLOSED: i32 = -7;
 
 /// Open modes.
 pub const MODE_READ: i32 = 0;
@@ -103,6 +145,7 @@ const _: () = {
     assert!(TRAP_MSG_ADDR < RESERVED_END);
     assert!(DOORBELL < RESERVED_END);
     assert!(DOORBELL + 4 <= WASI_IOVEC);
+    assert!(UNWIND_MODE + 4 <= WASI_IOVEC);
     assert!(WASI_TIME_DONE + 4 <= RESERVED_END);
 };
 
@@ -116,6 +159,10 @@ pub fn constants() -> Vec<(&'static str, u32)> {
         ("HEAP_PTR", HEAP_PTR),
         ("DATA_STACK_PTR", DATA_STACK_PTR),
         ("DOORBELL", DOORBELL),
+        ("UNWIND_MODE", UNWIND_MODE),
+        ("UNWIND_OFF", UNWIND_OFF as u32),
+        ("UNWINDING", UNWINDING as u32),
+        ("REWINDING", REWINDING as u32),
         ("RING_BASE", RING_BASE),
         ("SQ_HEAD", SQ_HEAD),
         ("SQ_TAIL", SQ_TAIL),
@@ -137,6 +184,13 @@ pub fn constants() -> Vec<(&'static str, u32)> {
         ("OP_READ", OP_READ as u32),
         ("OP_WRITE", OP_WRITE as u32),
         ("OP_CLOSE", OP_CLOSE as u32),
+        ("OP_SPAWN", OP_SPAWN as u32),
+        ("OP_CHAN_MAKE", OP_CHAN_MAKE as u32),
+        ("OP_CHAN_SENDER", OP_CHAN_SENDER as u32),
+        ("OP_CHAN_SEND", OP_CHAN_SEND as u32),
+        ("OP_CHAN_RECV", OP_CHAN_RECV as u32),
+        ("OP_CHAN_CLOSE", OP_CHAN_CLOSE as u32),
+        ("OP_ALT", OP_ALT as u32),
         ("DATA_STACK_BASE", DATA_STACK_BASE),
         ("DATA_STACK_END", DATA_STACK_END),
         ("LITERALS_BASE", LITERALS_BASE),
@@ -150,6 +204,7 @@ pub fn constants() -> Vec<(&'static str, u32)> {
         ("E_IO", E_IO as u32),
         ("E_BAD_HANDLE", E_BAD_HANDLE as u32),
         ("E_MALFORMED", E_MALFORMED as u32),
+        ("E_CLOSED", E_CLOSED as u32),
         ("MODE_READ", MODE_READ as u32),
         ("MODE_WRITE", MODE_WRITE as u32),
         ("MODE_APPEND", MODE_APPEND as u32),
@@ -166,6 +221,9 @@ mod tests {
         let c = constants();
         assert!(c.contains(&("DATA_STACK_PTR", 0x114)));
         assert!(c.contains(&("DOORBELL", 0x118)));
+        assert!(c.contains(&("UNWIND_MODE", 0x11C)));
+        assert!(c.contains(&("OP_ALT", 11)));
+        assert!(c.contains(&("E_CLOSED", -7i32 as u32)));
         const { assert!(DOORBELL < RESERVED_END) };
     }
 }

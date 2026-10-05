@@ -132,6 +132,85 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 #[test]
+fn run_and_test_run_processes() {
+    let src = scratch("procs.wack");
+    std::fs::write(
+        &src,
+        ": produce ( chan i32 -- ) 1 chan.send ;\n: main ( -- ) chan.make ( chan i32 ) :> c [ c produce ] spawn c chan.recv drop ;\n: one ( -- i32 ) 1 ;\ntest one : one -> 1\n",
+    )
+    .unwrap();
+    let src = src.to_str().unwrap();
+    let (ok, json, err) = wack(&["run", "--json", src]);
+    assert!(ok, "{json}{err}");
+    let j: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(j["results"]["trap"].is_null(), "{json}");
+    let (ok, json, err) = wack(&["test", "--json", src]);
+    assert!(ok, "{json}{err}");
+    let j: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(j["results"]["summary"]["pass"], 1, "{json}");
+}
+
+#[test]
+fn process_traps_name_the_process() {
+    let src = scratch("ptrap.wack");
+    std::fs::write(
+        &src,
+        ": boom ( -- ) \"bad\" trap ;\n: main ( -- ) [ boom ] spawn chan.make ( chan i32 ) chan.recv drop ;\n",
+    )
+    .unwrap();
+    let src = src.to_str().unwrap();
+    let (ok, json, _) = wack(&["run", "--json", src]);
+    assert!(!ok, "{json}");
+    let j: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(j["results"]["trap"]["process"], 1, "{json}");
+    assert_eq!(j["results"]["trap"]["word"], "boom", "{json}");
+    let (ok, _, err) = wack(&["run", src]);
+    assert!(!ok);
+    assert!(err.contains("trap in `boom` (process 1): bad"), "{err}");
+}
+
+#[test]
+fn alt_runs_natively() {
+    let (ok, out, err) = wack(&["run", "examples/alt.wack"]);
+    assert!(ok, "{out}{err}");
+    assert_eq!(out, "5 5\n8\n");
+}
+
+#[test]
+fn build_reports_processes() {
+    let src = scratch("spawns.wack");
+    std::fs::write(&src, ": main ( -- ) [ \"x\" println ] spawn ;\n").unwrap();
+    let (src, out) = (src.to_str().unwrap(), scratch("spawns.wasm"));
+    let out = out.to_str().unwrap();
+    let (ok, json, err) = wack(&["build", "--json", "--no-opt", src, "-o", out]);
+    assert!(ok, "{json}{err}");
+    let j: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(j["results"]["processes"], true);
+    assert!(std::path::Path::new(out).exists());
+    let (ok, _, err) = wack(&["build", "--no-opt", src, "-o", out]);
+    assert!(ok);
+    assert!(
+        err.contains(
+            "note: the module uses processes: its host must provide the `wack.spawn` and \
+             `wack.frames` globals and service ring opcodes 5 to 11 (wasmtime and the browser \
+             REPL do, by unwind and rewind)"
+        ),
+        "{err}"
+    );
+    let hello = scratch("hello.wasm");
+    let (ok, json, _) = wack(&[
+        "build",
+        "--json",
+        "examples/hello.wack",
+        "-o",
+        hello.to_str().unwrap(),
+    ]);
+    assert!(ok);
+    let j: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(j["results"]["processes"], false);
+}
+
+#[test]
 fn build_optimises_with_binaryen() {
     let out = scratch("sieve.wasm");
     let out = out.to_str().unwrap();

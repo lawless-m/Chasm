@@ -1,0 +1,78 @@
+# Merging two streams with alt, and a ping-pong between two processes.
+# Its processes run natively and in the browser REPL.
+# Exercises: alt with recv: arms, spawn, chan.close, none:/some: arms.
+
+# Send i, i + 2, ... below n on the channel, then close it.
+: send-from ( chan i32 i32 i32 -- )
+  :> n :> i! :> c
+  [ i n i32.lt_s ]
+  [ c i chan.send  i 2 i32.add i! ]
+  while
+  c chan.close ;
+
+# How many values arrive from each of two producers, whichever is ready
+# first. A closed and drained channel is always ready, so once one closes
+# the loop waits on the other alone.
+: merge-count ( i32 -- i32 i32 )
+  :> n
+  chan.make ( chan i32 ) :> evens
+  chan.make ( chan i32 ) :> odds
+  [ evens 0 n send-from ] spawn
+  [ odds 1 n send-from ] spawn
+  0 :> e!  0 :> o!
+  0 :> e-done!  0 :> o-done!
+  [ e-done o-done i32.and i32.eqz ]
+  [
+    e-done
+    [ odds chan.recv  none: [ 1 o-done! ] some: [ drop o 1 i32.add o! ] match ]
+    [
+      o-done
+      [ evens chan.recv  none: [ 1 e-done! ] some: [ drop e 1 i32.add e! ] match ]
+      [
+        evens recv: [ none: [ 1 e-done! ] some: [ drop e 1 i32.add e! ] match ]
+        odds recv: [ none: [ 1 o-done! ] some: [ drop o 1 i32.add o! ] match ]
+        alt
+      ]
+      if
+    ]
+    if
+  ]
+  while
+  e o ;
+test merge-count : 10 merge-count -> 5 5
+
+# Receive on a, send back one more on b, until a closes.
+: echo ( chan i32 chan i32 -- )
+  :> b :> a
+  [ 1 ]
+  [
+    a chan.recv
+    none: [ leave ]
+    some: [ 1 i32.add b swap chan.send ]
+    match
+  ]
+  while ;
+
+# n rounds of adding one each way: 2n. Each process waits on the other in
+# turn, so neither can simply run to the end first.
+: ping-pong ( i32 -- i32 )
+  :> n
+  chan.make ( chan i32 ) :> a
+  chan.make ( chan i32 ) :> b
+  [ a b echo ] spawn
+  0 :> v!
+  n
+  [
+    drop
+    a v 1 i32.add chan.send
+    b chan.recv none: [ 0 ] some: [ ] match v!
+  ]
+  times
+  a chan.close
+  v ;
+test ping-pong : 4 ping-pong -> 8
+
+: main ( -- )
+  10 merge-count :> o :> e
+  e i32.to-str print " " print o i32.to-str println
+  4 ping-pong i32.to-str println ;

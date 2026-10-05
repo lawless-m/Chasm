@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::ast::{Arm, Body, Item, Lit, Node, NodeKind, Variant};
+use crate::ast::{AltArm, Arm, Body, Item, Lit, Node, NodeKind, Variant};
 use crate::diag::{codes, Diagnostic, Location};
 use crate::lexer::{TokKind, Token};
 use crate::types::{Effect, Ty};
@@ -667,6 +667,50 @@ impl<'a> Parser<'a> {
                         NodeKind::Bind { name, mutable }
                     } else if text == "leave" {
                         NodeKind::Leave
+                    } else if text == "alt" {
+                        let mut arms = Vec::new();
+                        while out.len() >= 3 {
+                            let n = out.len();
+                            let is_arm = matches!(out[n - 1].kind, NodeKind::Quote { .. })
+                                && matches!(&out[n - 2].kind, NodeKind::Name(l) if l == "recv:");
+                            if !is_arm {
+                                break;
+                            }
+                            let chan = &out[n - 3].kind;
+                            if matches!(chan, NodeKind::Quote { .. })
+                                || matches!(chan, NodeKind::Name(l) if l.ends_with(':'))
+                            {
+                                return Err(self.err(
+                                    "an `alt` arm is `chan recv: [ ... ]`",
+                                    out[n - 3].loc.clone(),
+                                ));
+                            }
+                            let Some(Node {
+                                kind: NodeKind::Quote { body, effect },
+                                loc: qloc,
+                            }) = out.pop()
+                            else {
+                                unreachable!()
+                            };
+                            if effect.is_some() {
+                                return Err(inlined_effect(self, "alt", qloc));
+                            }
+                            let at = out.pop().unwrap().loc;
+                            let chan = out.pop().unwrap();
+                            arms.push(AltArm {
+                                chan,
+                                body,
+                                loc: at,
+                            });
+                        }
+                        if arms.is_empty() {
+                            return Err(self.err(
+                                "`alt` takes arms written directly before it, e.g. `a recv: [ ... ] b recv: [ ... ] alt`",
+                                loc,
+                            ));
+                        }
+                        arms.reverse();
+                        NodeKind::Alt(arms)
                     } else if text == "match" {
                         let mut arms = Vec::new();
                         while out.len() >= 2 {
@@ -839,6 +883,25 @@ mod tests {
             codes::E_UNKNOWN_TYPE
         );
         assert_eq!(perr("struct p T T  x: T").code, codes::E_SYNTAX);
+    }
+
+    #[test]
+    fn alt_arms() {
+        let items = p(": f ( chan i32 chan i32 -- i32 ) :> b :> a  a recv: [ drop 1 ] b recv: [ drop 2 ] alt ;");
+        let Item::Def { body, .. } = &items[0] else {
+            panic!()
+        };
+        let NodeKind::Alt(arms) = &body[2].kind else {
+            panic!("{:?}", body[2].kind)
+        };
+        let chans: Vec<&NodeKind> = arms.iter().map(|a| &a.chan.kind).collect();
+        assert_eq!(
+            chans,
+            [&NodeKind::Name("a".into()), &NodeKind::Name("b".into())]
+        );
+        for bad in [": f ( -- ) alt ;", ": f ( -- ) [ 1 ] recv: [ 2 ] alt ;"] {
+            assert_eq!(perr(bad).code, codes::E_SYNTAX, "{bad}");
+        }
     }
 
     #[test]

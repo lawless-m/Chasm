@@ -1,6 +1,6 @@
 # Whackford: Language Specification
 
-Status: draft v0.16 (M1 to M10 decisions recorded; see sections 12 to 22). Whackford source files use the `.wack` extension. Companion to `ARCHITECTURE.md`. Sections marked **TBD** are not yet decided.
+Status: draft v0.19 (M1 to M13 decisions recorded; see sections 12 to 25). Whackford source files use the `.wack` extension. Companion to `ARCHITECTURE.md`. Sections marked **TBD** are not yet decided.
 
 ## 1. Types
 
@@ -17,6 +17,7 @@ Status: draft v0.16 (M1 to M10 decisions recorded; see sections 12 to 22). Whack
 | union name | `(ref null $name)` | A declared union: a reference to one of its variants, WasmGC subtypes of the union's type. See section 4c. |
 | `name T...` | `(ref null $instance)` | A generic struct or union applied to type arguments (`pair i32 str`): its own WasmGC type per instantiation. See section 4c. |
 | `[ effect ]` | `(ref null $closure)` | A quotation type: a function as a value, a closure. See section 7a. |
+| `chan T` | `(ref null $chan)` per instantiation | A channel carrying `T`: a prelude struct. See section 4f. |
 
 Signedness is a property of operations, not types, as in wasm. There is no `bool`, `char`, `u32`, `v128` or nested array in v1.
 
@@ -242,6 +243,29 @@ A key changed after insertion is lost: its hash no longer matches its slot.
 
 A `bytes` is an `( addr len )` pair like a `str`, but mutable and not text: the buffer `host.read` fills. Its words check the length: `bytes.at`, `bytes.at!` and `bytes.slice` trap out of range, and `host.read` fills at most `bytes.len` bytes, so a read cannot overrun its buffer. `bytes.new ( i32 -- bytes )` allocates zeroed bytes; `bytes.to-str` copies; `bytes.as-str` gives the buffer itself as a string, without copying, for a buffer that is finished with. `bytes.put ( bytes i32 str -- )` copies a string in at an offset, and `bytes.u32-at`, `bytes.u64-at` and their `!` forms read and write little-endian numbers at a byte offset, for binary formats; all trap out of range. `bytes.len`, `bytes.addr` and `bytes.from-raw` are primitives; the rest is prelude. `eq` and `hash` compare by contents, as for `str`.
 
+## 4f. Processes and channels
+
+Processes are cooperative green threads in one instance. One runs at a time, and they switch only at channel operations (`chan.send`, `chan.recv`, `alt`) and when a process finishes; host I/O completes inline. So nothing changes a value under a running process.
+
+| Word | Effect | Behaviour |
+|---|---|---|
+| `spawn` | `( [ -- ] -- )` | Start the function value as a process. It runs when the current process next waits or finishes. |
+| `chan.make` | `( -- chan T )` | A channel with one sender. Needs a context that fixes `T`: `chan.make ( chan i32 )`. |
+| `chan.sender` | `( chan T -- )` | One more sender. |
+| `chan.send` | `( chan T T -- )` | Send, and wait until a receiver takes the value (a rendezvous). Traps `chan.send: the channel is closed`. |
+| `chan.recv` | `( chan T -- option T )` | Wait for a value; `option.none` once the channel is closed and every value taken. |
+| `chan.close` | `( chan T -- )` | One sender is done; the channel closes when every sender has. Traps when closed more often than it has senders. |
+
+`spawn` is an ordinary word taking a function value: `[ ... ] spawn`, `f spawn` and `'worker spawn` all work, and a process reaches only what its closure captured. The close is explicit, counted and out of band: a reader learns that a channel is finished from `chan.recv`, never from a value in the data.
+
+`alt` waits on several channels: `a recv: [ ... ] b recv: [ ... ] alt`. Labelled arms are written directly before the word, as for `match`; each is one token that pushes a channel (a local or a word), the label `recv:`, and a block. The arm of the first channel with a value, or closed and drained, runs with `option T`. Arms are tried in the order written, and every arm that does not diverge leaves the same stack (`E_BRANCH_MISMATCH`). The channel token must leave a `chan T` (`E_TYPE_MISMATCH` otherwise).
+
+Values sent on a channel are shared, not copied: a struct, `vec` or `map` sent or captured by two processes is the same value in both, as in Limbo and Go.
+
+When no process can run and some wait on channels, the waiting entry (a line, a test, `main`) traps with `all processes blocked: ` and, for each waiting process, what it waits on (`[line] waits to receive on chan 2; process 3 waits to send on chan 1`). In the REPL a line or a test runs as process 0, a step finishes once process 0 has returned and nothing else can run, and processes still waiting live on into later steps. `/prog` lists the live processes, and writing `kill` to `/prog/<pid>/ctl` ends one.
+
+Processes run in `wack run`, `wack test` and `wack repl`, and in the browser REPL. A trap in a spawned process ends `run` and fails a test; in a REPL it ends only that process. `build` writes the module with a note, and `build --wasi` refuses it (`E_WASI_UNSUPPORTED`).
+
 ## 5. Shuffle primitives
 
 Built-in polymorphic words. Their effects use type variables, resolved at each use against the stack (see `ARCHITECTURE.md` 5b). User words may be polymorphic too: their effects may name type variables, and each concrete use is compiled as its own instance (section 18).
@@ -359,6 +383,8 @@ Four host imports, specified in `ARCHITECTURE.md` 5d: `host.open ( str i32 -- i3
 
 Library words built on this, shipped with the language: `print`, `read-line`, `read-file`, `write-file`, `copy`, `ls`, `now`.
 
+`ring.submit ( i32 i32 i32 i32 -- i32 )` submits one ring entry (`a0 a1 a2 op -- result`). It is a raw word (`E_RAW` outside the prelude and `raw` words); the prelude's channel words are written with it. A closed channel is `-7`.
+
 ## 11. Open items
 
 1. Alignment and offset immediates on loads and stores: v1 is natural alignment, offset 0 (section 3).
@@ -465,3 +491,34 @@ Recorded here so the spec matches the compiler. `docs/reference.md` is the user-
 5. **Equality.** `eq` on function values is `ref.eq`, so two closures are equal only when they are the same value, even two `'word` of one word; `hash` is the slot.
 6. **Fields, arrays, the REPL.** A field of quotation type is a reference field; an `array` of function values is a view over a GC array, as for structs. In the REPL, function values live in `wack.refs` like structs, and the echo shows only the type (`( [ i32 -- i32 ] ) [ i32 -- i32 ]`), as decision 13.3 records.
 7. **Byte identity.** `$closure` is registered on first use of a function value, so programs and REPL sessions without one compile byte-identically to M9, and run as fast.
+
+## 23. Decisions taken in M11
+
+1. **Channels are a prelude struct over one raw primitive.** `struct chan T  id: i32  q: vec T  head: i32`: the values wait in `q`, in wasm; the host only counts senders and parks processes. The channel words are Whackford over `ring.submit`, a raw primitive that compiles to `call rt.ring`.
+2. **Every switch is a ring entry.** New opcodes: 5 `OP_SPAWN`, 6 `OP_CHAN_MAKE`, 7 `OP_CHAN_SENDER`, 8 `OP_CHAN_SEND`, 9 `OP_CHAN_RECV`, 10 `OP_CHAN_CLOSE`, 11 `OP_ALT`, and the code `E_CLOSED` (-7).
+3. **`spawn` is a checker primitive** taking `[ -- ]`. The closure reaches the host through an imported mutable `anyref` global, `wack.spawn`, set just before the ring entry that carries its slot. A global import shifts no function index, and a module imports it only when a word it keeps spawns, so programs without `spawn` stay byte-identical.
+4. **`alt` has labelled arms in the shape of `match`**, `chan recv: [ ... ]`, with exactly one token naming each channel. Only `recv:` arms exist.
+5. **Sends are rendezvous**: `chan.send` waits until a receiver takes its value.
+6. **The close is explicit and counted** (`FUTURE.md` section 9): `chan.make` one sender, `chan.sender` one more, a `chan.close` per sender, closed at zero; a send on a closed channel and an extra close trap; `chan.recv` gives `option T`. No sentinel values, and no automatic close, which would need to know when the last holder is dropped.
+7. **Process names and the blocked trap.** Process 0 is the entry (`main`, a test's word, `[line]`); others are `process N` in spawn order. When nothing can run and some process waits on a channel, the entry traps naming each waiting process and its channels.
+8. **Killing is through the namespace**, `/prog/<pid>/ctl` with `kill`, not a word.
+9. **Sharing is accepted**: values on channels are shared references.
+10. **Browser first** (superseded in M12, section 24: processes run natively too). Processes run in the browser REPL on JSPI. The native hosts refuse them until a native mechanism is chosen (`FUTURE.md` section 9): `run` and `test` at compile time (`E_PROCESSES_UNSUPPORTED`, naming the first word that uses them), `repl` with a trap at the first process operation (`processes run only in the browser REPL for now`); `build` writes the module with a note; `build --wasi` refuses (`E_WASI_UNSUPPORTED`).
+11. **New diagnostic codes**: `E_WASI_UNSUPPORTED` and `E_PROCESSES_UNSUPPORTED`.
+12. **Byte identity.** Programs and REPL sessions that use no process word compile byte-identically to M10: the channel words are lazy prelude generics, and the `wack.spawn` import appears only with `spawn`.
+
+## 24. Decisions taken in M12
+
+1. **Processes run natively.** `wack run`, `wack test` and `wack repl` run programs that use processes, with the same semantics as the browser REPL: process 0 is the entry (`main`, a test's word, `[line]`), the blocked trap names it, `/prog` lists and kills. Nothing in the language changed.
+2. **The mechanism is the compiler's**, not the engine's: a process that must wait unwinds its wasm stack into GC frames and is rewound when it resumes, on synchronous wasmtime (`ARCHITECTURE.md` sections 5g and 25). The browser keeps JSPI and untransformed modules (superseded in M13, section 25).
+3. **A program without processes is untouched**: it compiles byte-identically and runs as fast as before. Only the words that can be on the stack when a process waits are transformed.
+4. **Process traps.** A trap in a spawned process ends `run` and fails a `test`, reported as ``trap in `word` (process N): message`` (`process` in the JSON trap); in the REPL it ends only that process and is reported in `results.process_traps`, without making the step fail, as in the browser.
+5. **`run` ends when `main` has returned and nothing is ready**; processes still waiting are dropped.
+6. **`E_PROCESSES_UNSUPPORTED` is kept** (codes are a contract) but no longer emitted. `build --wasi` still refuses processes (`E_WASI_UNSUPPORTED`): a WASI module has no scheduler.
+7. **Examples.** `pipeline` and `alt` are ordinary examples in `examples/`, run natively and, by the headless EXAMPLES page, in the browser.
+
+## 25. Decisions taken in M13
+
+1. **One mechanism.** Processes run in the browser REPL by the same unwind/rewind transform as natively; JSPI is gone.
+2. **I/O never switches processes**, in any host: it completes inline. The only switch points are channel operations and the end of a process. Nothing else in the language changed.
+3. **The same behaviour everywhere.** A program behaves the same in `wack run`, `wack test`, `wack repl` and the browser REPL; the all-processes-blocked trap, `/prog` listing and kill, and process traps are identical in both REPLs.

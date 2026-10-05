@@ -1,20 +1,34 @@
 // The worker side of the browser REPL. It owns the funcref table and every
 // step's instance (tables cannot be shared between threads); the memory is
-// shared with the main thread, which services the I/O ring. `ring_enter`
-// rings the doorbell and blocks on Atomics.wait until the main thread is
-// done. No DOM, no Node APIs: `post` and `onMessage` are supplied.
+// shared with the main thread, which performs host I/O.
+//
+// Step modules are transformed to unwind and rewind, as in the native REPL,
+// and the worker drives processes with `Driver` (drive.js), the twin of the
+// native driver: a process that must wait unwinds into its saved frames and
+// is rewound when it resumes. Host I/O rings the doorbell and blocks on
+// Atomics.wait until the main thread has serviced the ring, so it completes
+// inline and no other process runs meanwhile. Channel operations, `spawn`
+// and `/prog` go to the scheduler (proc.js).
+// No DOM, no Node APIs: `post` and `onMessage` are supplied.
+
+import { Driver } from "./drive.js";
+import { Scheduler } from "./proc.js";
 
 const decoder = new TextDecoder();
 // Import name of the refs table (`wack_core::layout::IMPORT_REFS`).
 const L_REFS = "refs";
 
 export function attach(post, onMessage) {
-  let memory, L, table;
+  let memory, L, table, driver;
   // `wack.refs`: references on the memory data stack, by slot index.
-  // Made on the first step that needs it, so engines without WasmGC never see it.
+  // Made on the first step that needs it.
   let refs = null;
+  // `wack.frames`: the frame chain of the running process; `wack.spawn`: the
+  // closure of the process being started. Every step module imports both.
+  let frames, spawn;
 
-  function ring_enter() {
+  // Host I/O: the main thread services the ring and wakes this thread.
+  function doorbell() {
     const cells = new Int32Array(memory.buffer);
     Atomics.store(cells, L.DOORBELL >> 2, 0);
     post({ type: "ring" });
@@ -31,11 +45,6 @@ export function attach(post, onMessage) {
     const t = { message: str(L.TRAP_MSG_ADDR, L.TRAP_MSG_LEN), word: str(L.TRAP_WORD_ADDR, L.TRAP_WORD_LEN) };
     dv.setUint32(L.TRAP_MSG_LEN, 0, true);
     return t;
-  }
-
-  function call(slot) {
-    const r = table.get(slot)();
-    return r === undefined ? [] : Array.isArray(r) ? r : [r];
   }
 
   // Read a struct as a plain tree by calling its accessor words through the
@@ -86,6 +95,10 @@ export function attach(post, onMessage) {
     if (msg.type === "init") {
       ({ memory, layout: L } = msg);
       table = new WebAssembly.Table({ element: "anyfunc", initial: 0 });
+      frames = new WebAssembly.Global({ value: "anyref", mutable: true }, null);
+      spawn = new WebAssembly.Global({ value: "anyref", mutable: true }, null);
+      const sched = new Scheduler(L);
+      driver = new Driver(L, { memory, table, sched, frames, spawn, doorbell, trapInfo });
       return;
     }
     if (msg.type !== "run") return;
@@ -97,7 +110,7 @@ export function attach(post, onMessage) {
         if (refs.length < msg.refsSize) refs.grow(msg.refsSize - refs.length);
       }
       if (mod) {
-        const wack = { memory, table, ring_enter };
+        const wack = { memory, table, ring_enter: () => driver.ringEnter(), frames, spawn };
         if (refs) wack.refs = refs;
         const instance = new WebAssembly.Instance(mod, { wack });
         for (const i of msg.installs) table.set(i.slot, instance.exports[i.export]);
@@ -106,21 +119,9 @@ export function attach(post, onMessage) {
       post({ type: "done", error: String(e), trap: null, tests: [] });
       return;
     }
-    const tests = msg.tests.map((t) => {
-      try {
-        return { values: call(t.slot), trap: null };
-      } catch (e) {
-        return { values: null, trap: trapInfo(e) };
-      }
-    });
-    let trap = null;
-    if (msg.line) {
-      try {
-        call(msg.line.slot);
-      } catch (e) {
-        trap = trapInfo(e);
-      }
-    }
-    post({ type: "done", trap, tests });
+    const processTraps = [];
+    const tests = msg.tests.map((t) => driver.drive(t.slot, t.word ?? "test", [], processTraps));
+    const trap = msg.line ? driver.drive(msg.line.slot, "[line]", [], processTraps).trap : null;
+    post({ type: "done", trap, tests, processTraps });
   });
 }

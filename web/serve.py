@@ -1,7 +1,9 @@
 """Serve web/ for the browser REPL with cross-origin isolation.
 
 SharedArrayBuffer and Atomics.wait need the page to be cross-origin
-isolated, which these two response headers provide.
+isolated, which these two response headers provide. The repository's
+`examples/` is also served, at `/examples/`, for the headless examples page
+(`test/examples.html`).
 
 Usage: python3 web/serve.py [PORT]    (default 8000)
 """
@@ -10,6 +12,7 @@ import functools
 import http.server
 import pathlib
 import sys
+import urllib.parse
 
 ROOT = pathlib.Path(__file__).resolve().parent
 
@@ -21,6 +24,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         ".js": "text/javascript",
         ".mjs": "text/javascript",
     }
+
+    def translate_path(self, path):
+        clean = urllib.parse.unquote(path.split("?", 1)[0].split("#", 1)[0])
+        if clean.startswith("/examples/"):
+            rest = clean[len("/examples/") :]
+            if ".." in rest.split("/"):
+                return str(ROOT / "no such file")
+            return str(ROOT.parent / "examples" / rest)
+        return super().translate_path(path)
 
     def end_headers(self):
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")

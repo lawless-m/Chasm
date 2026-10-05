@@ -1,0 +1,52 @@
+# Synchronous concurrency, with two producers feeding one reader.
+# Rosetta Code: Synchronous_concurrency. Its processes run natively and in
+# the browser REPL.
+# Exercises: spawn, chan T, chan.sender, the explicit counted close (one
+# chan.close per sender), chan.recv with none:/some: match.
+
+# Send 1 to n on the channel, then close this sender's share of it.
+: produce ( chan i32 i32 -- )
+  :> n :> c
+  n [ 1 i32.add c swap chan.send ] times
+  c chan.close ;
+
+# A channel fed by two producers of 1 to n each: two senders.
+: two-producers ( i32 -- chan i32 )
+  :> n
+  chan.make ( chan i32 ) :> c
+  c chan.sender
+  [ c n produce ] spawn
+  [ c n produce ] spawn
+  c ;
+
+# The sum of everything received, until both producers have closed.
+: sum-of ( i32 -- i32 )
+  two-producers :> c
+  0 :> total!
+  [ 1 ]
+  [
+    c chan.recv
+    none: [ leave ]
+    some: [ total i32.add total! ]
+    match
+  ]
+  while
+  total ;
+test sum-of : 10 sum-of -> 110
+
+# How many values arrive: n from each producer.
+: count-of ( i32 -- i32 )
+  two-producers :> c
+  0 :> count!
+  [ 1 ]
+  [
+    c chan.recv
+    none: [ leave ]
+    some: [ drop count 1 i32.add count! ]
+    match
+  ]
+  while
+  count ;
+test count-of : 10 count-of -> 20
+
+: main ( -- )  10 sum-of i32.to-str println ;

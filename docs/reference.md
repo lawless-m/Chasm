@@ -79,6 +79,11 @@ read. A trap prints its message to stderr. The module exports `_start`,
 which calls `main`, and runs under any WASI preview1 runtime, for example
 `wasmtime --dir=. out.wasm`. `run` and `test` keep using the ring host.
 
+Programs that use processes (section 14a) run like any other in `run`,
+`test` and `repl`. `build` writes the module and notes that its host must
+provide the `wack.spawn` and `wack.frames` globals and service ring opcodes
+5 to 11; `build --wasi` refuses them (`E_WASI_UNSUPPORTED`).
+
 Add `--json` to any command for a machine-readable report:
 
 ```json
@@ -95,8 +100,8 @@ What `results` holds:
 | Command | `results` fields |
 |---|---|
 | `check` | `words`, `library_words`, `tests` (counts), `unresolved` (names), `has_main` |
-| `build` | `output`, `bytes`, `unoptimised_bytes`, `optimised`, `note`, `wasi` |
-| `run` | `output` (captured console), `trap` (`message`, `word`, or null), `optimised`, `note` |
+| `build` | `output`, `bytes`, `unoptimised_bytes`, `optimised`, `note`, `wasi`, `processes` |
+| `run` | `output` (captured console), `trap` (`message`, `word`, `process`, or null), `optimised`, `note` |
 | `test` | `tests` (each `test`, `word`, `status`, `expected`, `actual`, `trap`, `output`, `location`); `summary` (`pass`, `fail`, `pending`) |
 | `unresolved` | `unresolved` (each `word`, `declared_effect`, `dependants`, `pending_tests`, `location`) |
 | `dead` | `has_roots`; `dead` (each `word`, `effect`, `location`) |
@@ -159,6 +164,7 @@ TCP; native only), `--no-file` (hides the host filesystem) and `--no-net` (hides
   dependants.
 - A line that traps prints `trap in `[line N]`: message` and leaves the
   stack as it was.
+- A line or a test that uses processes runs as process 0 (section 14a).
 - A line starting with `)` is a REPL command, not Whackford, so a file never
   holds one: `)forget word`, `)force`, `)test` and `)words`. `)forget word` removes a word and its tests and frees the name,
   which can then be defined with any effect. It is refused (`E_FORGET`, with
@@ -202,7 +208,8 @@ TCP; native only), `--no-file` (hides the host filesystem) and `--no-net` (hides
   `results.output`; each report also has `results.defined` (each with
   `inferred`), `results.forgotten`,
   `results.forced`, `results.rechecked`, `results.listing` (`)words`; otherwise null),
-  `results.tests`, `results.trap`, `results.stack` and `results.timing`.
+  `results.tests`, `results.trap`, `results.process_traps` (traps in
+  spawned processes), `results.stack` and `results.timing`.
 
 ```wack-repl
 > : sq ( i32 -- i32 ) dup i32.mul ;
@@ -275,6 +282,8 @@ union name P... | variant  field: type ... | ...   # a union (section 10b, 10c)
 - A word can call itself, and any word defined or declared **above** it.
   To call a word defined further down, `declare` it first.
 - `#` starts a comment to end of line. Parentheses are never comments.
+- `spawn` and `alt` are primitive names, like `match`: they cannot be
+  defined or used as locals (section 14a).
 - Tokens are separated by whitespace: `[ dup ]`, not `[dup]`.
 - The program's entry point is `: main ( -- ) ... ;`.
 - A definition may leave out its effect; it is inferred and then checked as
@@ -283,7 +292,8 @@ union name P... | variant  field: type ... | ...   # a union (section 10b, 10c)
   (`E_NEEDS_EFFECT`).
 - **Raw words.** The words that reach memory by address (loads and stores,
   `mem.alloc`, `memory.copy`, `memory.fill`, `str.addr`, `str.from-raw`,
-  `bytes.addr`, `bytes.from-raw`) are allowed only in the prelude and in a
+  `bytes.addr`, `bytes.from-raw`), and `ring.submit ( i32 i32 i32 i32 -- i32 )`,
+  which submits a ring entry (the prelude's channel words use it), are allowed only in the prelude and in a
   word marked `raw : name ...` (`export raw :` also works); anywhere else,
   tests and REPL lines included, they are `E_RAW`. The checked words
   (`bytes`, `str`, arrays) cover ordinary programs. A `raw` word is called
@@ -824,6 +834,7 @@ not written again). `host.write` takes a string.
 | `/mnt/<name>/...` | a directory mounted with `--mount name=DIR`, or a 9p server mounted with `--mount name=9p://host:port`; under a 9p mount, writing to a missing file creates it |
 | `/net/http/<host>[:port]/<path>` | an HTTP request; in the browser REPL it goes through `fetch`, so a server on another origin must allow CORS |
 | `/net/https/<host>[:port]/<path>` | the same over TLS |
+| `/prog`, `/prog/<pid>/ctl` | reading `/prog` lists the live processes; writing `kill` to a `ctl` ends one (section 14a) |
 | `/local/<name>` | browser REPL only: a file kept in the page's local storage, across visits; `<name>` is one path segment; reading `/local` gives directory records |
 
 **HTTP requests.** What a program writes to a `/net/http` handle is the rest
@@ -860,6 +871,124 @@ Library words:
 Collections (`vec T`, `map K V`) are in section 10d. The prelude also declares `option T` (section 10c): `option.none ( -- option T )`,
 `option.some ( T -- option T )`.
 
+## 14a. Processes and channels
+
+Processes are cooperative green threads in one instance: one runs at a
+time, and they switch only at channel operations and when a process
+finishes (host I/O completes inline). They run in `wack run`, `wack test`,
+`wack repl` and the browser REPL, all by the same mechanism: a process that
+must wait unwinds its wasm stack into GC frames, and is rewound when it
+resumes; the compiler transforms the words that can be on the stack
+when a process waits, so a program without processes compiles exactly as
+before. `wack build` writes the transformed module with a note
+(`results.processes`); `build --wasi` refuses it (`E_WASI_UNSUPPORTED`).
+
+- `spawn ( [ -- ] -- )` starts a function value as a process. A closure
+  reaches only what it captured, so the channels it captures are its whole
+  connection to the rest of the program. Spawning does not switch: the new
+  process runs when the current one waits or finishes.
+- References are shared: a struct, `vec` or `map` sent on a channel or
+  captured by two processes is the same value in both, as in Limbo and Go.
+  Since processes switch only at channel operations, nothing
+  changes it under a running process.
+- Output of two processes printing at once interleaves at write
+  granularity.
+
+| Word | Effect |
+|---|---|
+| `chan.make` | `( -- chan T )` a channel with one sender; fix `T`: `chan.make ( chan i32 )` |
+| `chan.sender` | `( chan T -- )` one more sender, before the `spawn` that will send |
+| `chan.send` | `( chan T T -- )` waits until a receiver takes the value; traps `chan.send: the channel is closed` |
+| `chan.recv` | `( chan T -- option T )` waits for a value; `none` once the channel is closed and drained |
+| `chan.close` | `( chan T -- )` one sender is done; closed when every sender has closed; traps when closed more often than it has senders |
+
+The close is explicit and counted: a reader learns that a channel is
+finished from the channel (`chan.recv` gives `none`), never from a special
+value. Each sender closes once, so with two producers the channel needs
+`chan.sender` and two `chan.close`s:
+
+```wack
+: produce ( chan i32 i32 -- )
+  :> n :> c
+  n [ 1 i32.add c swap chan.send ] times
+  c chan.close ;
+
+: sum-of ( i32 -- i32 )
+  :> n
+  chan.make ( chan i32 ) :> c
+  c chan.sender
+  [ c n produce ] spawn
+  [ c n produce ] spawn
+  0 :> total!
+  [ 1 ]
+  [
+    c chan.recv
+    none: [ leave ]
+    some: [ total i32.add total! ]
+    match
+  ]
+  while
+  total ;
+test sum-of : 3 sum-of -> 12
+```
+
+`alt` waits on several channels and runs the arm of the first with a value,
+giving it `option T` (`none` when that channel is closed and drained). Each
+arm is one token naming a channel, the label `recv:`, and a block; arms are
+tried in the order written, and every arm leaves the same stack
+(`E_BRANCH_MISMATCH` otherwise). A closed and drained channel is always
+ready, so a loop over `alt` stops waiting on a channel once it has seen its
+`none` (see `examples/alt.wack`).
+
+```wack fragment
+evens recv: [ none: [ 0 ] some: [ ] match ]
+odds recv: [ none: [ 0 ] some: [ ] match ]
+alt
+```
+
+`main`, a test or a REPL line runs as process 0. `wack run` ends when
+`main` has returned and no other process can run; processes still waiting
+then are dropped. A trap in a spawned process ends the run (or fails the
+test) as ``trap in `word` (process N): message``, and `results.trap.process`
+is N (null for process 0).
+
+When no process can run and some are waiting on channels, the program can
+never finish: process 0 traps with
+`all processes blocked: main waits to receive on chan 2; process 3 waits to send on chan 1; ...`,
+naming each waiting process and its channels (`waits on chan 1, chan 2
+(alt)` for an `alt`); process 0 is `main`, the test's word or `[line]`.
+
+In the REPL, a line or a test runs as process 0. A step finishes when process 0
+has returned and no other process can run; processes still waiting stay, and a later line
+can wake them. A line that could only wait for ever traps as blocked, with
+the stack unchanged. A trap in a spawned process prints as
+``trap in `word` (process N): message`` and ends only that process.
+
+```wack-repl
+> : schan ( -- chan str ) chan.make ;
+ok: schan ( -- chan str )
+( )
+> schan :> c  c  [ c chan.recv none: [ "closed" println ] some: [ println ] match ] spawn
+(
+chan str chan{id: 1, q: vec{chunks: <32 elements>, count: 0}, head: 0}
+)
+> dup "hello" chan.send
+hello
+(
+chan str chan{id: 1, q: vec{chunks: <32 elements>, count: 0}, head: 0}
+)
+> drop schan chan.recv
+trap in `[line]`: all processes blocked: [line] waits to receive on chan 2
+(
+chan str chan{id: 1, q: vec{chunks: <32 elements>, count: 0}, head: 0}
+)
+```
+
+`/prog` lists the live processes by number (`"/prog" ls`), and writing `kill`
+to `/prog/<pid>/ctl` ends one (`"kill" "/prog/3/ctl" write-file`); anything
+else written there is `-6`. A killed process that is waiting never resumes,
+and one that kills itself stops at that write.
+
 ## 15. Diagnostic codes
 
 | Code | Meaning |
@@ -891,7 +1020,9 @@ Collections (`vec T`, `map K V`) are in section 10d. The prelude also declares `
 | `E_INTERNAL` | compiler bug |
 | `E_FORGET` | `)forget` refused: the word is still used (lists `dependants`), or is a primitive, prelude, or struct- or union-generated word |
 | `E_NEEDS_EFFECT` | the effect must be written: the word is recursive or mutually recursive, exported, or `main`; or an exported word's effect has type variables |
-| `E_RAW` | a word that reaches memory by address (a load or store, `mem.alloc`, `memory.copy`, `memory.fill`, `str.addr`, `str.from-raw`, `bytes.addr`, `bytes.from-raw`) outside the prelude and outside a `raw` word |
+| `E_RAW` | a word that reaches memory by address (a load or store, `mem.alloc`, `memory.copy`, `memory.fill`, `str.addr`, `str.from-raw`, `bytes.addr`, `bytes.from-raw`) or submits a ring entry (`ring.submit`) outside the prelude and outside a `raw` word |
+| `E_WASI_UNSUPPORTED` | `build --wasi`: the program uses processes, which a WASI module cannot run |
+| `E_PROCESSES_UNSUPPORTED` | kept but no longer emitted: processes run natively since M12 |
 | `E_FORCE` | `)force` refused: a dependant no longer checks (lists `dependants`, then their errors), or the word is a primitive, prelude, or struct- or union-generated word |
 
 ## 16. Worked examples
@@ -909,3 +1040,6 @@ over it, a struct holding an `option`), `collections` (`vec` push, `at` and
 `closures` (capture by value, a counter boxed in a struct, closures given to
 `vec.each`). Any of them can also be typed or piped into
 `wack repl`, e.g. `wack repl < examples/basics.wack`.
+
+Two examples use processes: `pipeline` (two producers and a counted close)
+and `alt` (merging two streams, and a ping-pong).

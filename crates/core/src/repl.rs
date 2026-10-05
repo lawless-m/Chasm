@@ -6,7 +6,7 @@
 //! memory and table.
 
 use crate::ast::Item;
-use crate::check::{compile_body, Ctx, Mode, Origin, StructDef, Word, WordId, WordKind};
+use crate::check::{compile_body, Ctx, Mode, Origin, StructDef, Unwind, Word, WordId, WordKind};
 use crate::diag::{codes, Diagnostic, Location};
 use crate::layout;
 use crate::lexer::lex;
@@ -284,10 +284,15 @@ impl Session {
     }
 
     /// Start a session. `shared_memory` is for the browser, whose memory is
-    /// shared with the worker. Returns the step installing the prelude.
-    pub fn new(prelude: bool, shared_memory: bool, heap_ptr: u32) -> (Session, Step) {
+    /// shared with the worker. `unwind` transforms every step module, the
+    /// prelude's included, to unwind and rewind (the native REPL's
+    /// processes, M12). Returns the step installing the prelude.
+    pub fn new(prelude: bool, shared_memory: bool, heap_ptr: u32, unwind: bool) -> (Session, Step) {
         let mut ctx = Ctx::default();
         ctx.indirect_calls = true;
+        if unwind {
+            ctx.unwind = Unwind::All;
+        }
         ctx.begin_literals(heap_ptr);
         let mut s = Session {
             ctx,

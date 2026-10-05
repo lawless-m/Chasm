@@ -26,6 +26,17 @@ function float(x, single) {
 }
 
 
+// Split a file into chunks: one begins at every line starting, at column 0,
+// with a top-level keyword; every other line continues the current chunk.
+export function chunks(text) {
+  const out = [[]];
+  for (const line of text.split("\n")) {
+    if (/^(:|export|raw|declare|test|struct|union)(\s|$)/.test(line)) out.push([]);
+    out.at(-1).push(line);
+  }
+  return out.map((lines) => lines.join("\n").trim()).filter((c) => c);
+}
+
 export class Repl {
   constructor({ compiler, memory, worker, onOutput, storage }) {
     this.c = compiler;
@@ -91,7 +102,7 @@ export class Repl {
         tableSize: step.table_size,
         refsSize: step.refs_size ?? 0,
         line: step.line ? { slot: step.line.slot } : null,
-        tests: step.tests.map((t) => ({ slot: t.slot })),
+        tests: step.tests.map((t) => ({ slot: t.slot, word: t.word })),
       });
     });
   }
@@ -136,6 +147,7 @@ export class Repl {
       tests,
       tested: s.tested,
       trap,
+      processTraps: done.processTraps ?? [],
       stack: await this.readStack(this.stackTypes),
     };
   }

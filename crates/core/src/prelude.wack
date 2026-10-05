@@ -474,3 +474,54 @@ struct map K V  ks: array K  vs: array V  used: array i32  count: i32  filled: i
   m map.used array.len [ :> i
     m map.used i array.at 1 i32.eq [ m map.ks i array.at  m map.vs i array.at  f call ] when ]
   times ;
+
+# ---------------------------------------------------------------- channels
+# A channel: the host counts its senders and parks processes; the values
+# never leave wasm, they wait in `q` from `head` on. The opcodes are the
+# ring's (`layout.rs`).
+struct chan T  id: i32  q: vec T  head: i32
+
+: chan.make ( -- chan T )  vec.make ( vec T )  0 0 0 6 ring.submit  swap 0 chan.new ;  # OP_CHAN_MAKE
+
+: chan.sender ( chan T -- )  chan.id 0 0 7 ring.submit drop ;  # OP_CHAN_SENDER
+
+: chan.close ( chan T -- )  # OP_CHAN_CLOSE
+  chan.id 0 0 10 ring.submit 0 i32.lt_s
+  [ "chan.close: closed more times than it has senders" trap ]
+  when ;
+
+: chan.send ( chan T T -- )  # OP_CHAN_SEND
+  :> x :> c
+  c chan.q x vec.push
+  c chan.id 0 0 8 ring.submit 0 i32.lt_s
+  [ "chan.send: the channel is closed" trap ]
+  when ;
+
+# The front value of the queue; the queue is emptied once all are taken.
+: chan.take ( chan T -- T )
+  :> c
+  c chan.q :> q
+  c chan.head :> h
+  h q vec.len i32.ge_s [ "chan.take: nothing queued" trap ] when
+  q h vec.at
+  h 1 i32.add :> n
+  n q vec.len i32.eq
+  [
+    q vec.clear
+    c 0 chan.head!
+  ]
+  [ c n chan.head! ]
+  if ;
+
+: chan.recv ( chan T -- option T )  # OP_CHAN_RECV
+  :> c
+  c chan.id 0 0 9 ring.submit
+  [ c chan.take option.some ]
+  [ option.none ]
+  if ;
+
+# What an `alt` arm receives: a value when the bit is 1, else none.
+: chan.taken ( chan T i32 -- option T )
+  [ chan.take option.some ]
+  [ drop option.none ]
+  if ;
