@@ -1,0 +1,34 @@
+# A timeout: a slow producer raced against `time.after` in `alt`, and a
+# fast one that beats the timer. Runs natively and in the browser REPL.
+# Exercises: time.sleep, time.after, alt with a timer arm.
+
+# Send v on c after ms milliseconds, then close.
+: send-after ( chan i32 i32 i32 -- )
+  :> v :> ms :> c
+  ms time.sleep
+  c v chan.send
+  c chan.close ;
+
+# The value from c, or -1 when ms milliseconds pass first.
+: recv-within ( chan i32 i32 -- i32 )
+  :> ms :> c
+  -1 ms time.after :> timer
+  c recv: [ none: [ -1 ] some: [ ] match ]
+  timer recv: [ none: [ -1 ] some: [ ] match ]
+  alt ;
+
+: slow ( -- i32 )
+  chan.make ( chan i32 ) :> c
+  [ c 50 7 send-after ] spawn
+  c 10 recv-within ;
+test slow : slow -> -1
+
+: fast ( -- i32 )
+  chan.make ( chan i32 ) :> c
+  [ c 1 7 send-after ] spawn
+  c 50 recv-within ;
+test fast : fast -> 7
+
+: main ( -- )
+  slow i32.to-str println
+  fast i32.to-str println ;

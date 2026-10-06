@@ -118,7 +118,7 @@ try {
   r = await repl.step('drop drop drop "/local/none" "/local/x" copy');
   assert.deepEqual(r.stack, n(-1));
 
-  r = await repl.step('drop "/local/g" 0 host.open :> h  4 bytes.new :> b  h b host.read  b  b 0 2 bytes.slice bytes.to-str');
+  r = await repl.step('drop "/local/g" host.OREAD host.open :> h  4 bytes.new :> b  h b host.read  b  b 0 2 bytes.slice bytes.to-str');
   assert.ok(r.ok, JSON.stringify(r.diagnostics));
   assert.deepEqual(r.stack, [...n(4), { type: "bytes", value: "<4 bytes>" }, { type: "str", value: '"ke"' }]);
   r = await repl.step("drop 9 bytes.at");

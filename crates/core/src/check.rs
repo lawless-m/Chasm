@@ -2489,7 +2489,10 @@ impl<'c> Walker<'c> {
                 && matches!(
                     body[i - 1].kind,
                     NodeKind::Lit(Lit::I32(
-                        layout::OP_CHAN_SEND | layout::OP_CHAN_RECV | layout::OP_ALT
+                        layout::OP_CHAN_SEND
+                            | layout::OP_CHAN_RECV
+                            | layout::OP_ALT
+                            | layout::OP_SLEEP
                     ))
                 )
             {
@@ -3835,7 +3838,10 @@ impl<'c> Walker<'c> {
                         if self.transformed
                             && matches!(
                                 op,
-                                layout::OP_CHAN_SEND | layout::OP_CHAN_RECV | layout::OP_ALT
+                                layout::OP_CHAN_SEND
+                                    | layout::OP_CHAN_RECV
+                                    | layout::OP_ALT
+                                    | layout::OP_SLEEP
                             ) =>
                     {
                         self.code.pop();

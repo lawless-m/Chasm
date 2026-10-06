@@ -33,7 +33,7 @@ const PROGRAM: &str = r#"
 
 : post ( str str -- str i32 )
   :> req :> path
-  path 3 host.open :> h
+  path host.ORDWR host.open :> h
   h 0 i32.lt_s
   [ "" h ]
   [ h req host.write drop  h drain ]

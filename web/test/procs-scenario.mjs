@@ -64,4 +64,16 @@ export async function procScenario(repl, assert, output) {
   const m2 = output().length;
   await step("dup 0 chan.send drop");
   assert.equal(output().slice(m2), "42\n", "captured struct intact");
+
+  // (8) A timer delivers its value.
+  r = await step("7 20 time.after chan.recv");
+  assert.equal(top(r).value, "option.some{v: 7}");
+  await step("drop");
+
+  // (9) The timer beats a slow sender, and process 0 then waits on a channel
+  // a sleeper serves later.
+  r = await step("ichan :> slow  0 10 time.after :> timer  [ 30 time.sleep  slow 1 chan.send ] spawn  slow recv: [ drop 0 ] timer recv: [ drop 1 ] alt  slow chan.recv drop");
+  assert.equal(top(r).type, "i32");
+  assert.equal(top(r).value, "1");
+  await step("drop");
 }

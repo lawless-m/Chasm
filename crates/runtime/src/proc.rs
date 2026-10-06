@@ -6,6 +6,10 @@
 //! the channel's queue in wasm, and the scheduler only records which process
 //! is waiting for that value to be taken (`queued`), so a send is a
 //! rendezvous.
+//!
+//! Timers: `OP_SLEEP` parks a process until a deadline on the scheduler's
+//! millisecond clock (injectable, so tests are deterministic). When nothing
+//! is ready, the earliest due sleeper wakes; a sleeper is never blocked.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
@@ -46,6 +50,7 @@ enum WaitKind {
     Recv,
     Send,
     Alt,
+    Sleep,
 }
 
 struct Wait {
@@ -96,6 +101,10 @@ pub struct Scheduler {
     next_chan: i32,
     prog_handles: HashMap<i32, ProgHandle>,
     next_prog_handle: i32,
+    /// Milliseconds on the scheduler's clock.
+    now: Box<dyn Fn() -> i64>,
+    /// (deadline, pid) of each sleeping process, in the order they slept.
+    sleepers: Vec<(i64, Pid)>,
     /// Each process killed, in order, so the host can drop it.
     pub killed: Vec<Pid>,
 }
@@ -108,6 +117,12 @@ impl Default for Scheduler {
 
 impl Scheduler {
     pub fn new() -> Self {
+        let start = std::time::Instant::now();
+        Self::with_clock(Box::new(move || start.elapsed().as_millis() as i64))
+    }
+
+    /// A scheduler on the given millisecond clock.
+    pub fn with_clock(now: Box<dyn Fn() -> i64>) -> Self {
         let mut procs = BTreeMap::new();
         procs.insert(
             0,
@@ -125,6 +140,8 @@ impl Scheduler {
             next_chan: 1,
             prog_handles: HashMap::new(),
             next_prog_handle: PROG_HANDLE_BASE,
+            now,
+            sleepers: Vec::new(),
             killed: Vec::new(),
         }
     }
@@ -219,6 +236,11 @@ impl Scheduler {
         if op == L::OP_ALT {
             return self.alt(pid, a0, a1, mem);
         }
+        if op == L::OP_SLEEP {
+            let deadline = (self.now)() + a0.max(0) as i64;
+            self.sleepers.push((deadline, pid));
+            return self.park(pid, WaitKind::Sleep, vec![]);
+        }
         let Some(c) = self.chans.get_mut(&a0) else {
             return Submit::Done(L::E_BAD_HANDLE);
         };
@@ -299,15 +321,36 @@ impl Scheduler {
         self.park(pid, WaitKind::Alt, ids)
     }
 
-    /// The next ready process, in FIFO order.
+    /// The next ready process, in FIFO order; when none is ready, the
+    /// earliest due sleeper (equal deadlines in the order they slept).
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Option<Resume> {
+        if self.ready.is_empty() {
+            if let Some(i) = self.earliest() {
+                if self.sleepers[i].0 <= (self.now)() {
+                    let (_, pid) = self.sleepers.remove(i);
+                    self.wake(pid, 0);
+                }
+            }
+        }
         let r = self.ready.pop_front()?;
         self.procs.get_mut(&r.pid).unwrap().state = State::Running;
         Some(r)
     }
 
+    fn earliest(&self) -> Option<usize> {
+        (0..self.sleepers.len()).min_by_key(|&i| self.sleepers[i].0)
+    }
+
+    /// Milliseconds until the earliest sleeper is due (0 if it is); `None`
+    /// when nothing sleeps.
+    pub fn sleep_for(&self) -> Option<i64> {
+        let i = self.earliest()?;
+        Some((self.sleepers[i].0 - (self.now)()).max(0))
+    }
+
     pub fn exit(&mut self, pid: Pid) {
+        self.sleepers.retain(|&(_, p)| p != pid);
         if let Some(p) = self.procs.get_mut(&pid) {
             p.state = State::Done;
             p.wait = None;
@@ -327,6 +370,7 @@ impl Scheduler {
         for c in self.chans.values_mut() {
             c.receivers.retain(|r| r.pid != pid);
         }
+        self.sleepers.retain(|&(_, p)| p != pid);
         self.ready.retain(|r| r.pid != pid);
         self.killed.push(pid);
         true
@@ -351,13 +395,14 @@ impl Scheduler {
             .collect()
     }
 
-    /// `None` while a process can still run (one is ready, running or waiting
-    /// on I/O); otherwise the message naming what each parked process waits on.
+    /// `None` while a process can still run (one is ready, running, sleeping
+    /// or waiting on I/O); otherwise the message naming what each parked process waits on.
     pub fn blocked(&self, name: &dyn Fn(Pid) -> String) -> Option<String> {
         if self
             .procs
             .values()
             .any(|p| matches!(p.state, State::Ready | State::Running | State::Io))
+            || !self.sleepers.is_empty()
         {
             return None;
         }
@@ -377,6 +422,7 @@ impl Scheduler {
                     WaitKind::Recv => format!("{} waits to receive on {chans}", name(pid)),
                     WaitKind::Send => format!("{} waits to send on {chans}", name(pid)),
                     WaitKind::Alt => format!("{} waits on {chans} (alt)", name(pid)),
+                    WaitKind::Sleep => format!("{} sleeps", name(pid)),
                 }
             })
             .collect();
@@ -755,5 +801,89 @@ mod tests {
         assert_eq!(s.prog_read(d, &mut one), 14, "pid 0's record");
         assert_eq!(s.prog_read(d, &mut one), 14, "pid 1's record");
         assert_eq!(s.prog_read(d, &mut one), 0);
+    }
+
+    fn clocked() -> (Scheduler, std::rc::Rc<std::cell::Cell<i64>>) {
+        let t = std::rc::Rc::new(std::cell::Cell::new(0));
+        let c = t.clone();
+        (Scheduler::with_clock(Box::new(move || c.get())), t)
+    }
+
+    fn started(s: &mut Scheduler) -> Pid {
+        let p = s.spawn(7);
+        assert_eq!(run(s), Some((p, 0)));
+        p
+    }
+
+    #[test]
+    fn sleep_parks_until_the_deadline() {
+        let (mut s, t) = clocked();
+        let p = started(&mut s);
+        assert_eq!(sub(&mut s, p, L::OP_SLEEP, 20), Park);
+        assert_eq!(s.next(), None);
+        assert_eq!(s.sleep_for(), Some(20));
+        t.set(19);
+        assert_eq!(s.next(), None);
+        t.set(20);
+        assert_eq!(
+            s.next(),
+            Some(Resume {
+                pid: p,
+                result: 0,
+                start: false
+            })
+        );
+        assert_eq!(s.sleep_for(), None);
+    }
+
+    #[test]
+    fn sleepers_wake_in_deadline_order_then_sleep_order() {
+        let (mut s, t) = clocked();
+        let (a, b, c, d) = (
+            started(&mut s),
+            started(&mut s),
+            started(&mut s),
+            started(&mut s),
+        );
+        sub(&mut s, a, L::OP_SLEEP, 30);
+        sub(&mut s, b, L::OP_SLEEP, 10);
+        sub(&mut s, c, L::OP_SLEEP, 40);
+        sub(&mut s, d, L::OP_SLEEP, 40);
+        t.set(100);
+        assert_eq!(run(&mut s), Some((b, 0)));
+        assert_eq!(run(&mut s), Some((a, 0)));
+        assert_eq!(run(&mut s), Some((c, 0)));
+        assert_eq!(run(&mut s), Some((d, 0)));
+        assert_eq!(run(&mut s), None);
+    }
+
+    #[test]
+    fn a_sleeper_is_not_blocked() {
+        let (mut s, _t) = clocked();
+        let c = make(&mut s);
+        let p = started(&mut s);
+        assert_eq!(sub(&mut s, p, L::OP_SLEEP, 10), Park);
+        assert_eq!(sub(&mut s, 0, L::OP_CHAN_RECV, c), Park);
+        assert_eq!(s.blocked(&default_name), None);
+    }
+
+    #[test]
+    fn a_killed_sleeper_is_gone() {
+        let (mut s, t) = clocked();
+        let p = started(&mut s);
+        sub(&mut s, p, L::OP_SLEEP, 10);
+        assert!(s.kill(p));
+        assert_eq!(s.sleep_for(), None);
+        t.set(50);
+        assert_eq!(s.next(), None);
+    }
+
+    #[test]
+    fn a_negative_sleep_is_due_at_once() {
+        let (mut s, _t) = clocked();
+        let p = started(&mut s);
+        assert_eq!(sub(&mut s, p, L::OP_SLEEP, -5), Park);
+        assert_eq!(s.sleep_for(), Some(0));
+        assert_eq!(run(&mut s), Some((p, 0)));
     }
 }

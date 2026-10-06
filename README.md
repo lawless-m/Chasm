@@ -53,6 +53,7 @@ cooperative green threads, `chan T` with an explicit counted close,
 a waiting process unwinds its wasm stack into GC frames and is rewound when
 it resumes, on synchronous wasmtime) and M13 (one mechanism: the browser
 REPL runs processes by the same unwind/rewind transform, so they run in any
-WasmGC browser and under node 22) are implemented: M0 to M13 implemented.
+WasmGC browser and under node 22) and M14 (timers: `time.sleep` and
+`time.after`, so `alt` can time out) are implemented: M0 to M14 implemented.
 
 Licence: MIT.

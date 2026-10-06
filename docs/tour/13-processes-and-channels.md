@@ -77,6 +77,32 @@ receives an `option`:
 test first-ready : first-ready -> 7
 ```
 
+## Timeouts
+
+`time.sleep` waits a number of milliseconds while other processes run.
+`time.after` takes a value and a delay and gives a channel that receives
+that value once the delay has passed, so an `alt` arm on it is a timeout:
+
+```wack
+# The value from c, or -1 when ms milliseconds pass first.
+: recv-within ( chan i32 i32 -- i32 )
+  :> ms :> c
+  -1 ms time.after :> timer
+  c recv: [ none: [ -1 ] some: [ ] match ]
+  timer recv: [ none: [ -1 ] some: [ ] match ]
+  alt ;
+
+: slow-producer ( -- i32 )
+  chan.make ( chan i32 ) :> c
+  [ 50 time.sleep  c 7 chan.send ] spawn
+  c 10 recv-within ;
+test slow-producer : slow-producer -> -1
+```
+
+Here the timer wins, so the slow producer stays parked on its send until
+the program ends. When the other arm wins, the timer's process waits the
+same way. In the REPL, `/prog` lists whichever is left.
+
 ## In the REPL
 
 A process that is waiting stays from one step to the next, so a later line

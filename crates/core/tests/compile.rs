@@ -861,6 +861,25 @@ fn wasi(src: &str) -> wack_core::Compilation {
 }
 
 #[test]
+fn sleeping_is_a_process_operation() {
+    let src = ": main ( -- ) 5 time.sleep ;";
+    let c = export(src);
+    assert!(c.ok(), "{:?}", c.diagnostics);
+    assert!(c.processes.is_some());
+    let wasm = c.wasm.as_ref().unwrap();
+    wack_core::validate(wasm).unwrap();
+    assert_eq!(
+        imports_and_exports(wasm).0,
+        ["wack.ring_enter", "wack.frames", "wack.spawn"]
+    );
+    assert_eq!(wasi(src).diagnostics[0].code, "E_WASI_UNSUPPORTED");
+    let c = ok(": t ( -- chan i32 ) -1 5 time.after ;");
+    assert!(c.ok(), "{:?}", c.diagnostics);
+    let c = ok(": u ( -- chan str ) \"late\" 5 time.after ;");
+    assert!(c.ok(), "{:?}", c.diagnostics);
+}
+
+#[test]
 fn wasi_build_refuses_processes() {
     let src = ": main ( -- ) [ ] spawn ;";
     let c = wasi(src);

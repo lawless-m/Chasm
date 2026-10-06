@@ -124,7 +124,7 @@ pub(crate) fn process_ring_enter<T: 'static>(
         }
         L::OP_CLOSE if prog => Entry::Complete(p.sched.prog_close(a0)),
         L::OP_SPAWN => Entry::Spawn(a0 as u32),
-        L::OP_CHAN_MAKE..=L::OP_ALT => match p.sched.submit(p.current, op, a0, a1, a2, data) {
+        L::OP_CHAN_MAKE..=L::OP_SLEEP => match p.sched.submit(p.current, op, a0, a1, a2, data) {
             Submit::Done(r) => Entry::Complete(r),
             Submit::Park => {
                 p.pending_user.insert(p.current, user);
@@ -159,7 +159,10 @@ pub(crate) fn process_ring_enter<T: 'static>(
 /// process that must wait unwinds into its saved chain; resuming, its chain
 /// is put back, its completion written, and its entry called again to
 /// rewind. A process is started by calling its closure's slot in `table`.
-/// When nothing is ready and process 0 waits, it is killed and the result is
+/// While process 0 runs and nothing is ready, the driver sleeps until the
+/// earliest sleeper is due; once it has returned, sleepers stay (or are
+/// dropped with the run). When nothing is ready, nothing sleeps and process
+/// 0 waits, it is killed and the result is
 /// the all-processes-blocked trap, naming it `name`. A trap in a spawned
 /// process ends the call, unless `process_traps` is given: then that
 /// process alone ends and its trap is collected there.
@@ -296,7 +299,15 @@ pub(crate) fn drive<T: 'static>(
                 }
             }
         }
-        next = procs!(scope).sched.next().map(|r| {
+        let mut r = procs!(scope).sched.next();
+        while r.is_none() && main_out.is_none() {
+            let Some(ms) = procs!(scope).sched.sleep_for() else {
+                break;
+            };
+            std::thread::sleep(std::time::Duration::from_millis(ms as u64));
+            r = procs!(scope).sched.next();
+        }
+        next = r.map(|r| {
             if r.start {
                 Next::Start(r.pid)
             } else {

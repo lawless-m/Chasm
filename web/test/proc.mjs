@@ -194,4 +194,65 @@ const run = (s) => {
   assert.equal(s.progClose(12345), L.E_BAD_HANDLE);
 }
 
+// Timers, on a fake clock.
+{
+  let t = 0;
+  const started = (s) => {
+    const p = s.spawn(7, null);
+    assert.deepEqual(run(s), [p, 0]);
+    return p;
+  };
+  {
+    const s = new Scheduler(L, () => t);
+    const p = started(s);
+    assert.deepEqual(s.submit(p, L.OP_SLEEP, 20, 0, 0), { park: true });
+    assert.equal(s.next(), null);
+    assert.equal(s.sleepFor(), 20);
+    t = 19;
+    assert.equal(s.next(), null);
+    t = 20;
+    assert.deepEqual(run(s), [p, 0]);
+    assert.equal(s.sleepFor(), null);
+  }
+  {
+    t = 0;
+    const s = new Scheduler(L, () => t);
+    const [a, b, c, d] = [started(s), started(s), started(s), started(s)];
+    s.submit(a, L.OP_SLEEP, 30, 0, 0);
+    s.submit(b, L.OP_SLEEP, 10, 0, 0);
+    s.submit(c, L.OP_SLEEP, 40, 0, 0);
+    s.submit(d, L.OP_SLEEP, 40, 0, 0);
+    t = 100;
+    assert.deepEqual([run(s), run(s), run(s), run(s)], [[b, 0], [a, 0], [c, 0], [d, 0]]);
+    assert.equal(s.next(), null);
+  }
+  {
+    t = 0;
+    const s = new Scheduler(L, () => t);
+    const c = s.chanMake();
+    const p = started(s);
+    s.submit(p, L.OP_SLEEP, 10, 0, 0);
+    assert.deepEqual(s.submit(0, L.OP_CHAN_RECV, c, 0, 0), { park: true });
+    assert.equal(s.blocked(), null, "a sleeper is not blocked");
+  }
+  {
+    t = 0;
+    const s = new Scheduler(L, () => t);
+    const p = started(s);
+    s.submit(p, L.OP_SLEEP, 10, 0, 0);
+    assert.ok(s.kill(p));
+    assert.equal(s.sleepFor(), null);
+    t = 50;
+    assert.equal(s.next(), null);
+  }
+  {
+    t = 0;
+    const s = new Scheduler(L, () => t);
+    const p = started(s);
+    s.submit(p, L.OP_SLEEP, -5, 0, 0);
+    assert.equal(s.sleepFor(), 0);
+    assert.deepEqual(run(s), [p, 0]);
+  }
+}
+
 console.log("proc.mjs ok");

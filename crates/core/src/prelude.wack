@@ -209,18 +209,26 @@
 
 # ---------------------------------------------------------------- I/O
 
+# Modes for host.open, as layout.rs MODE_*.
+: host.OREAD ( -- i32 )  0 ;
+: host.OWRITE ( -- i32 )  1 ;  # truncates
+: host.OAPPEND ( -- i32 )  2 ;
+: host.ORDWR ( -- i32 )  3 ;
+
 : print ( str -- )
   :> s
-  "/dev/cons" 1 host.open :> h
+  "/dev/cons" host.OWRITE host.open :> h
   h s host.write drop
   h host.close drop ;
 
 : println ( str -- )  print "\n" print ;
 
-# Read one line from the console, without its newline.
-# The flag is 1 if a line was read, 0 at end of input.
-: read-line ( -- str i32 )
-  "/dev/cons" 0 host.open :> h
+# Read one line from an open handle, without its newline.
+# The flag is 1 if a line was read, 0 at end of input. One byte per
+# read, so nothing past the newline is taken: the next call goes on
+# from there. The handle stays open.
+: host.read-line ( i32 -- str i32 )
+  :> h
   256 :> cap!
   cap mem.alloc :> buf!
   0 :> n!
@@ -237,15 +245,20 @@
       cap 2 i32.mul cap!
     ] when ]
   while
-  h host.close drop
   buf n str.from-raw
   eof n i32.eqz i32.and i32.eqz ;
+
+# Read one line from the console, as host.read-line.
+: read-line ( -- str i32 )
+  "/dev/cons" host.OREAD host.open :> h
+  h host.read-line
+  h host.close drop ;
 
 # Read a whole file by namespace path, e.g. "/file/etc/hostname".
 # Status is 0 on success or a negative error code.
 : read-file ( str -- str i32 )
   :> path
-  path 0 host.open :> h
+  path host.OREAD host.open :> h
   h 0 i32.lt_s
   [ "" h ]
   [ 4096 :> cap!
@@ -270,7 +283,7 @@
 # "hello" "/local/greeting". Status is 0 on success or a negative error code.
 : write-file ( str str -- i32 )
   :> path :> s
-  path 1 host.open :> h
+  path host.OWRITE host.open :> h
   h 0 i32.lt_s
   [ h ]
   [ 0 :> n!
@@ -294,7 +307,7 @@
 # trailing "/"). Status is 0 on success or a negative error code.
 : ls ( str -- i32 )
   :> path
-  path 0 host.open :> h
+  path host.OREAD host.open :> h
   h 0 i32.lt_s
   [ h ]
   [ 4096 mem.alloc :> buf
@@ -318,7 +331,7 @@
 
 # Current time in nanoseconds since the Unix epoch.
 : now ( -- i64 )
-  "/dev/time" 0 host.open :> h
+  "/dev/time" host.OREAD host.open :> h
   8 mem.alloc :> buf
   h buf 8 bytes.from-raw host.read drop
   h host.close drop
@@ -525,3 +538,16 @@ struct chan T  id: i32  q: vec T  head: i32
   [ chan.take option.some ]
   [ drop option.none ]
   if ;
+
+# ---------------------------------------------------------------- timers
+
+: time.sleep ( i32 -- )  0 0 12 ring.submit drop ;  # OP_SLEEP
+
+# A channel that receives v once, ms milliseconds from now, and is then
+# closed: an `alt` arm on it is a timeout. Nobody receiving leaves its
+# process parked on the send.
+: time.after ( T i32 -- chan T )
+  :> ms :> v
+  chan.make ( chan T ) :> c
+  [ ms time.sleep  c v chan.send  c chan.close ] spawn
+  c ;

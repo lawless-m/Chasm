@@ -792,9 +792,10 @@ Four host words over a namespace of paths:
 | `host.write` | `( i32 str -- i32 )` handle, string → bytes written, or error |
 | `host.close` | `( i32 -- i32 )` |
 
-Modes: 0 read, 1 write (truncate), 2 append, 3 read-write. Errors: -1 not
-found, -2 permission, -3 not supported, -4 I/O error, -5 bad handle, -6
-malformed request; treat any negative as failure.
+Modes, as prelude words: `host.OREAD` (0), `host.OWRITE` (1, truncates),
+`host.OAPPEND` (2), `host.ORDWR` (3). Errors: -1 not found, -2
+permission, -3 not supported, -4 I/O error, -5 bad handle, -6 malformed
+request; treat any negative as failure.
 
 `host.read` fills a `bytes` buffer (section 9a) and never more than its
 length; take the part it filled with `bytes.slice` and make a string of it
@@ -805,7 +806,7 @@ not written again). `host.write` takes a string.
 # Print a file through a 64-byte buffer, a chunk at a time. Status is 0
 # at the end, or the error.
 : cat ( str -- i32 )
-  0 host.open :> h
+  host.OREAD host.open :> h
   h 0 i32.lt_s
   [ h ]
   [
@@ -820,7 +821,7 @@ not written again). `host.write` takes a string.
   if ;
 
 : main ( -- )
-  "/dev/cons" 1 host.open :> out
+  "/dev/cons" host.OWRITE host.open :> out
   out "the hostname: " host.write drop
   "/file/etc/hostname" cat
   0 i32.lt_s [ "could not read it (the browser REPL has no /file)" println ] when ;
@@ -862,11 +863,21 @@ Library words:
 |---|---|
 | `print` / `println` | `( str -- )` |
 | `read-line` | `( -- str i32 )` line without newline; flag 0 at end of input |
+| `host.read-line` | `( i32 -- str i32 )` the same from an open handle, which stays open |
 | `read-file` | `( str -- str i32 )` path → contents, status (0 or error) |
 | `write-file` | `( str str -- i32 )` contents, path → status; replaces the file |
 | `copy` | `( str str -- i32 )` from, to → status: `"/net/https/example.com/" "/local/page" copy` |
 | `ls` | `( str -- i32 )` prints a directory, one entry per line |
 | `now` | `( -- i64 )` nanoseconds since the epoch |
+
+`host.read-line` reads one byte per `host.read` until a newline or end of
+input, so it takes nothing past the newline and the next read carries on
+from the next line; the line has no length limit. A last line without a
+newline still comes back with flag 1, and the next call gives `""` and 0.
+Only the `\n` is removed: a `\r\n` line keeps its `\r`. `read-line` opens
+`/dev/cons`, calls `host.read-line` and closes it. At `wack repl` it reads
+the same stdin as the REPL; in the browser REPL console reads are end of
+input, so it gives `""` and 0 at once.
 
 Collections (`vec T`, `map K V`) are in section 10d. The prelude also declares `option T` (section 10c): `option.none ( -- option T )`,
 `option.some ( T -- option T )`.
@@ -874,8 +885,8 @@ Collections (`vec T`, `map K V`) are in section 10d. The prelude also declares `
 ## 14a. Processes and channels
 
 Processes are cooperative green threads in one instance: one runs at a
-time, and they switch only at channel operations and when a process
-finishes (host I/O completes inline). They run in `wack run`, `wack test`,
+time, and they switch only at channel operations, `time.sleep` and when a
+process finishes (host I/O completes inline). They run in `wack run`, `wack test`,
 `wack repl` and the browser REPL, all by the same mechanism: a process that
 must wait unwinds its wasm stack into GC frames, and is rewound when it
 resumes; the compiler transforms the words that can be on the stack
@@ -901,6 +912,8 @@ before. `wack build` writes the transformed module with a note
 | `chan.send` | `( chan T T -- )` waits until a receiver takes the value; traps `chan.send: the channel is closed` |
 | `chan.recv` | `( chan T -- option T )` waits for a value; `none` once the channel is closed and drained |
 | `chan.close` | `( chan T -- )` one sender is done; closed when every sender has closed; traps when closed more often than it has senders |
+| `time.sleep` | `( i32 -- )` waits that many milliseconds (a negative count is 0); other processes run meanwhile |
+| `time.after` | `( T i32 -- chan T )` given a value and a count, a channel that receives the value once, that many milliseconds from now, and is then closed |
 
 The close is explicit and counted: a reader learns that a channel is
 finished from the channel (`chan.recv` gives `none`), never from a special
@@ -944,6 +957,32 @@ ready, so a loop over `alt` stops waiting on a channel once it has seen its
 evens recv: [ none: [ 0 ] some: [ ] match ]
 odds recv: [ none: [ 0 ] some: [ ] match ]
 alt
+```
+
+An `alt` arm on `time.after`'s channel is a timeout, and the value given to
+`time.after` is what that arm receives, so `-1 10 time.after` makes -1 the
+timeout's answer. `time.after` is a prelude word that spawns a process which
+sleeps, sends and closes, so when no one receives (the other arm won) that
+process stays parked on its send: a `run` or `test` drops it when process 0
+returns, a REPL keeps it and `/prog` lists it. A sleeping process is never
+blocked: the all-processes-blocked trap fires only when nothing is ready and
+nothing sleeps. A run ends when `main` has returned, even if other processes
+are still sleeping. See `examples/timeout.wack`.
+
+```wack
+# The value from c, or -1 when ms milliseconds pass first.
+: recv-within ( chan i32 i32 -- i32 )
+  :> ms :> c
+  -1 ms time.after :> timer
+  c recv: [ none: [ -1 ] some: [ ] match ]
+  timer recv: [ none: [ -1 ] some: [ ] match ]
+  alt ;
+
+: slow-producer ( -- i32 )
+  chan.make ( chan i32 ) :> c
+  [ 50 time.sleep  c 7 chan.send ] spawn
+  c 10 recv-within ;
+test slow-producer : slow-producer -> -1
 ```
 
 `main`, a test or a REPL line runs as process 0. `wack run` ends when

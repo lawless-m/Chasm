@@ -249,3 +249,12 @@ fn union_values_echo() {
     let o = r.step("1.5 shape.circle");
     assert_eq!(o.stack, vec![e("shape", "shape.circle{r: 1.5}")]);
 }
+
+#[test]
+fn a_sleeper_wakes_in_a_later_step() {
+    let mut r = repl();
+    ok(&mut r, "[ 10 time.sleep \"woke\" println ] spawn");
+    assert!(!output(&r).contains("woke"));
+    ok(&mut r, "30 time.sleep");
+    assert!(output(&r).contains("woke\n"), "{}", output(&r));
+}

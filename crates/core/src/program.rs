@@ -222,7 +222,12 @@ pub fn compile(sources: &[Source], opts: &Options) -> Compilation {
 /// word that calls one; a generic template is named with its instances.
 fn suspendable(ctx: &Ctx) -> HashSet<String> {
     use crate::layout as L;
-    let parks = |op| matches!(op, L::OP_CHAN_SEND | L::OP_CHAN_RECV | L::OP_ALT);
+    let parks = |op| {
+        matches!(
+            op,
+            L::OP_CHAN_SEND | L::OP_CHAN_RECV | L::OP_ALT | L::OP_SLEEP
+        )
+    };
     let mut member: Vec<bool> = ctx
         .words
         .iter()
@@ -404,7 +409,7 @@ fn compile_ctx(sources: &[Source], opts: &Options, unwind: Unwind) -> (Compilati
             diags.push(
                 Diagnostic::error(
                     codes::E_WASI_UNSUPPORTED,
-                    format!("`build --wasi` cannot run processes: `{}` spawns, or sends or receives on a channel; build without --wasi", w.name),
+                    format!("`build --wasi` cannot run processes: `{}` spawns, sleeps, or sends or receives on a channel; build without --wasi", w.name),
                     w.loc.clone(),
                 )
                 .with_word(&w.name),

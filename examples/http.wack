@@ -39,7 +39,7 @@ test header : "Accept" "text/plain" header -> "Accept: text/plain\n"
 # path, header lines, body -- response body, status
 : request ( str str str -- str i32 )
   :> body :> headers :> path
-  path 3 host.open :> h
+  path host.ORDWR host.open :> h
   h 0 i32.lt_s
   [ "" h ]
   [ h headers send  h "\n" send  h body send  h drain ]

@@ -7,13 +7,21 @@
 // the channel's queue in wasm, and the scheduler only records which process
 // is waiting for that value to be taken (`queued`), so a send is a
 // rendezvous.
+//
+// Timers: `OP_SLEEP` parks a process until a deadline on the scheduler's
+// millisecond clock (`now`, injectable so tests are deterministic). When
+// nothing is ready, the earliest due sleeper wakes; a sleeper is never
+// blocked.
 
 // `/prog` handles are numbered from here, apart from the namespace's.
 export const PROG_HANDLE_BASE = 0x40000000;
 
 export class Scheduler {
-  constructor(L) {
+  constructor(L, now = () => Date.now()) {
     this.L = L;
+    this.now = now;
+    // { deadline, pid } of each sleeping process, in the order they slept.
+    this.sleepers = [];
     // pid -> { state: "ready" | "running" | "parked" | "io" | "done", wait, slot, closure }
     this.procs = new Map([[0, { state: "running", wait: null }]]);
     this.nextPid = 1;
@@ -77,6 +85,10 @@ export class Scheduler {
     const L = this.L;
     if (op === L.OP_CHAN_MAKE) return { result: this.chanMake() };
     if (op === L.OP_ALT) return this.alt(pid, a0, a1, mem);
+    if (op === L.OP_SLEEP) {
+      this.sleepers.push({ deadline: this.now() + Math.max(a0, 0), pid });
+      return this.park(pid, { kind: "sleep", chans: [] });
+    }
     const c = this.chans.get(a0);
     if (!c) return { result: L.E_BAD_HANDLE };
     switch (op) {
@@ -133,15 +145,39 @@ export class Scheduler {
   }
 
   /// The next ready process and the result it resumes with (`start` for a
-  /// process not yet started), in FIFO order, or null.
+  /// process not yet started), in FIFO order; when none is ready, the
+  /// earliest due sleeper (equal deadlines in the order they slept); or null.
   next() {
+    if (!this.ready.length) {
+      const i = this.earliest();
+      if (i !== null && this.sleepers[i].deadline <= this.now()) {
+        const [{ pid }] = this.sleepers.splice(i, 1);
+        this.wake(pid, 0);
+      }
+    }
     const r = this.ready.shift();
     if (!r) return null;
     this.procs.get(r.pid).state = "running";
     return r;
   }
 
+  earliest() {
+    let best = null;
+    this.sleepers.forEach((s, i) => {
+      if (best === null || s.deadline < this.sleepers[best].deadline) best = i;
+    });
+    return best;
+  }
+
+  /// Milliseconds until the earliest sleeper is due (0 if it is); null when
+  /// nothing sleeps.
+  sleepFor() {
+    const i = this.earliest();
+    return i === null ? null : Math.max(this.sleepers[i].deadline - this.now(), 0);
+  }
+
   exit(pid) {
+    this.sleepers = this.sleepers.filter((s) => s.pid !== pid);
     const p = this.procs.get(pid);
     if (p) {
       p.state = "done";
@@ -156,6 +192,7 @@ export class Scheduler {
     if (!p || p.state === "done") return false;
     for (const c of this.chans.values()) c.receivers = c.receivers.filter((r) => r.pid !== pid);
     this.ready = this.ready.filter((r) => r.pid !== pid);
+    this.sleepers = this.sleepers.filter((s) => s.pid !== pid);
     p.state = "done";
     p.wait = null;
     this.onKill?.(pid);
@@ -236,11 +273,12 @@ export class Scheduler {
     return [...this.procs].filter(([, p]) => p.state !== "done").map(([pid]) => pid);
   }
 
-  /// Null while a process can still run (one is ready, running or waiting on
-  /// I/O); otherwise the message naming what each parked process waits on.
+  /// Null while a process can still run (one is ready, running, sleeping or
+  /// waiting on I/O); otherwise the message naming what each parked process waits on.
   blocked(name = (pid) => (pid === 0 ? "main" : `process ${pid}`)) {
     const procs = [...this.procs].sort(([a], [b]) => a - b);
     if (procs.some(([, p]) => ["ready", "running", "io"].includes(p.state))) return null;
+    if (this.sleepers.length) return null;
     const parts = procs
       .filter(([, p]) => p.state === "parked")
       .map(([pid, p]) => {

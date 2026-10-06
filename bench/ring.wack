@@ -11,17 +11,17 @@
   200000 :> n
   n bytes.new :> buf
   buf 0 1 bytes.slice :> one
-  "/mnt/b/data" 1 host.open :> w
+  "/mnt/b/data" host.OWRITE host.open :> w
   w buf bytes.to-str host.write drop
   w host.close drop
 
-  "/mnt/b/data" 0 host.open :> r
+  "/mnt/b/data" host.OREAD host.open :> r
   now :> t0
   n [ drop  r one host.read drop ] times
   now t0 i64.sub :> reads
   r host.close drop
 
-  "/mnt/b/out" 1 host.open :> o
+  "/mnt/b/out" host.OWRITE host.open :> o
   now :> t1
   n [ drop  o "x" host.write drop ] times
   now t1 i64.sub :> writes

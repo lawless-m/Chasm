@@ -4,7 +4,9 @@
 // completion, `ring_enter` sets the mode cell to unwinding, every transformed
 // function on the stack saves its frame into `wack.frames` and returns, and
 // the driver keeps the chain. To resume, it puts the chain back, writes the
-// completion, sets rewinding and calls the same entry again.
+// completion, sets rewinding and calls the same entry again. While process 0
+// runs and nothing is ready, it waits (Atomics.wait on a private cell) until
+// the earliest sleeper is due.
 // No DOM, no Node APIs.
 
 import { PROG_HANDLE_BASE } from "./proc.js";
@@ -22,6 +24,7 @@ export class Driver {
     this.current = 0;
     this.chains = new Map(); // pid -> saved frame chain
     this.pendingUser = new Map(); // pid -> ring user of its parked submission
+    this.waitCell = new Int32Array(new SharedArrayBuffer(4));
     sched.onKill = (pid) => {
       this.chains.delete(pid);
       this.pendingUser.delete(pid);
@@ -157,6 +160,12 @@ export class Driver {
         this.pendingUser.delete(pid);
       }
       next = sched.next();
+      while (!next && !ended0) {
+        const ms = sched.sleepFor();
+        if (ms === null) break;
+        Atomics.wait(this.waitCell, 0, 0, ms);
+        next = sched.next();
+      }
     }
     if (ended0) return { values, trap: null };
     const message = sched.blocked((pid) => (pid === 0 ? name : `process ${pid}`)) ?? "process 0 never finished";

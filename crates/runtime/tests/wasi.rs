@@ -58,11 +58,11 @@ const PROGRAM: &str = r#"
 : main ( -- )
   "hello from wasi" println
   "/file/in.txt" read-file drop print
-  "/file/out.txt" 1 host.open :> h
+  "/file/out.txt" host.OWRITE host.open :> h
   h "written" host.write drop
   h host.close drop
   now 0 i64 i64.gt_s [ "time ok" ] [ "time bad" ] if println
-  "/dev/nope" 0 host.open i32.to-str println ;
+  "/dev/nope" host.OREAD host.open i32.to-str println ;
 "#;
 
 #[test]
@@ -76,6 +76,24 @@ fn console_files_time_and_errors() {
         std::fs::read_to_string(dir.join("out.txt")).unwrap(),
         "written"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn host_read_line_reads_a_file_line_by_line() {
+    let dir = scratch("lines");
+    std::fs::write(dir.join("in.txt"), "one\ntwo\nthree").unwrap();
+    let src = r#"
+: main ( -- )
+  "/file/in.txt" host.OREAD host.open :> h
+  [ h host.read-line :> more :> line  more ]
+  [ "[" line str.concat "]" str.concat println ]
+  while
+  h host.close drop ;
+"#;
+    let (out, ok) = run(&build(src), &dir);
+    assert!(ok, "{out}");
+    assert_eq!(out, "[one]\n[two]\n[three]\n");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -30,7 +30,7 @@ test shared : shared -> "ZB"
 
 # Count the bytes of a file, 16 at a time.
 : size ( str -- i32 )
-  0 host.open :> h
+  host.OREAD host.open :> h
   h 0 i32.lt_s
   [ h ]
   [

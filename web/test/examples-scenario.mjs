@@ -1,4 +1,4 @@
-// Run the process examples (examples/pipeline.wack, examples/alt.wack) in the browser REPL:
+// Run the process examples (examples/pipeline.wack, examples/alt.wack, examples/timeout.wack) in the browser REPL:
 // every chunk steps cleanly, every test passes, then `main` prints what it
 // should. `makeRepl()` gives a fresh { repl, output } per program, output()
 // being the console so far. No DOM, no Node APIs.
@@ -7,6 +7,7 @@ import { chunks } from "../driver.js";
 export const PROGRAMS = [
   { name: "pipeline", prints: "110" },
   { name: "alt", prints: "5 5\n8" },
+  { name: "timeout", prints: "-1\n7" },
 ];
 
 export async function examplesScenario(makeRepl, assert, fetchText) {

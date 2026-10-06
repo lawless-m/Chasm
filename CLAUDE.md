@@ -32,7 +32,7 @@ node web/test/node-structs.mjs              # the struct scenario; needs node 22
 node web/test/node-procs.mjs && node web/test/node-examples.mjs   # the process scenarios under node 22 (CI)
 sh web/test/headless.sh test/structs.html STRUCTS   # the same scenarios in a real browser (headless Vivaldi)
 sh web/test/headless.sh test/procs.html PROCS
-sh web/test/headless.sh test/examples.html EXAMPLES   # examples/pipeline.wack and examples/alt.wack
+sh web/test/headless.sh test/examples.html EXAMPLES   # examples/pipeline.wack, alt.wack and timeout.wack
 ```
 
 ## Conventions

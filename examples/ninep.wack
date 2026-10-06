@@ -29,7 +29,7 @@ test record-len : "hello.txt" 6 i64 0 make-record 0 record-len -> 22
 # The number of entries in a directory, or the error from opening it.
 : entries ( str -- i32 )
   :> path
-  path 0 host.open :> h
+  path host.OREAD host.open :> h
   h 0 i32.lt_s
   [ h ]
   [

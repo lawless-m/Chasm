@@ -85,6 +85,9 @@ pub const OP_CHAN_CLOSE: i32 = 10;
 /// `2 * i + v` for arm `i`: `v` = 1 take a value from channel `i`, 0 that
 /// channel is closed and drained. The lowest ready arm wins.
 pub const OP_ALT: i32 = 11;
+/// a0 = milliseconds (negative counts as 0). Parks the process until that
+/// long has passed. Result 0.
+pub const OP_SLEEP: i32 = 12;
 
 /// Data stack: 128 KiB to 1 MiB.
 pub const DATA_STACK_BASE: u32 = 0x2_0000;
@@ -191,6 +194,7 @@ pub fn constants() -> Vec<(&'static str, u32)> {
         ("OP_CHAN_RECV", OP_CHAN_RECV as u32),
         ("OP_CHAN_CLOSE", OP_CHAN_CLOSE as u32),
         ("OP_ALT", OP_ALT as u32),
+        ("OP_SLEEP", OP_SLEEP as u32),
         ("DATA_STACK_BASE", DATA_STACK_BASE),
         ("DATA_STACK_END", DATA_STACK_END),
         ("LITERALS_BASE", LITERALS_BASE),
@@ -223,6 +227,7 @@ mod tests {
         assert!(c.contains(&("DOORBELL", 0x118)));
         assert!(c.contains(&("UNWIND_MODE", 0x11C)));
         assert!(c.contains(&("OP_ALT", 11)));
+        assert!(c.contains(&("OP_SLEEP", 12)));
         assert!(c.contains(&("E_CLOSED", -7i32 as u32)));
         const { assert!(DOORBELL < RESERVED_END) };
     }

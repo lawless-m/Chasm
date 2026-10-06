@@ -1,6 +1,6 @@
 # Whackford: Language Specification
 
-Status: draft v0.19 (M1 to M13 decisions recorded; see sections 12 to 25). Whackford source files use the `.wack` extension. Companion to `ARCHITECTURE.md`. Sections marked **TBD** are not yet decided.
+Status: draft v0.20 (M1 to M14 decisions recorded; see sections 12 to 26). Whackford source files use the `.wack` extension. Companion to `ARCHITECTURE.md`. Sections marked **TBD** are not yet decided.
 
 ## 1. Types
 
@@ -245,7 +245,7 @@ A `bytes` is an `( addr len )` pair like a `str`, but mutable and not text: the 
 
 ## 4f. Processes and channels
 
-Processes are cooperative green threads in one instance. One runs at a time, and they switch only at channel operations (`chan.send`, `chan.recv`, `alt`) and when a process finishes; host I/O completes inline. So nothing changes a value under a running process.
+Processes are cooperative green threads in one instance. One runs at a time, and they switch only at channel operations (`chan.send`, `chan.recv`, `alt`), `time.sleep` and when a process finishes; host I/O completes inline. So nothing changes a value under a running process.
 
 | Word | Effect | Behaviour |
 |---|---|---|
@@ -255,10 +255,14 @@ Processes are cooperative green threads in one instance. One runs at a time, and
 | `chan.send` | `( chan T T -- )` | Send, and wait until a receiver takes the value (a rendezvous). Traps `chan.send: the channel is closed`. |
 | `chan.recv` | `( chan T -- option T )` | Wait for a value; `option.none` once the channel is closed and every value taken. |
 | `chan.close` | `( chan T -- )` | One sender is done; the channel closes when every sender has. Traps when closed more often than it has senders. |
+| `time.sleep` | `( i32 -- )` | Wait that many milliseconds (negative: none); other processes run meanwhile. |
+| `time.after` | `( T i32 -- chan T )` | Given a value and a count, a channel that receives the value once, that many milliseconds from now, and is then closed; an `alt` arm on it is a timeout. |
 
 `spawn` is an ordinary word taking a function value: `[ ... ] spawn`, `f spawn` and `'worker spawn` all work, and a process reaches only what its closure captured. The close is explicit, counted and out of band: a reader learns that a channel is finished from `chan.recv`, never from a value in the data.
 
 `alt` waits on several channels: `a recv: [ ... ] b recv: [ ... ] alt`. Labelled arms are written directly before the word, as for `match`; each is one token that pushes a channel (a local or a word), the label `recv:`, and a block. The arm of the first channel with a value, or closed and drained, runs with `option T`. Arms are tried in the order written, and every arm that does not diverge leaves the same stack (`E_BRANCH_MISMATCH`). The channel token must leave a `chan T` (`E_TYPE_MISMATCH` otherwise).
+
+`time.after` is written in the prelude on `time.sleep`: it spawns a process that sleeps, sends and closes. Sends rendezvous, so when nobody receives, the timer's process stays parked on its send (dropped by `run` and `test` when process 0 returns, kept and listed in `/prog` by a REPL). A sleeping process is never blocked, so the all-processes-blocked trap fires only when nothing is ready and nothing sleeps. `run`, a test and a REPL step end when process 0 has returned and nothing is ready, so sleeping processes are then dropped (`run`, `test`) or stay for later steps (REPL).
 
 Values sent on a channel are shared, not copied: a struct, `vec` or `map` sent or captured by two processes is the same value in both, as in Limbo and Go.
 
@@ -377,11 +381,11 @@ test parse-header : "abc" parse-header -> 3 0
 
 Four host imports, specified in `ARCHITECTURE.md` 5d: `host.open ( str i32 -- i32 )`, `host.read ( i32 bytes -- i32 )`, `host.write ( i32 str -- i32 )`, `host.close ( i32 -- i32 )`. All other I/O is a path in the namespace.
 
-**Modes** for `host.open`: `0` read, `1` write (truncate), `2` append, `3` read-write. **Error codes** are negative `i32`: `-1` not found, `-2` permission, `-3` not supported on this host, `-4` I/O error, `-5` bad handle, `-6` malformed request. Further codes may be added; programs should treat any negative value as failure.
+**Modes** for `host.open`: `0` read, `1` write (truncate), `2` append, `3` read-write, named in the prelude `host.OREAD`, `host.OWRITE`, `host.OAPPEND` and `host.ORDWR`. **Error codes** are negative `i32`: `-1` not found, `-2` permission, `-3` not supported on this host, `-4` I/O error, `-5` bad handle, `-6` malformed request. Further codes may be added; programs should treat any negative value as failure.
 
 **Directory records**, as returned by reading a directory handle, each record in order: `u32` name byte length, name bytes (UTF-8), `u64` size, `u8` is-dir flag. Records are packed with no padding. A read may return any whole number of records; a partial record is never returned.
 
-Library words built on this, shipped with the language: `print`, `read-line`, `read-file`, `write-file`, `copy`, `ls`, `now`.
+Library words built on this, shipped with the language: `print`, `read-line`, `host.read-line`, `read-file`, `write-file`, `copy`, `ls`, `now`.
 
 `ring.submit ( i32 i32 i32 i32 -- i32 )` submits one ring entry (`a0 a1 a2 op -- result`). It is a raw word (`E_RAW` outside the prelude and `raw` words); the prelude's channel words are written with it. A closed channel is `-7`.
 
@@ -395,8 +399,8 @@ Library words built on this, shipped with the language: `print`, `read-line`, `r
 Recorded here so the spec matches the compiler. `docs/reference.md` is the user-facing summary.
 
 1. **Low-level primitives** added so that library code can be written in Whackford: `str.addr ( str -- i32 )`, `str.from-raw ( i32 i32 -- str )` (unchecked), `mem.alloc ( i32 -- i32 )` (bump, zeroed, 8-byte aligned), and `trap ( str -- )`, which stops the program with a message.
-2. **Prelude.** `str.byte-at`, `str.slice`, `str.eq`, `str.concat`, `str.cp-at` are library words written in Whackford on top of those primitives, compiled with every program. So are `str.boundary? ( str i32 -- i32 )`, `i32.to-str`, `i64.to-str`, `f64.fixed`, `str.from-byte`, `array.to-str`, `print`, `println`, `read-line`, `read-file`, `write-file`, `copy`, `ls` and `now`. `wack words` lists them.
-3. **Library word effects.** `read-line ( -- str i32 )` (flag 0 at end of input), `read-file ( str -- str i32 )` (namespace path; status 0 or an error code), `write-file ( str str -- i32 )` (contents, path; replaces the file; status), `copy ( str str -- i32 )` (from, to; status), `ls ( str -- i32 )` (prints entries; status), `now ( -- i64 )` (nanoseconds since the Unix epoch).
+2. **Prelude.** `str.byte-at`, `str.slice`, `str.eq`, `str.concat`, `str.cp-at` are library words written in Whackford on top of those primitives, compiled with every program. So are `str.boundary? ( str i32 -- i32 )`, `i32.to-str`, `i64.to-str`, `f64.fixed`, `str.from-byte`, `array.to-str`, `print`, `println`, `read-line`, `host.read-line`, `read-file`, `write-file`, `copy`, `ls` and `now`. `wack words` lists them.
+3. **Library word effects.** `read-line ( -- str i32 )` (flag 0 at end of input), `host.read-line ( i32 -- str i32 )` (the same from an open handle, left open), `read-file ( str -- str i32 )` (namespace path; status 0 or an error code), `write-file ( str str -- i32 )` (contents, path; replaces the file; status), `copy ( str str -- i32 )` (from, to; status), `ls ( str -- i32 )` (prints entries; status), `now ( -- i64 )` (nanoseconds since the Unix epoch).
 4. **`/dev/time`** reads 8 bytes: a little-endian `u64` of nanoseconds since the Unix epoch, then end of file.
 5. **Divergence.** `leave` and `trap` end the quotation they appear in; code after them is `E_UNREACHABLE`. A branch that diverges need not match the other branch, and a `when` body that diverges is accepted.
 6. **`until`** runs its body, then its condition, and repeats until the condition is non-zero.
@@ -522,3 +526,18 @@ Recorded here so the spec matches the compiler. `docs/reference.md` is the user-
 1. **One mechanism.** Processes run in the browser REPL by the same unwind/rewind transform as natively; JSPI is gone.
 2. **I/O never switches processes**, in any host: it completes inline. The only switch points are channel operations and the end of a process. Nothing else in the language changed.
 3. **The same behaviour everywhere.** A program behaves the same in `wack run`, `wack test`, `wack repl` and the browser REPL; the all-processes-blocked trap, `/prog` listing and kill, and process traps are identical in both REPLs.
+
+## 26. Decisions taken in M14
+
+1. **`time.sleep` is a prelude word on ring opcode `OP_SLEEP` (12)**, a parking op like the channel operations, so it is a switch point and a program using it is a process program (`build --wasi` refuses it).
+2. **`time.after` is generic, `( T i32 -- chan T )`**, written in Whackford in the prelude and made only on first use like the channel words, so programs that do not use it get no GC types from it (a concrete `( i32 -- chan i32 )` would put its types in every module). The value given is what the timeout arm receives. It is unbuffered: the timer process lingers parked on its send if the other `alt` arm won. No buffering, no cancelling, and no `time.now` word (`/dev/time` already gives the time).
+3. **Sleeping is never blocked.**
+4. **Sleepers are waited for only while process 0 runs.** Once it has returned they are dropped (`run`, `test`) or stay for later steps (REPL).
+5. **Ready processes run before due sleepers**; equal deadlines wake in the order the processes slept.
+6. **The same behaviour in every host.**
+
+## 27. Decisions taken after M14
+
+1. **`host.read-line ( i32 -- str i32 )`** reads a line from a handle the caller opened and leaves it open, so lines can be read from any path (`/file`, `/local`, `/mnt`, `/net/http`). `read-line` is `/dev/cons` opened, `host.read-line`, closed. It is a prelude word filed under `host.` beside the primitives it is built on.
+2. **One byte per read.** `host.read-line` reads no further than the newline, so with no buffer kept between calls the next read, by any word, starts at the next line.
+3. **Mode constants.** `host.OREAD` (0), `host.OWRITE` (1, truncates), `host.OAPPEND` (2) and `host.ORDWR` (3) are prelude words, named as in Plan 9 but keeping the existing numbers, so programs that pass a bare mode still work. The prelude, examples and docs use the names.

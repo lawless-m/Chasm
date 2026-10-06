@@ -190,3 +190,32 @@ fn channel_tests_run_as_process_0() {
     assert_eq!(r[0].status, TestStatus::Fail);
     assert_eq!(r[0].error.as_ref().unwrap().process, Some(1));
 }
+
+#[test]
+fn a_sleeper_serves_process_0() {
+    let (r, out) = run(": main ( -- )  chan.make ( chan i32 ) :> c  [ 20 time.sleep  c 7 chan.send ] spawn  c chan.recv none: [ 0 ] some: [ ] match i32.to-str println ;");
+    r.unwrap();
+    assert_eq!(out, "7\n");
+}
+
+#[test]
+fn sleepers_wake_in_deadline_order() {
+    let (r, out) = run(": main ( -- )  [ 30 time.sleep \"a\" println ] spawn  [ 10 time.sleep \"b\" println ] spawn  50 time.sleep ;");
+    r.unwrap();
+    assert_eq!(out, "b\na\n");
+}
+
+#[test]
+fn time_after_times_out_a_slow_sender() {
+    let (r, out) = run(": main ( -- )  chan.make ( chan i32 ) :> c  0 10 time.after :> t  [ 50 time.sleep  c 1 chan.send ] spawn  c recv: [ drop \"value\" ] t recv: [ drop \"timeout\" ] alt println ;");
+    r.unwrap();
+    assert_eq!(out, "timeout\n");
+}
+
+#[test]
+fn a_sleeper_left_when_main_returns_is_dropped() {
+    let (r, out) =
+        run(": main ( -- )  [ 30 time.sleep \"later\" println ] spawn  \"first\" println ;");
+    r.unwrap();
+    assert_eq!(out, "first\n");
+}

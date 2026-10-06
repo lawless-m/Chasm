@@ -938,7 +938,7 @@ fn render(report: &J) -> (String, String) {
                 err.push_str(&format!("note: {n}\n"));
             }
             if r["processes"] == true {
-                err.push_str("note: the module uses processes: its host must provide the `wack.spawn` and `wack.frames` globals and service ring opcodes 5 to 11 (wasmtime and the browser REPL do, by unwind and rewind)\n");
+                err.push_str("note: the module uses processes: its host must provide the `wack.spawn` and `wack.frames` globals and service ring opcodes 5 to 12 (wasmtime and the browser REPL do, by unwind and rewind)\n");
             }
         }
         "run" => {

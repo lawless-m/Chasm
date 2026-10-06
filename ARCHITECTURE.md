@@ -1,6 +1,6 @@
 # Whackford: Architecture and Milestones
 
-Status: draft v0.23 (M0 to M13 implemented; decisions in sections 13 to 26). **Whackford** (after Wackford Squeers) is a typed, concatenative language that compiles to WebAssembly, with an interactive REPL, written in Rust. Source files use the `.wack` extension; the CLI binary is `wack`.
+Status: draft v0.24 (M0 to M14 implemented; decisions in sections 13 to 27). **Whackford** (after Wackford Squeers) is a typed, concatenative language that compiles to WebAssembly, with an interactive REPL, written in Rust. Source files use the `.wack` extension; the CLI binary is `wack`.
 
 ## 1. Goals
 
@@ -159,13 +159,14 @@ These are the only host imports. **Everything else is a path.** Adding a capabil
 
 ## 5g. Processes
 
-Processes are cooperative green threads in one instance (`LANGUAGE.md` 4f). Every switch is a ring entry: `ring_enter` is the one point where a process can be suspended, and the process operations are ring opcodes 5 to 11 (`OP_SPAWN`, the channel opcodes, `OP_ALT`; `E_CLOSED` is -7). In a transformed module `rt.ring` takes a parked process's completion when it is rewound, so each process reads its own completion.
+Processes are cooperative green threads in one instance (`LANGUAGE.md` 4f). Every switch is a ring entry: `ring_enter` is the one point where a process can be suspended, and the process operations are ring opcodes 5 to 12 (`OP_SPAWN`, the channel opcodes, `OP_ALT`, `OP_SLEEP`; `E_CLOSED` is -7). In a transformed module `rt.ring` takes a parked process's completion when it is rewound, so each process reads its own completion.
 
 - **The scheduler is a state machine in the host** (`web/proc.js`, unit-tested under node by `web/test/proc.mjs`): processes, channels (sender counts, the queue of waiting senders, the parked receivers and `alt`s) and what each process waits on. Channel values never reach it: the sender pushes its value onto the channel's queue in wasm, and the scheduler records who waits for it to be taken.
 - **`spawn`** sets the imported mutable `anyref` global `wack.spawn` to the closure and submits `OP_SPAWN` with the closure's table slot; the host takes the closure and later calls that slot with it.
 - **The driver runs one process at a time** (`native::drive` natively, `web/drive.js` in the browser worker), so the pid it records as current is always the caller of `ring_enter`. A run, a test or a REPL step executes its entry as process 0, then every process that can run, and finishes once process 0 has returned and nothing is ready; processes still waiting stay for later REPL steps (a `run` drops them). When nothing can run and process 0 waits, it is abandoned and the entry traps `all processes blocked: ...`.
 - **`/prog`** is handled by the scheduler in the worker before anything reaches the namespace; its handles are numbered from `0x40000000`, apart from the namespace's.
 - **I/O completes inline** in both hosts, so no process ever waits on I/O, and others do not run during a request.
+- **Timers**: `OP_SLEEP` parks the process and the scheduler records its deadline (now + ms, on an injectable millisecond clock, so the twins' unit tests are deterministic). When nothing is ready the earliest due sleeper wakes (equal deadlines in sleep order); when none is due yet, the driver waits until the earliest deadline (`std::thread::sleep` natively, `Atomics.wait` with a timeout on a private `Int32Array` over a `SharedArrayBuffer` in `web/drive.js`), but only while process 0 is still running. The blocked detector ignores sleeping processes, so the trap fires only when nothing is ready and nothing sleeps. Killing a sleeper removes its deadline, and `/prog` lists it like any live process.
 - **Processes unwind and rewind** (sections 25 and 26) in both hosts. The REPL session option `Session::new(.., unwind: true)` is used by the native and the browser REPL; the scheduler twins are `web/proc.js` and `crates/runtime/src/proc.rs`. A process that must wait gets no completion: `ring_enter` sets the mode cell to unwinding, every transformed function on the stack saves its frame and returns, and the driver keeps the frame chain; to resume, it puts the chain back, writes the completion, sets rewinding and calls the same entry again. `run`, `test` and the native REPL share `native::drive`.
 
 ## 6. Declare, define, redefine
@@ -254,6 +255,8 @@ Principles; exact fields are settled in M1 and generated from the Rust types (`s
 **M12: Native processes.** The compiler's own unwind/rewind transform runs processes on synchronous wasmtime in `run`, `test` and the native REPL (M13 moved the browser onto the same transform). Programs without processes compile byte-identically (section 25).
 
 **M13: One mechanism.** The browser REPL drops JSPI: its session is transformed like the native REPL's and `web/drive.js`, the JavaScript twin of the native driver, runs processes by unwind and rewind, blocking on the Atomics doorbell for I/O, so processes run in any WasmGC browser and under node 22 (section 26).
+
+**M14: Timers.** `time.sleep` (ring opcode `OP_SLEEP`, a parking op) and the prelude's generic `time.after ( T i32 -- chan T )`, a channel that receives the given value once after a delay and closes, so `alt` can time out; sleepers in both scheduler twins with an injectable clock; the same behaviour in `run`, `test`, the native REPL and the browser (section 27).
 
 M1 to M3 can overlap; the graph and stub data structures are part of M1 so that M3 is tooling only.
 
@@ -451,3 +454,13 @@ Heavy native batch work (large test corpora, benchmarks, Binaryen runs over big 
 4. **The worker creates `wack.frames` and `wack.spawn` at `init`**, and every step module imports both.
 5. **`web/drive.js` mirrors `native::drive`**: process 0 is the test's word or `[line]`, a step ends when process 0 has returned and nothing is ready, parked processes live across steps, a trap in a spawned process goes to `processTraps` without failing the step, and a process that kills itself ends with a thrown `killed` error, as natively.
 6. **Checks.** `web/test/node-procs.mjs` and `web/test/node-examples.mjs` run the process scenarios under node 22, in CI; the PROCS and EXAMPLES headless pages run them in a real browser; `test/jspi.html` is removed. `site/build.py` publishes `drive.js` with the REPL.
+
+## 27. Decisions taken in M14
+
+1. **`OP_SLEEP` is ring opcode 12**: a0 is milliseconds (negative counts as 0), and the completion is 0. It joins the parking set in `check.rs` (two sites) and `program.rs` (`suspendable`).
+2. **`time.sleep` is a prelude word** on `ring.submit`, like the channel words, not a `prims.rs` builtin. As a new non-generic prelude word it shifts exported function indices by one, which is accepted: the sieve baseline was retaken with it, and programs without processes still get no process machinery.
+3. **`time.after` is generic**, `( T i32 -- chan T )`, so it is made only on first use and adds no GC types to programs that do not use it; a concrete `( i32 -- chan i32 )` put 9 GC types into every module.
+4. **The clock is injectable**: `Scheduler::with_clock` natively, `new Scheduler(L, now)` in `web/proc.js`.
+5. **The driver waits for sleepers only while process 0 runs**; afterwards they are dropped (`run`, `test`) or stay for later REPL steps.
+6. **`/prog` is unchanged**: it lists pids only, sleepers included.
+7. **Checks**: the scheduler unit tests (`proc.rs`, `web/test/proc.mjs`), `crates/runtime/tests/procs.rs` and `repl.rs`, the PROCS and EXAMPLES scenarios, and `examples/timeout.wack`. Programs without processes compile byte-identically to the retaken baseline.
