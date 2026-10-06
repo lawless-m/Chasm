@@ -2448,7 +2448,7 @@ impl<'c> Walker<'c> {
                 false
             }
             NodeKind::Alt(_) => true,
-            NodeKind::If(a, b) | NodeKind::While(a, b) | NodeKind::Until(a, b) => {
+            NodeKind::If(a, b, _) | NodeKind::While(a, b) | NodeKind::Until(a, b) => {
                 let a = self.body_has_site(a, bound);
                 self.body_has_site(b, bound) || a
             }
@@ -2818,8 +2818,8 @@ impl<'c> Walker<'c> {
                 }
                 Ok(Flow::Normal)
             }
-            NodeKind::If(t, e) => {
-                self.pop_expect("if", &[Ty::I32], loc)?;
+            NodeKind::If(t, e, what) => {
+                self.pop_expect(what, &[Ty::I32], loc)?;
                 let s = self.stack.clone();
                 let hs = self.node_has_site(node);
                 self.open_label();
@@ -2834,17 +2834,24 @@ impl<'c> Walker<'c> {
                     (Flow::Normal, Flow::Normal) => {
                         if !self.subst.unify_all(&st, &se) {
                             let (a, b) = (self.subst.resolve_all(&st), self.subst.resolve_all(&se));
-                            return Err(self
-                                .err(
-                                    codes::E_BRANCH_MISMATCH,
-                                    format!(
-                                        "branches of `if` disagree: then-branch leaves {}, else-branch leaves {}",
-                                        fmt_stack(&a),
-                                        fmt_stack(&b)
-                                    ),
-                                    loc,
+                            // `and` runs its second quotation in the then-branch, `or` in the else.
+                            let (first, second) = if *what == "and" { (&b, &a) } else { (&a, &b) };
+                            let msg = if *what == "if" {
+                                format!(
+                                    "branches of `if` disagree: then-branch leaves {}, else-branch leaves {}",
+                                    fmt_stack(&a),
+                                    fmt_stack(&b)
                                 )
-                                .with_stacks(names(&a), names(&b)));
+                            } else {
+                                format!(
+                                    "the quotations of `{what}` disagree: the first leaves {}, the second {}",
+                                    fmt_stack(first),
+                                    fmt_stack(second)
+                                )
+                            };
+                            return Err(self
+                                .err(codes::E_BRANCH_MISMATCH, msg, loc)
+                                .with_stacks(names(first), names(second)));
                         }
                         (Flow::Normal, st)
                     }

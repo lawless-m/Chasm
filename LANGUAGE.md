@@ -314,7 +314,7 @@ A local is scoped to the word it is bound in and visible inside quotations in th
 
 ## 7. Control flow
 
-Factor-style quotations and combinators, as specified in `ARCHITECTURE.md` 5c: `if`, `when`, `unless`, `while`, `until`, `times`, `leave`, plus the collection combinators in section 4a. A quotation that is the argument of a combinator is syntax and is inlined. A quotation anywhere else is a value (section 7a).
+Factor-style quotations and combinators, as specified in `ARCHITECTURE.md` 5c: `if`, `when`, `unless`, `and`, `or`, `while`, `until`, `times`, `leave`, plus the collection combinators in section 4a. `[ a ] [ b ] and` and `[ a ] [ b ] or` short-circuit: `b` runs only when `a`'s `i32` does not decide the answer, and the answer is the deciding quotation's value. A quotation that is the argument of a combinator is syntax and is inlined. A quotation anywhere else is a value (section 7a).
 
 `times` pushes the iteration index (an `i32`, counting from 0) at the start of each iteration; the body must consume it, so its effect is `( i32 -- )` relative to the surrounding stack.
 
@@ -542,3 +542,4 @@ Recorded here so the spec matches the compiler. `docs/reference.md` is the user-
 2. **One byte per read.** `host.read-line` reads no further than the newline, so with no buffer kept between calls the next read, by any word, starts at the next line.
 3. **Mode constants.** `host.OREAD` (0), `host.OWRITE` (1, truncates), `host.OAPPEND` (2) and `host.ORDWR` (3) are prelude words, named as in Plan 9 but keeping the existing numbers, so programs that pass a bare mode still work. The prelude, examples and docs use the names.
 4. **`-> trap` in tests.** A test can expect its body to trap (any trap: `trap`, a prelude check, a wasm trap, or a trap in a process the test spawned). A trap is still fatal everywhere else and cannot be caught: it leaves memory, handles and channels in an unknown state. Failures a caller should handle go in the effect as a status or an `option`. The trap message is not matched.
+5. **Short-circuit `and` and `or`** are combinators: `[ a ] [ b ] and` is `a dup [ drop b ] [ ] if` and `[ a ] [ b ] or` is `a dup [ ] [ drop b ] if`, rewritten by the parser, so they cost what the `if` costs, and their diagnostics name `and` or `or`. The answer is the deciding value, not normalised to 0 or 1, as in Lisp and Factor; `or` can give a default (`[ x ] [ 7 ] or`). `i32.and` and `i32.or` stay the bitwise wasm instructions.

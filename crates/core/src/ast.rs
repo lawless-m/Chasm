@@ -52,7 +52,8 @@ pub enum NodeKind {
     },
     /// Stack assertion `( types )`.
     Assert(Vec<Ty>),
-    If(Body, Body),
+    /// `if`, or the `and` / `or` it was written as (the third field).
+    If(Body, Body, &'static str),
     When(Body),
     Unless(Body),
     While(Body, Body),

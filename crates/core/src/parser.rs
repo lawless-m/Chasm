@@ -90,7 +90,7 @@ pub fn parse_repl_with(
 /// Combinators and how many quotations they take.
 pub fn combinator_arity(name: &str) -> Option<usize> {
     Some(match name {
-        "if" | "while" | "until" => 2,
+        "if" | "while" | "until" | "and" | "or" => 2,
         "when" | "unless" | "times" | "each" | "map" | "filter" | "fold" => 1,
         _ => return None,
     })
@@ -780,10 +780,30 @@ impl<'a> Parser<'a> {
                             }
                         }
                         quotes.reverse();
+                        // `[ a ] [ b ] and` is `a dup [ drop b ] [ ] if`;
+                        // `[ a ] [ b ] or` is `a dup [ ] [ drop b ] if`.
+                        if text == "and" || text == "or" {
+                            let b = quotes.pop().unwrap();
+                            let a = quotes.pop().unwrap();
+                            let name = |n: &str| Node {
+                                kind: NodeKind::Name(n.into()),
+                                loc: loc.clone(),
+                            };
+                            out.extend(a);
+                            out.push(name("dup"));
+                            let rest: Body = std::iter::once(name("drop")).chain(b).collect();
+                            let kind = if text == "and" {
+                                NodeKind::If(rest, vec![], "and")
+                            } else {
+                                NodeKind::If(vec![], rest, "or")
+                            };
+                            out.push(Node { kind, loc });
+                            continue;
+                        }
                         let mut q = quotes.into_iter();
                         let mut take = || q.next().unwrap();
                         match text {
-                            "if" => NodeKind::If(take(), take()),
+                            "if" => NodeKind::If(take(), take(), "if"),
                             "when" => NodeKind::When(take()),
                             "unless" => NodeKind::Unless(take()),
                             "while" => NodeKind::While(take(), take()),
@@ -825,6 +845,8 @@ fn combinator_example(name: &str) -> &'static str {
         "if" => "`cond [ then ] [ else ] if`",
         "when" => "`cond [ body ] when`",
         "unless" => "`cond [ body ] unless`",
+        "and" => "`[ a ] [ b ] and`",
+        "or" => "`[ a ] [ b ] or`",
         "while" => "`[ cond ] [ body ] while`",
         "until" => "`[ body ] [ cond ] until`",
         "times" => "`n [ body ] times`",

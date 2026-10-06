@@ -1,8 +1,8 @@
 # Tokenise a small expression language: integers, identifiers and
 # + - * / ( ), each token with its kind, offset and length.
 # Rosetta Code: none (Parsing/Lexical_analyzer is close). Exercises: a state
-# machine over bytes, a predicate passed as a function value, trap with a
-# position, a struct and an array of structs.
+# machine over bytes, a predicate passed as a function value, short-circuit
+# `and`, trap with a position, a struct and an array of structs.
 
 : digit? ( i32 -- i32 )  :> c  c 48 i32.ge_u  c 57 i32.le_u  i32.and ;
 : alpha? ( i32 -- i32 )
@@ -19,9 +19,10 @@
 # The first offset from i whose byte fails pred.
 : skip ( str i32 [ i32 -- i32 ] -- i32 )
   :> pred :> i! :> s
-  [ i s str.len i32.lt_u [ s i str.byte-at pred call ] [ 0 ] if ] [ i 1 i32.add i! ] while
+  [ [ i s str.len i32.lt_u ] [ s i str.byte-at pred call ] and ] [ i 1 i32.add i! ] while
   i ;
 test skip : "abc12+" 0 'alnum? skip -> 5
+test skip : "" 0 'alnum? skip -> 0
 
 # Token kinds.
 : NUM ( -- i32 ) 1 ;

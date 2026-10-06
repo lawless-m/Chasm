@@ -1027,6 +1027,15 @@ fn inferred_effects() {
         "E_DECLARE_MISMATCH"
     );
     assert_eq!(err(": g [ dup ] when ;"), "E_BRANCH_MISMATCH");
+    assert_eq!(
+        err(": g ( -- i32 ) [ \"x\" ] [ 1 ] and ;"),
+        "E_TYPE_MISMATCH"
+    );
+    assert_eq!(
+        err(": g ( -- i32 ) [ 1 ] [ \"x\" ] or ;"),
+        "E_BRANCH_MISMATCH"
+    );
+    assert_eq!(err(": g ( -- i32 ) 1 [ 2 ] and ;"), "E_SYNTAX");
     let c = ok(": sq dup i32.mul ;\n: main ( -- ) 3 sq i32.to-str println ;");
     assert!(c.wasm.is_some());
     assert!(!c.word("main").unwrap().inferred);

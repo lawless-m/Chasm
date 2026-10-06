@@ -415,12 +415,20 @@ word.
 |---|---|
 | `cond [ then ] [ else ] if` | both branches start from the same stack and must leave the same stack |
 | `cond [ body ] when` / `unless` | body must leave the stack unchanged |
+| `[ a ] [ b ] and` | runs a; if it leaves 0, that is the answer and b does not run; otherwise b runs and its `i32` is the answer |
+| `[ a ] [ b ] or` | runs a; if it leaves non-zero, that is the answer and b does not run; otherwise b runs and its `i32` is the answer |
 | `[ cond ] [ body ] while` | cond leaves the stack plus one `i32`; body leaves it unchanged; loops while cond is non-zero |
 | `[ body ] [ cond ] until` | runs body, then cond; repeats until cond is non-zero |
 | `n [ body ] times` | body receives the index (0 to n-1) on top and must consume it |
 | `value v1: [ ... ] v2: [ ... ] else: [ ... ] match` | one labelled arm per variant of the union on top, in any order; each receives its variant's fields, `else:` receives the value; every arm leaves the same stack (section 10b) |
 | `leave` | exits the innermost `while`/`until`/`times`/`each`/`fold`; the stack must match the loop's exit shape |
 | `"message" trap` | stops the program with a message |
+
+`and` and `or` short-circuit, unlike `i32.and` and `i32.or`, which take two
+values already computed. Each quotation starts from the same stack and leaves
+it plus one `i32`, so the second can guard a read the first has checked:
+`[ i s str.len i32.lt_u ] [ s i str.byte-at 48 i32.eq ] and`. The answer is
+the deciding quotation's value, not forced to 0 or 1.
 
 `leave` and `trap` end their quotation: code after them is an error
 (`E_UNREACHABLE`). A branch or arm that ends in `leave` or `trap` does not

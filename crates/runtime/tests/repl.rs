@@ -215,6 +215,20 @@ fn lines_definitions_traps_and_redefinition() {
 }
 
 #[test]
+fn and_and_or_short_circuit() {
+    let mut r = repl();
+    // The second quotation runs only when it decides the answer.
+    let o = ok(
+        &mut r,
+        "[ 0 ] [ 1 0 i32.div_s ] and  [ 5 ] [ 1 0 i32.div_s ] or",
+    );
+    assert_eq!(o.stack, vec![e("i32", "0"), e("i32", "5")]);
+    let o = ok(&mut r, "2drop [ 3 ] [ 4 ] and  [ 0 ] [ 6 ] or");
+    assert_eq!(o.stack, vec![e("i32", "4"), e("i32", "6")]);
+    trap(&mut r, "2drop [ 1 ] [ 1 0 i32.div_s ] and");
+}
+
+#[test]
 fn tests_run_in_the_shared_instance() {
     let mut r = repl();
     ok(&mut r, ": sq ( i32 -- i32 ) dup i32.mul ;");

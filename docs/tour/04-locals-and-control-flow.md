@@ -61,6 +61,22 @@ around as a value (the next page) cannot see them. With only one branch,
 use `cond [ body ] when`, or `unless` for the opposite; the body must
 leave the stack as it found it.
 
+`i32.and` and `i32.or` combine two flags already on the stack, so both
+sides have run. When the second side is only safe if the first holds, use
+`[ a ] [ b ] and` (or `or`): `b` runs only when `a` does not already decide
+the answer.
+
+```wack
+# Does d divide n at least twice? A zero d is not asked.
+: twice-into? ( i32 i32 -- i32 )
+  :> d :> n
+  [ d 0 i32.ne ] [ n d i32.div_s 2 i32.ge_s ] and ;
+
+test twice-into? : 7 3 twice-into? -> 1
+test twice-into? : 7 5 twice-into? -> 0
+test twice-into? : 7 0 twice-into? -> 0
+```
+
 ## Looping
 
 `[ cond ] [ body ] while` runs the condition, which leaves an `i32` on

@@ -219,7 +219,7 @@ fn children(kind: &NodeKind) -> Vec<&Body> {
         | NodeKind::Map(b)
         | NodeKind::Filter(b)
         | NodeKind::Fold(b) => vec![b],
-        NodeKind::If(a, b) | NodeKind::While(a, b) | NodeKind::Until(a, b) => vec![a, b],
+        NodeKind::If(a, b, _) | NodeKind::While(a, b) | NodeKind::Until(a, b) => vec![a, b],
         NodeKind::Match(arms) => arms.iter().map(|a| &a.body).collect(),
         NodeKind::Alt(arms) => arms.iter().map(|a| &a.body).collect(),
         _ => Vec::new(),

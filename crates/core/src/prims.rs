@@ -444,6 +444,8 @@ pub fn names() -> impl Iterator<Item = &'static str> {
         "until",
         "when",
         "unless",
+        "and",
+        "or",
         "times",
         "each",
         "map",

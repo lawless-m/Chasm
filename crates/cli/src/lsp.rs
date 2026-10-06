@@ -286,6 +286,8 @@ pub(crate) fn primitive_effect(name: &str) -> Option<String> {
         "if" => "cond [ then ] [ else ] if",
         "when" => "cond [ body ] when",
         "unless" => "cond [ body ] unless",
+        "and" => "[ a ] [ b ] and: b runs only when a is non-zero; leaves 0 or b's flag",
+        "or" => "[ a ] [ b ] or: b runs only when a is zero; leaves a's flag or b's",
         "while" => "[ cond ] [ body ] while",
         "until" => "[ body ] [ cond ] until",
         "times" => "n [ body ] times: the body receives the index",

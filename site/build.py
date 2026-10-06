@@ -45,7 +45,7 @@ GROUPS += [("console", "Console and files"), ("option", "option"), ("vec", "vec"
 GROUPS += [("implementation", "Implementation"), ("other", "Other")]
 UNDOTTED = {
     "stack": "dup drop swap over nip tuck rot -rot 2dup 2drop".split(),
-    "control": "if when unless while until times leave call match trap eq hash".split(),
+    "control": "if when unless and or while until times leave call match trap eq hash".split(),
     "console": "print println read-line read-file write-file copy ls now".split(),
 }
 IMPLEMENTATION = {"vec.new", "map.new", "map.find", "map.put", "map.rehash"}
