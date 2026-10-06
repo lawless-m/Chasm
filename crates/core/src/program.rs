@@ -580,6 +580,14 @@ pub(crate) fn process_item(
                 p.diagnostics.push(d);
                 return vec![];
             }
+            // A word declared (or whose definition failed) and not yet given a
+            // body keeps its effect: the body is checked against it, as if
+            // it were written, rather than inferred and compared.
+            let effect = effect.or_else(|| {
+                let &id = ctx.by_name.get(&name)?;
+                let w = &ctx.words[id];
+                w.body.is_none().then(|| w.effect.clone())
+            });
             let inferred = effect.is_none();
             let effect = match effect {
                 Some(e) => e,

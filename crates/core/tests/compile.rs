@@ -1022,10 +1022,17 @@ fn inferred_effects() {
     );
     assert_eq!(err(": bad 1 \"x\" i32.add ;"), "E_TYPE_MISMATCH");
     assert_eq!(err(": f 1 ;\n: f 2 i64 ;"), "E_REDEFINE_EFFECT");
+    // A body without an effect is checked against the declaration, so the
+    // error is where it goes wrong, not a comparison of whole effects.
     assert_eq!(
         err("declare g ( i32 -- i32 )\n: g 1 i64 ;"),
-        "E_DECLARE_MISMATCH"
+        "E_EFFECT_MISMATCH"
     );
+    assert_eq!(
+        err("declare g ( str i32 i32 -- i32 )\n: g swap \"L\" str.eq ;"),
+        "E_TYPE_MISMATCH"
+    );
+    ok("declare g ( i32 -- i32 )\n: g 2 i32.mul ;\ndeclare twice ( T -- T T )\n: twice dup ;\n: h ( -- i32 i32 str str ) 1 twice \"a\" twice ;");
     assert_eq!(err(": g [ dup ] when ;"), "E_BRANCH_MISMATCH");
     assert_eq!(
         err(": g ( -- i32 ) [ \"x\" ] [ 1 ] and ;"),

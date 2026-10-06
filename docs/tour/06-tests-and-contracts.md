@@ -72,6 +72,10 @@ FAIL     dup #2  (tour.wack:7)
 A failing test makes `wack test` exit with an error; a pending one does
 not.
 
+When the body comes, the effect need not be written again:
+`: parse-digit 48 i32.sub ;` is checked against the declaration, so a
+mistake is reported at the word in the body that does not fit.
+
 ## Keeping the promise
 
 The body comes later, anywhere below the declaration, and the pending test

@@ -302,7 +302,9 @@ union name P... | variant  field: type ... | ...   # a union (section 10b, 10c)
 - A definition may leave out its effect; it is inferred and then checked as
   if written (`wack infer` shows what was inferred). Words that call
   themselves or each other, `export` words and `main` must write theirs
-  (`E_NEEDS_EFFECT`).
+  (`E_NEEDS_EFFECT`). A word that is declared, and has no body yet, keeps
+  its declared effect: `declare w ( str i32 -- i32 )` then `: w ... ;` checks
+  the body against it as if written, so an error points into the body.
 - **Raw words.** The words that reach memory by address (loads and stores,
   `mem.alloc`, `memory.copy`, `memory.fill`, `str.addr`, `str.from-raw`,
   `bytes.addr`, `bytes.from-raw`), and `ring.submit ( i32 i32 i32 i32 -- i32 )`,
