@@ -6,6 +6,7 @@ import { chunks, Repl } from "./driver.js";
 const out = document.getElementById("out");
 const input = document.getElementById("in");
 const prompt = document.getElementById("prompt");
+const expand = document.getElementById("expand");
 
 function print(text, cls) {
   const span = document.createElement("span");
@@ -41,7 +42,7 @@ function render(r) {
       print(`PENDING  ${t.word}  (word has no body yet)\n`);
       continue;
     }
-    print(`FAIL     ${t.word}\n    expected: ${t.expected.join(" ")}\n`, "err");
+    print(`FAIL     ${t.source || t.word}\n    expected: ${t.expected.join(" ")}\n`, "err");
     if (t.actual) print(`    actual:   ${t.actual.join(" ")}\n`, "err");
     if (t.trap) print(`    trap in \`${t.trap.word}\`: ${t.trap.message}\n`, "err");
   }
@@ -178,21 +179,37 @@ async function main() {
   input.disabled = false;
   input.focus();
 
-  let at = history.length; // history.length is the line being typed
-  let draft = "";
+  // The editor: a tall box where Enter is a newline and Ctrl+Enter runs.
+  let big = false;
+  const setBig = (on) => {
+    big = on;
+    input.parentElement.classList.toggle("big", on);
+    expand.textContent = on ? "⤡" : "⤢";
+    input.focus();
+  };
+  expand.addEventListener("click", () => setBig(!big));
   input.addEventListener("keydown", (e) => {
-    if ((e.key !== "ArrowUp" && e.key !== "ArrowDown") || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
-    // Only from the first line going up or the last line going down, so the
-    // arrows still move the caret inside a multi-line chunk.
+    if (e.key === "Escape" && big) setBig(false);
+  });
+
+  let at = history.length; // history.length is the line being typed
+  // Text typed over a recalled chunk (and at history.length, the draft),
+  // kept while moving through the history until a chunk is run.
+  let edits = new Map();
+  input.addEventListener("keydown", (e) => {
+    if (big || (e.key !== "ArrowUp" && e.key !== "ArrowDown") || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+    // Only from the first line going up, or from the very end going down, so
+    // the arrows still move the caret inside a multi-line chunk and Down on
+    // the last line first goes to its end.
     const v = input.value;
     const up = e.key === "ArrowUp";
-    if (up ? v.lastIndexOf("\n", input.selectionStart - 1) !== -1 : v.indexOf("\n", input.selectionEnd) !== -1) return;
+    if (up ? v.lastIndexOf("\n", input.selectionStart - 1) !== -1 : input.selectionStart !== v.length) return;
     const next = at + (up ? -1 : 1);
     if (next < 0 || next > history.length) return;
     e.preventDefault();
-    if (at === history.length) draft = v;
+    edits.set(at, v);
     at = next;
-    input.value = at === history.length ? draft : history[at];
+    input.value = edits.get(at) ?? (at === history.length ? "" : history[at]);
     const nl = input.value.indexOf("\n");
     const end = up && nl !== -1 ? nl : input.value.length;
     input.setSelectionRange(end, end);
@@ -201,8 +218,11 @@ async function main() {
   let busy = false;
   input.addEventListener("keydown", async (e) => {
     if (e.key !== "Enter" || e.shiftKey || busy) return;
+    // Ctrl+Enter runs the text as it is; in the editor plain Enter is a newline.
+    const now = e.ctrlKey || e.metaKey;
+    if (big && !now) return;
     const text = input.value;
-    if (compiler.needsMore(text + "\n")) {
+    if (!now && compiler.needsMore(text + "\n")) {
       prompt.textContent = ".";
       return; // let the newline go in
     }
@@ -216,7 +236,7 @@ async function main() {
       save(history, HISTORY);
     }
     at = history.length;
-    draft = "";
+    edits = new Map();
     print(text.replace(/^/gm, "> ") + "\n", "echo");
     if (text.trim() === ")program") {
       print(program.length ? program.join("\n") + "\n" : "(nothing saved)\n");

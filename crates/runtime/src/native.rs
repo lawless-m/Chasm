@@ -667,7 +667,8 @@ pub fn run_tests(c: &Compilation, base: &Config) -> Result<Vec<TestResult>, Stri
         let r = match o.result {
             Ok((vals, mem)) => {
                 let actual = values(&t.result_types, &vals, &mem);
-                let pass = actual.len() == t.expected.len()
+                let pass = !t.traps
+                    && actual.len() == t.expected.len()
                     && actual.iter().zip(&t.expected).all(|(a, b)| same(a, b));
                 TestResult {
                     test: t.clone(),
@@ -683,7 +684,11 @@ pub fn run_tests(c: &Compilation, base: &Config) -> Result<Vec<TestResult>, Stri
             }
             Err(e) => TestResult {
                 test: t.clone(),
-                status: TestStatus::Fail,
+                status: if t.traps {
+                    TestStatus::Pass
+                } else {
+                    TestStatus::Fail
+                },
                 actual: None,
                 error: Some(e),
                 output,

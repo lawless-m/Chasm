@@ -362,7 +362,7 @@ test parse-header : "abc" parse-header -> 3 0
 - `: name ( effect ) body ;` defines a word; the effect immediately follows the name. The effect may be omitted, `: name body ;`, and is then inferred (section 18). Recursive and mutually recursive words, `export` words and `main` must write it.
 - `export : name ( effect ) body ;` additionally exports the word from the built module and makes it a reachability root. `main ( -- )` is the entry point for `run`.
 - `declare name ( effect )` creates a stub (see `ARCHITECTURE.md` 6).
-- `test word : body -> expected` runs `body` on an empty stack and compares the resulting stack against `expected`, which must be literals, type by type. A test on a declared-but-undefined word is reported as pending. Naming the word lets tooling find a word's tests and lets `forget` remove them.
+- `test word : body -> expected` runs `body` on an empty stack and compares the resulting stack against `expected`, which must be literals, type by type. `test word : body -> trap` instead passes when `body` traps and fails when it returns. A test on a declared-but-undefined word is reported as pending. Naming the word lets tooling find a word's tests and lets `forget` remove them.
 
 ## 9. Effects, stack assertions, comments
 
@@ -541,3 +541,4 @@ Recorded here so the spec matches the compiler. `docs/reference.md` is the user-
 1. **`host.read-line ( i32 -- str i32 )`** reads a line from a handle the caller opened and leaves it open, so lines can be read from any path (`/file`, `/local`, `/mnt`, `/net/http`). `read-line` is `/dev/cons` opened, `host.read-line`, closed. It is a prelude word filed under `host.` beside the primitives it is built on.
 2. **One byte per read.** `host.read-line` reads no further than the newline, so with no buffer kept between calls the next read, by any word, starts at the next line.
 3. **Mode constants.** `host.OREAD` (0), `host.OWRITE` (1, truncates), `host.OAPPEND` (2) and `host.ORDWR` (3) are prelude words, named as in Plan 9 but keeping the existing numbers, so programs that pass a bare mode still work. The prelude, examples and docs use the names.
+4. **`-> trap` in tests.** A test can expect its body to trap (any trap: `trap`, a prelude check, a wasm trap, or a trap in a process the test spawned). A trap is still fatal everywhere else and cannot be caught: it leaves memory, handles and channels in an unknown state. Failures a caller should handle go in the effect as a status or an `option`. The trap message is not matched.

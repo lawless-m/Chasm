@@ -129,7 +129,7 @@ fn test_command_runs_the_tests_in_force() {
         "{out}"
     );
     assert!(
-        out.contains("FAIL     quad  (<repl:4>:1)\n    expected: 4\n    actual:   9\n0 passed, 2 failed, 0 pending\n"),
+        out.contains("FAIL     test quad : 1 quad -> 4  (<repl:4>:1)\n    expected: 4\n    actual:   9\n0 passed, 2 failed, 0 pending\n"),
         "`)test w` reaches the test of a caller and leaves `other` out: {out}"
     );
     assert!(err.contains("unknown word `nope`"), "{err}");

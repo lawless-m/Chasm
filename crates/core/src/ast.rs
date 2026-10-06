@@ -107,6 +107,8 @@ pub enum Item {
         word: String,
         body: Body,
         expected: Vec<(Lit, Location)>,
+        /// `-> trap`: the body must trap; `expected` is empty.
+        traps: bool,
         loc: Location,
     },
     /// `struct name  field: type ...`

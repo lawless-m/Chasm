@@ -42,9 +42,13 @@ pub struct TestRun {
     pub slot: u32,
     pub word: String,
     pub expected: Vec<Value>,
+    /// `-> trap`: passes when the thunk traps.
+    pub traps: bool,
     pub result_types: Vec<Ty>,
     pub types: Vec<String>,
     pub location: Location,
+    /// The test as typed, on one line, to show which one failed.
+    pub source: String,
 }
 
 /// A word the step defined or declared.
@@ -1112,9 +1116,20 @@ impl Session {
             slot: self.program.test_words[t.index] as u32,
             word: t.word.clone(),
             expected: t.expected.clone(),
+            traps: t.traps,
             result_types: t.result_types.clone(),
             types: names(&t.result_types),
             location: t.location.clone(),
+            source: self
+                .entries
+                .iter()
+                .find_map(|e| match e {
+                    Entry::Test(i, text) if *i == t.index => {
+                        Some(text.split_whitespace().collect::<Vec<_>>().join(" "))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_default(),
         }
     }
 

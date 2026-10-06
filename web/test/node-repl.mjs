@@ -49,6 +49,14 @@ try {
   assert.equal(r.tests[0].status, "fail");
   assert.deepEqual(r.tests[0].actual, ["6"]);
 
+  r = await repl.step("test sq : 1 0 i32.div_s sq -> trap");
+  assert.equal(r.tests[0].status, "pass");
+  r = await repl.step("test sq : 3 sq -> trap");
+  assert.equal(r.tests[0].status, "fail");
+  assert.deepEqual(r.tests[0].expected, ["trap"]);
+  assert.equal(r.tests[0].source, "test sq : 3 sq -> trap");
+  assert.deepEqual(r.tests[0].actual, ["6"]);
+
   r = await repl.step('"boom" trap');
   assert.equal(r.trap.message, "boom");
   assert.deepEqual(r.stack, n(12));

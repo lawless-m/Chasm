@@ -12,6 +12,7 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
 use serde_json::{json, Value as J};
+use wack_core::program::expected_text;
 use wack_core::{compile, Compilation, Diagnostic, Location, Options, Source};
 use wack_runtime::namespace::{Config, Console, Mount};
 use wack_runtime::native::{run_tests, Runner, TestStatus};
@@ -560,7 +561,8 @@ fn exec(cli: Cli) -> (Report, bool) {
                         "test": r.test.index,
                         "word": r.test.word,
                         "status": r.status.as_str(),
-                        "expected": r.test.expected.iter().map(|v| v.to_string()).collect::<Vec<_>>(),
+                        "expected": expected_text(&r.test.expected, r.test.traps),
+                        "traps": r.test.traps,
                         "actual": r.actual.as_ref().map(|a| a.iter().map(|v| v.to_string()).collect::<Vec<_>>()),
                         "trap": r.error.as_ref().map(|e| json!({ "message": e.message, "word": e.word, "process": e.process })),
                         "output": String::from_utf8_lossy(&r.output),
@@ -783,10 +785,12 @@ fn repl_report(o: Outcome, output: Vec<u8>) -> Report {
         "tests": o.tests.iter().map(|t| json!({
             "word": t.word,
             "status": t.status.as_str(),
-            "expected": t.expected.iter().map(|v| v.to_string()).collect::<Vec<_>>(),
+            "expected": expected_text(&t.expected, t.traps),
+            "traps": t.traps,
             "actual": t.actual.as_ref().map(|a| a.iter().map(|v| v.to_string()).collect::<Vec<_>>()),
             "trap": t.error.as_ref().map(trap),
             "location": t.location,
+            "source": t.source,
         })).collect::<Vec<_>>(),
         "trap": o.trap.as_ref().map(trap),
         "process_traps": o.process_traps.iter().map(trap).collect::<Vec<_>>(),
@@ -1142,9 +1146,14 @@ fn render(report: &J) -> (String, String) {
                     _ => counts[1] += 1,
                 }
                 let loc = &t["location"];
+                let source = s(&t["source"]);
                 out.push_str(&format!(
                     "FAIL     {}  ({}:{})\n",
-                    s(&t["word"]),
+                    if source.is_empty() {
+                        s(&t["word"])
+                    } else {
+                        source
+                    },
                     s(&loc["file"]),
                     loc["line"]
                 ));

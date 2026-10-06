@@ -276,7 +276,11 @@ impl<'a> Parser<'a> {
             }
             let body = self.body(&["->"])?;
             let mut expected = Vec::new();
-            while let Some(t) = self.peek() {
+            let traps = self.peek().is_some_and(|t| t.is("trap"));
+            if traps {
+                self.pos += 1;
+            }
+            while let Some(t) = self.peek().filter(|_| !traps) {
                 self.pos += 1;
                 let lit = match &t.kind {
                     TokKind::Str(s) => Lit::Str(s.clone()),
@@ -294,6 +298,7 @@ impl<'a> Parser<'a> {
                 word: word.text.clone(),
                 body,
                 expected,
+                traps,
                 loc: self.loc(t),
             });
         }
@@ -1067,6 +1072,18 @@ mod tests {
         assert_eq!(parse_number("2dup"), None);
         assert_eq!(parse_number("-"), None);
         assert_eq!(parse_number("-rot"), None);
+    }
+
+    #[test]
+    fn test_expecting_a_trap() {
+        let items = p(": f ( -- i32 ) 1 ;\ntest f : f -> trap\ndeclare g ( -- )");
+        assert_eq!(items.len(), 3);
+        match &items[1] {
+            Item::Test {
+                expected, traps, ..
+            } => assert!(*traps && expected.is_empty()),
+            _ => panic!(),
+        }
     }
 
     #[test]

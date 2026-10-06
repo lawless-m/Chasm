@@ -136,6 +136,14 @@ pub struct WordInfo {
     pub location: Location,
 }
 
+/// A test's expectation as text: its values, or `trap` for `-> trap`.
+pub fn expected_text(expected: &[Value], traps: bool) -> Vec<String> {
+    if traps {
+        return vec!["trap".into()];
+    }
+    expected.iter().map(|v| v.to_string()).collect()
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TestInfo {
     pub index: usize,
@@ -143,6 +151,8 @@ pub struct TestInfo {
     /// Export name of the thunk in a module built with `test_exports`.
     pub export_name: String,
     pub expected: Vec<Value>,
+    /// `-> trap`: passes when the body traps.
+    pub traps: bool,
     pub types: Vec<String>,
     pub pending: bool,
     pub location: Location,
@@ -695,6 +705,7 @@ pub(crate) fn process_item(
             word,
             body,
             expected,
+            traps,
             loc,
         } => {
             if !ctx.by_name.contains_key(&word) && !prims::is_builtin(&word) {
@@ -719,7 +730,11 @@ pub(crate) fn process_item(
                     return vec![];
                 }
             };
-            let want: Vec<Ty> = expected.iter().map(|(l, _)| l.ty()).collect();
+            let want: Vec<Ty> = if traps {
+                out.effect.outputs.clone()
+            } else {
+                expected.iter().map(|(l, _)| l.ty()).collect()
+            };
             if want != out.effect.outputs {
                 p.diagnostics.push(
                     Diagnostic::error(
@@ -758,6 +773,7 @@ pub(crate) fn process_item(
                 word,
                 export_name: format!("__test_{index}"),
                 expected: expected.iter().map(|(l, _)| Value::from(l)).collect(),
+                traps,
                 types: names(&want),
                 pending: false,
                 location: loc,

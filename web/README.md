@@ -63,11 +63,17 @@ the latest definition of each word still defined, ready to copy into a
 neither is `)test` or `)test word`, which run the tests in force.
 
 Up and Down in the input box step through the chunks you have entered,
-as in readline: Up from the first line of the box, Down from the last, so
-inside a multi-line chunk they still move the caret. Down past the newest
-entry brings back what you were typing. The history (500 chunks, repeats
+as in readline: Up from the first line of the box, Down from the very end,
+so inside a multi-line chunk they still move the caret. Down past the
+newest entry brings back what you were typing, and edits to a recalled
+chunk are kept until a chunk is run. The history (500 chunks, repeats
 collapsed) is kept in `localStorage` too (key `wack.history`) and survives
 `)clear`.
+
+The ⤢ button opens the box as an editor, half the window tall: Enter adds
+a newline, Ctrl+Enter runs the whole text, Up and Down only move the
+caret, and Esc (or ⤡) closes it. Ctrl+Enter also runs from the one-line
+box, without waiting for an open definition to close.
 
 `test/bridge.html` keeps nothing, so driving it does not touch the saved
 program.

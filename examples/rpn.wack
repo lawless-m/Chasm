@@ -109,6 +109,8 @@ test rpn : "1 2 +" rpn -> 3.0
 test rpn : "5 1 2 + 4 * + 3 -" rpn -> 14.0
 test rpn : "2 -3 ^" rpn -> 0.125
 test rpn : "  2.5   4 * " rpn -> 10.0
+test rpn : "1 +" rpn -> trap
+test rpn : "1 x" rpn -> trap
 
 : main ( -- )
   "3 4 2 * 1 5 - 2 3 ^ ^ / +" :> e

@@ -13,16 +13,18 @@
   p { margin: 0 0 12px; color: var(--dim); }
   #out { flex: 1; overflow: auto; margin: 0; white-space: pre-wrap; }
   .err { color: var(--err); } .stack { color: var(--ok); } .echo, .hint { color: var(--dim); }
-  .line { display: flex; gap: 8px; border-top: 1px solid var(--dim); padding-top: 8px; }
-  textarea { flex: 1; resize: vertical; min-height: 2.6em; font: inherit; color: inherit; background: transparent; border: 0; outline: none; }
+  .line { display: flex; gap: 8px; align-items: flex-start; border-top: 1px solid var(--dim); padding-top: 8px; }
+  textarea { flex: 1; resize: none; height: 2.9em; font: inherit; color: inherit; background: transparent; border: 0; outline: none; }
+  .line.big textarea { height: 50vh; }
+  #expand { font: inherit; color: var(--dim); background: transparent; border: 1px solid var(--dim); border-radius: 4px; padding: 0 6px; cursor: pointer; }
 </style>
 </head>
 <body>
 <main>
   <h1>Whackford REPL</h1>
-  <p>Enter runs a chunk; an open <code>:</code> definition or <code>[</code> quotation continues on the next line. Shift+Enter adds a newline.</p>
+  <p>Enter runs a chunk; an open <code>:</code> definition or <code>[</code> quotation continues on the next line. Shift+Enter adds a newline. <b>⤢</b> opens an editor: there Enter adds a newline, Ctrl+Enter runs and Esc closes it.</p>
   <pre id="out"></pre>
-  <div class="line"><span id="prompt">&gt;</span><textarea id="in" rows="2" disabled spellcheck="false" autocomplete="off"></textarea></div>
+  <div class="line"><span id="prompt">&gt;</span><textarea id="in" rows="2" disabled spellcheck="false" autocomplete="off"></textarea><button id="expand" type="button" title="Editor: Enter adds a newline, Ctrl+Enter runs, Esc closes">⤢</button></div>
 </main>
 <script src="coi.js"></script>
 <script type="module" src="main.js"></script>

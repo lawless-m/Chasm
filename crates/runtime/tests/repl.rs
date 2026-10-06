@@ -237,6 +237,14 @@ fn tests_run_in_the_shared_instance() {
     let o = ok(&mut r, "test sq : 1 0 i32.div_s sq -> 9");
     assert_eq!(o.tests[0].status, TestStatus::Fail);
     assert!(o.tests[0].error.is_some());
+
+    // `-> trap` passes when the body traps and fails when it does not.
+    let o = ok(&mut r, "test sq : 1 0 i32.div_s sq -> trap");
+    assert_eq!(o.tests[0].status, TestStatus::Pass);
+    let o = ok(&mut r, "test sq : 3 sq -> trap");
+    assert_eq!(o.tests[0].status, TestStatus::Fail);
+    assert_eq!(o.tests[0].source, "test sq : 3 sq -> trap");
+    assert_eq!(o.tests[0].actual, Some(vec![Value::I32(9)]));
 }
 
 #[test]

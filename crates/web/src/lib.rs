@@ -10,6 +10,7 @@ pub mod api {
     use std::cell::RefCell;
 
     use serde_json::{json, Value as J};
+    use wack_core::program::expected_text;
     use wack_core::repl::{needs_more as core_needs_more, Layout, Step};
     use wack_core::types::{names, Ty};
     use wack_core::{layout, Diagnostic, Location, Session};
@@ -87,14 +88,17 @@ pub mod api {
                 "word": t.word,
                 "expected": t.expected,
                 // Exact text: JSON numbers cannot carry every i64.
-                "expected_text": t.expected.iter().map(|v| v.to_string()).collect::<Vec<_>>(),
+                "expected_text": expected_text(&t.expected, t.traps),
+                "traps": t.traps,
                 "types": t.types,
                 "location": t.location,
+                "source": t.source,
             })).collect::<Vec<_>>(),
             "pending": step.pending.iter().map(|t| json!({
                 "word": t.word,
-                "expected_text": t.expected.iter().map(|v| v.to_string()).collect::<Vec<_>>(),
+                "expected_text": expected_text(&t.expected, t.traps),
                 "location": t.location,
+                "source": t.source,
             })).collect::<Vec<_>>(),
             "tested": step.tested,
             "stack": names(stack),

@@ -133,7 +133,7 @@ export class Repl {
     }
     const tests = s.tests.map((t, i) => this.check(t, done.tests[i]));
     for (const t of s.pending) {
-      tests.push({ word: t.word, expected: t.expected_text, location: t.location, status: "pending", actual: null, trap: null });
+      tests.push({ word: t.word, source: t.source, expected: t.expected_text, location: t.location, status: "pending", actual: null, trap: null });
     }
     return {
       ok: !diagnostics.some((d) => d.severity === "error") && !trap && tests.every((t) => t.status !== "fail"),
@@ -169,8 +169,9 @@ export class Repl {
   }
 
   check(t, r) {
-    const base = { word: t.word, expected: t.expected_text, location: t.location };
-    if (!r || r.trap) return { ...base, status: "fail", actual: null, trap: r?.trap ?? { message: "test did not run", word: null } };
+    const base = { word: t.word, source: t.source, expected: t.expected_text, location: t.location };
+    if (!r) return { ...base, status: "fail", actual: null, trap: { message: "test did not run", word: null } };
+    if (r.trap) return { ...base, status: t.traps ? "pass" : "fail", actual: null, trap: r.trap };
     const actual = this.decode(t.types, r.values);
     const same = (ty, e, a, text) => {
       switch (ty) {
@@ -185,6 +186,7 @@ export class Repl {
       }
     };
     const pass =
+      !t.traps &&
       actual.length === t.expected.length &&
       t.types.every((ty, i) => same(ty, t.expected[i].value, actual[i], t.expected_text[i]));
     return { ...base, status: pass ? "pass" : "fail", actual: t.types.map((ty, i) => this.show(ty, actual[i])), trap: null };

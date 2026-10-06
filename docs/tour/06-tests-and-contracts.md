@@ -21,6 +21,19 @@ test dup : 1 dup -> 1 1
 program, so one test cannot disturb the next, and the console is captured,
 so a word that prints does not clutter the report.
 
+A word that traps on bad input can be tested for that too: `-> trap`
+passes when the body traps, and fails if it returns.
+
+```wack
+: digit ( i32 -- i32 )
+  48 i32.sub :> d
+  d 9 i32.gt_u [ "not a digit" trap ] when
+  d ;
+
+test digit : 55 digit -> 7
+test digit : 65 digit -> trap
+```
+
 ## Contract first
 
 You do not need a body to say what a word is for. `declare` gives a name

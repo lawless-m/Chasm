@@ -102,7 +102,7 @@ What `results` holds:
 | `check` | `words`, `library_words`, `tests` (counts), `unresolved` (names), `has_main` |
 | `build` | `output`, `bytes`, `unoptimised_bytes`, `optimised`, `note`, `wasi`, `processes` |
 | `run` | `output` (captured console), `trap` (`message`, `word`, `process`, or null), `optimised`, `note` |
-| `test` | `tests` (each `test`, `word`, `status`, `expected`, `actual`, `trap`, `output`, `location`); `summary` (`pass`, `fail`, `pending`) |
+| `test` | `tests` (each `test`, `word`, `status`, `expected`, `traps`, `actual`, `trap`, `output`, `location`); `summary` (`pass`, `fail`, `pending`) |
 | `unresolved` | `unresolved` (each `word`, `declared_effect`, `dependants`, `pending_tests`, `location`) |
 | `dead` | `has_roots`; `dead` (each `word`, `effect`, `location`) |
 | `infer` | `words` (each `name`, `effect`, `location`); `written` (files changed by `--write`) |
@@ -139,6 +139,12 @@ TCP; native only), `--no-file` (hides the host filesystem) and `--no-net` (hides
   exactly as in a file. Anything else is a **line**: it runs on the current
   stack, whose types are always known, and its effect is worked out from
   that stack. A line cannot follow a definition in the same chunk.
+- A local made with `:>` in a line lasts only to the end of that chunk:
+  `4 :> h` then `h` on the next line is `E_UNDEFINED`. What carries from one
+  chunk to the next is the stack and the definitions. Keep a value on the
+  stack, write the lines that share it as one chunk (in the browser,
+  Shift+Enter adds a newline, or ⤢ opens an editor where Ctrl+Enter runs),
+  or make it a word: `: h ( -- i32 ) 4 ;`.
 - A chunk continues on the next line while a `:` definition or a `[`
   quotation is open.
 - After each chunk the stack is printed as `( types ) values`, bottom to
@@ -275,6 +281,7 @@ export : name ( inputs -- outputs )  body ;   # define and export from the modul
 raw : name ( inputs -- outputs )  body ;      # define, reaching memory by address
 declare name ( inputs -- outputs )            # stub: a contract without a body
 test name : body -> expected-literals         # a test of `name`
+test name : body -> trap                      # a test that `body` traps
 struct name P...  field: type ...             # a struct (section 10a, 10c)
 union name P... | variant  field: type ... | ...   # a union (section 10b, 10c)
 ```
@@ -286,6 +293,12 @@ union name P... | variant  field: type ... | ...   # a union (section 10b, 10c)
   defined or used as locals (section 14a).
 - Tokens are separated by whitespace: `[ dup ]`, not `[dup]`.
 - The program's entry point is `: main ( -- ) ... ;`.
+- `-> trap` expects the body to trap: by `trap`, a check in a prelude word
+  or a wasm trap such as dividing by zero, in the test or in a process it
+  spawned. The test passes if it traps and fails, showing what the body
+  left, if it does not; the other tests run either way. Its results are
+  not type-checked. In reports `expected` is `["trap"]` and `traps` is
+  true.
 - A definition may leave out its effect; it is inferred and then checked as
   if written (`wack infer` shows what was inferred). Words that call
   themselves or each other, `export` words and `main` must write theirs

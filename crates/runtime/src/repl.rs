@@ -54,9 +54,11 @@ pub struct ReplTestResult {
     pub word: String,
     pub status: TestStatus,
     pub expected: Vec<Value>,
+    pub traps: bool,
     pub actual: Option<Vec<Value>>,
     pub error: Option<RunError>,
     pub location: Location,
+    pub source: String,
 }
 
 pub struct Outcome {
@@ -312,7 +314,8 @@ impl NativeRepl {
                 let (status, actual, error) = match r {
                     Ok(()) => {
                         let actual = values(&t.result_types, &vals, self.memory.data(&self.store));
-                        let pass = actual.len() == t.expected.len()
+                        let pass = !t.traps
+                            && actual.len() == t.expected.len()
                             && actual.iter().zip(&t.expected).all(|(a, b)| same(a, b));
                         let status = if pass {
                             TestStatus::Pass
@@ -321,24 +324,29 @@ impl NativeRepl {
                         };
                         (status, Some(actual), None)
                     }
+                    Err(e) if t.traps => (TestStatus::Pass, None, Some(e)),
                     Err(e) => (TestStatus::Fail, None, Some(e)),
                 };
                 tests.push(ReplTestResult {
                     word: t.word.clone(),
                     status,
                     expected: t.expected.clone(),
+                    traps: t.traps,
                     actual,
                     error,
                     location: t.location.clone(),
+                    source: t.source.clone(),
                 });
             }
             tests.extend(step.pending.iter().map(|t| ReplTestResult {
                 word: t.word.clone(),
                 status: TestStatus::Pending,
                 expected: t.expected.clone(),
+                traps: t.traps,
                 actual: None,
                 error: None,
                 location: t.location.clone(),
+                source: t.source.clone(),
             }));
         }
         if let (true, Some(line)) = (installed, &step.line) {
