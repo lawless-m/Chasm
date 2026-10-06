@@ -452,7 +452,15 @@ impl Session {
         let mut forgotten = Vec::new();
         let mut listing = None;
         let mut tested = None;
-        match text.split_whitespace().collect::<Vec<_>>().as_slice() {
+        let words: Vec<&str> = text.split_whitespace().collect();
+        match words.as_slice() {
+            ["forget", "test", ..] => {
+                let test = text.trim_start()["forget".len()..].trim();
+                match self.forget_test(test, &loc) {
+                    Ok(()) => forgotten.push(test.to_string()),
+                    Err(d) => self.program.diagnostics.push(d),
+                }
+            }
             ["forget", name] => match self.forget(name, &loc) {
                 Ok(()) => forgotten.push(name.to_string()),
                 Err(d) => self.program.diagnostics.push(d),
@@ -466,7 +474,7 @@ impl Session {
             _ => self.program.diagnostics.push(Diagnostic::error(
                 codes::E_SYNTAX,
                 format!(
-                    "unknown REPL command `){}`; the commands are `)forget word`, `)force` definitions, `)test [word]` and `)words`",
+                    "unknown REPL command `){}`; the commands are `)forget word`, `)forget test ...`, `)force` definitions, `)test [word]` and `)words`",
                     text.trim()
                 ),
                 loc,
@@ -964,6 +972,38 @@ impl Session {
         self.ctx.by_name.remove(name);
         self.ctx.all_names.remove(name);
         self.retire(id, name, "forgotten");
+        Ok(())
+    }
+
+    /// Remove every test in force that reads as `test` does, token for token
+    /// (spacing and comments aside), as `)test` prints it.
+    fn forget_test(&mut self, test: &str, loc: &Location) -> Result<(), Diagnostic> {
+        let tokens = |s: &str| -> Vec<String> {
+            lex("<repl>", s)
+                .map(|t| t.into_iter().map(|t| t.text).collect())
+                .unwrap_or_default()
+        };
+        let want = tokens(test);
+        let found: Vec<usize> = self
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Test(i, text)
+                    if !self.forgotten_tests.contains(i) && tokens(text) == want =>
+                {
+                    Some(*i)
+                }
+                _ => None,
+            })
+            .collect();
+        if found.is_empty() {
+            return Err(Diagnostic::error(
+                codes::E_FORGET,
+                format!("no test in force reads `{test}`; `)words` lists them as typed"),
+                loc.clone(),
+            ));
+        }
+        self.forgotten_tests.extend(found);
         Ok(())
     }
 

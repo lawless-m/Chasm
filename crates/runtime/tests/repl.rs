@@ -257,6 +257,23 @@ fn numbers_parse_from_strings() {
 }
 
 #[test]
+fn forget_one_test() {
+    let mut r = repl();
+    ok(&mut r, ": quad ( i32 -- i32 ) dup i32.add dup i32.add ;");
+    ok(&mut r, "test quad : 1 quad -> 4");
+    r.step("test quad : 2 quad -> 9");
+    r.step("test quad : 2 quad -> 9  # twice");
+    let o = ok(&mut r, ")forget test quad : 2   quad -> 9");
+    assert_eq!(o.forgotten, vec!["test quad : 2   quad -> 9"]);
+    let o = ok(&mut r, ")test");
+    assert_eq!(o.tests.len(), 1);
+    assert_eq!(o.tests[0].status, TestStatus::Pass);
+    let o = r.step(")forget test quad : 2 quad -> 9");
+    assert_eq!(o.diagnostics[0].code, "E_FORGET");
+    assert!(!ok(&mut r, ")words").listing.unwrap().contains("-> 9"));
+}
+
+#[test]
 fn drop_all_clears_the_stack() {
     let mut r = repl();
     ok(&mut r, "1 \"two\" 3 i64 2 option.some [ 1 i32.add ]");

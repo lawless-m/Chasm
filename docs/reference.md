@@ -172,7 +172,11 @@ TCP; native only), `--no-file` (hides the host filesystem) and `--no-net` (hides
   stack as it was.
 - A line or a test that uses processes runs as process 0 (section 14a).
 - A line starting with `)` is a REPL command, not Whackford, so a file never
-  holds one: `)forget word`, `)force`, `)test` and `)words`. `)forget word` removes a word and its tests and frees the name,
+  holds one: `)forget word`, `)forget test ...`, `)force`, `)test` and `)words`.
+  `)forget test quad : 2 quad -> 9` removes a test: every one in force that
+  reads the same, token for token, as `)test` prints it in a `FAIL` line and
+  `)words` lists it (spacing and comments aside), or `E_FORGET` if none
+  does. `)forget word` removes a word and its tests and frees the name,
   which can then be defined with any effect. It is refused (`E_FORGET`, with
   the `dependants`) while another word, a quotation in one, or another
   word's test uses it: forget those first, top-down. Primitives, prelude

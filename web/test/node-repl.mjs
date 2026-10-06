@@ -73,6 +73,11 @@ try {
     { type: "i64", value: "7 i64" },
   ]);
 
+  r = await repl.step(")forget test sq :  3 sq -> trap  # spacing and comments aside");
+  assert.deepEqual(r.forgotten, ["test sq :  3 sq -> trap  # spacing and comments aside"]);
+  r = await repl.step(")forget test sq : 3 sq -> trap");
+  assert.equal(r.diagnostics[0].code, "E_FORGET");
+
   r = await repl.step(")forget sq");
   assert.equal(r.diagnostics[0].code, "E_FORGET");
   assert.deepEqual(r.diagnostics[0].dependants, ["twice"]);
