@@ -48,6 +48,21 @@ test label : "tea" "tea" str.eq -> 1
 fall on codepoint boundaries: `"café" 0 4 str.slice` would cut the `é` in
 half, so it traps.
 
+`str.byte-at` gives the byte at an offset as an `i32`. To compare it with a
+character, write the character as a one-letter string followed by `char`:
+`"A" char` is the number 65, worked out when the program is compiled.
+
+```wack
+: vowel? ( i32 -- i32 )
+  :> c
+  c "a" char i32.eq  c "e" char i32.eq i32.or  c "i" char i32.eq i32.or
+  c "o" char i32.eq i32.or  c "u" char i32.eq i32.or ;
+
+test vowel? : "tea" 1 str.byte-at vowel? -> 1
+test vowel? : "tea" 0 str.byte-at vowel? -> 0
+test vowel? : "y" char vowel? -> 0
+```
+
 ## Arrays
 
 An array has a fixed length and one element type. `array.new` takes the

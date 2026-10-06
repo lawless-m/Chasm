@@ -2,19 +2,19 @@
 # + - * / ( ), each token with its kind, offset and length.
 # Rosetta Code: none (Parsing/Lexical_analyzer is close). Exercises: a state
 # machine over bytes, a predicate passed as a function value, short-circuit
-# `and`, trap with a position, a struct and an array of structs.
+# `and`, `char` literals, trap with a position, a struct and an array of structs.
 
-: digit? ( i32 -- i32 )  :> c  c 48 i32.ge_u  c 57 i32.le_u  i32.and ;
+: digit? ( i32 -- i32 )  :> c  c "0" char i32.ge_u  c "9" char i32.le_u  i32.and ;
 : alpha? ( i32 -- i32 )
   :> c
-  c 65 i32.ge_u  c 90 i32.le_u  i32.and
-  c 97 i32.ge_u  c 122 i32.le_u  i32.and  i32.or
-  c 95 i32.eq  i32.or ;                        # _
+  c "A" char i32.ge_u  c "Z" char i32.le_u  i32.and
+  c "a" char i32.ge_u  c "z" char i32.le_u  i32.and  i32.or
+  c "_" char i32.eq  i32.or ;
 : alnum? ( i32 -- i32 )  dup alpha? swap digit? i32.or ;
 : op? ( i32 -- i32 )
   :> c
-  c 43 i32.eq  c 45 i32.eq i32.or  c 42 i32.eq i32.or
-  c 47 i32.eq i32.or  c 40 i32.eq i32.or  c 41 i32.eq i32.or ;
+  c "+" char i32.eq  c "-" char i32.eq i32.or  c "*" char i32.eq i32.or
+  c "/" char i32.eq i32.or  c "(" char i32.eq i32.or  c ")" char i32.eq i32.or ;
 
 # The first offset from i whose byte fails pred.
 : skip ( str i32 [ i32 -- i32 ] -- i32 )
@@ -41,7 +41,7 @@ struct token  kind: i32  start: i32  len: i32
   [
     s i str.byte-at :> c
     i :> start
-    c 32 i32.eq [ i 1 i32.add i!  0 ]
+    c " " char i32.eq [ i 1 i32.add i!  0 ]
     [
       c digit?    [ s i 'digit? skip i!  NUM ]
       [

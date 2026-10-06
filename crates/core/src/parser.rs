@@ -283,7 +283,7 @@ impl<'a> Parser<'a> {
             while let Some(t) = self.peek().filter(|_| !traps) {
                 self.pos += 1;
                 let lit = match &t.kind {
-                    TokKind::Str(s) => Lit::Str(s.clone()),
+                    TokKind::Str(s) => self.string(s, t)?,
                     TokKind::Word => match self.number(t) {
                         Some(l) => l?,
                         None => {
@@ -452,6 +452,28 @@ impl<'a> Parser<'a> {
             fields.push((f.to_string(), ty, loc));
         }
         Ok(fields)
+    }
+
+    /// The string literal `s` at `t` (already consumed), or, followed by
+    /// `char`, its one character's codepoint as an `i32`; `char` is consumed.
+    fn string(&mut self, s: &str, t: &Token) -> Result<Lit, Diagnostic> {
+        if !self.peek().is_some_and(|n| n.is("char")) {
+            return Ok(Lit::Str(s.to_string()));
+        }
+        self.pos += 1;
+        let mut cs = s.chars();
+        match (cs.next(), cs.next()) {
+            (Some(c), None) => Ok(Lit::I32(c as i32)),
+            _ => Err(Diagnostic::error(
+                codes::E_LITERAL_RANGE,
+                format!(
+                    "`char` needs a string of exactly one character, but {} has {}",
+                    t.text,
+                    s.chars().count()
+                ),
+                self.loc(t),
+            )),
+        }
     }
 
     /// The numeric literal at `t` (already consumed), or `None`. An integer
@@ -636,9 +658,15 @@ impl<'a> Parser<'a> {
                 return Ok(out);
             }
             let kind = match &t.kind {
-                TokKind::Str(s) => NodeKind::Lit(Lit::Str(s.clone())),
+                TokKind::Str(s) => NodeKind::Lit(self.string(s, t)?),
                 TokKind::Word => {
                     let text = t.text.as_str();
+                    if text == "char" {
+                        return Err(self.err(
+                            "`char` takes a string literal of one character written directly before it, e.g. `\"A\" char`",
+                            loc,
+                        ));
+                    }
                     if let Some(l) = self.number(t) {
                         NodeKind::Lit(l?)
                     } else if text == "[" {
@@ -1094,6 +1122,18 @@ mod tests {
         assert_eq!(parse_number("2dup"), None);
         assert_eq!(parse_number("-"), None);
         assert_eq!(parse_number("-rot"), None);
+    }
+
+    #[test]
+    fn char_literals() {
+        let items = p(": f ( -- i32 ) \"A\" char ;\ntest f : f -> \"A\" char");
+        match (&items[0], &items[1]) {
+            (Item::Def { body, .. }, Item::Test { expected, .. }) => {
+                assert_eq!(body[0].kind, NodeKind::Lit(Lit::I32(65)));
+                assert_eq!(expected[0].0, Lit::I32(65));
+            }
+            _ => panic!(),
+        }
     }
 
     #[test]

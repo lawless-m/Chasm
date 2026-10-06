@@ -349,9 +349,17 @@ and `main` must be concrete; struct and union names are lowercase.
 | `42` `-7` `0xFF` | `i32` (any value from -2^31 to 2^32-1; large values wrap to their bit pattern) |
 | `42 i64` | `i64`: an integer then the word `i64` is one literal, up to 2^64-1 |
 | `1.5` `2e10` | `f64` |
+| `"text"` | `str`; escapes `\" \\ \n \t \u{1F600}` |
+| `"A" char` | `i32`: the codepoint of a one-character string literal, 65 |
 
 There is no `f32` literal: `1.5 f32.demote_f64`.
-| `"text"` | `str`; escapes `\" \\ \n \t \u{1F600}` |
+
+`char` works only directly after a string literal of one character, and
+the two are one literal, so `" " char`, `"\n" char` and `"\"" char` are
+32, 10 and 34, and work after `->` in a test. It is the codepoint, which
+for ASCII is the byte `str.byte-at` reads; `"é" char` is 233, but `é` is
+two bytes in a string (compare with `str.cp-at`). Any other string is
+`E_LITERAL_RANGE`; `char` anywhere else is `E_SYNTAX`.
 
 ## 5. Stack shuffles
 
@@ -367,8 +375,13 @@ There is no `f32` literal: `1.5 f32.demote_f64`.
 | `-rot` | `( a b c -- c a b )` |
 | `2dup` | `( a b -- a b a b )` |
 | `2drop` | `( a b -- )` |
+| `drop-all` | `( ... -- )` everything on the stack |
 
 `eq` and `hash` also work on any type (section 10d).
+
+`drop-all` clears the REPL stack. In a word it drops the word's own values,
+its inputs and what it has pushed, never its caller's: the checker knows
+the stack at every point, so it becomes that many drops.
 
 These work on any type; `dup` on a `str` copies both halves.
 

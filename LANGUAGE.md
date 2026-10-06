@@ -31,6 +31,7 @@ A word's effect lists checker types. Its wasm function type is the effect with e
 | integer followed by the word `i64` | `i64` | `42 i64`, `0xFF i64` |
 | decimal with a point or exponent | `f64` | `1.5`, `2e10` |
 | double-quoted | `str` | `"hello"` |
+| a one-character string followed by the word `char` | `i32` | `"A" char` (65), `" " char` |
 
 String literals are UTF-8, immutable, and live in read-only data. Escapes: `\"`, `\\`, `\n`, `\t`, `\u{XXXX}`. Integer literals that do not fit their type are a compile error; an `i32` literal may be anything from -2^31 to 2^32-1 (values above 2^31-1 are taken as their bit pattern), and likewise for `i64`. There is no `f32` literal: write `1.5 f32.demote_f64`, and in a test compare an `f32` result after `f64.promote_f32`, which is exact.
 
@@ -286,6 +287,7 @@ Built-in polymorphic words. Their effects use type variables, resolved at each u
 | `-rot` | `( a b c -- c a b )` |
 | `2dup` | `( a b -- a b a b )` |
 | `2drop` | `( a b -- )` |
+| `drop-all` | `( ... -- )`: every value on the stack the checker sees at that point |
 | `eq` | `( a a -- i32 )`, by contents (section 4d) |
 | `hash` | `( a -- i32 )`, by contents (section 4d) |
 
@@ -544,3 +546,5 @@ Recorded here so the spec matches the compiler. `docs/reference.md` is the user-
 4. **`-> trap` in tests.** A test can expect its body to trap (any trap: `trap`, a prelude check, a wasm trap, or a trap in a process the test spawned). A trap is still fatal everywhere else and cannot be caught: it leaves memory, handles and channels in an unknown state. Failures a caller should handle go in the effect as a status or an `option`. The trap message is not matched.
 5. **Short-circuit `and` and `or`** are combinators: `[ a ] [ b ] and` is `a dup [ drop b ] [ ] if` and `[ a ] [ b ] or` is `a dup [ ] [ drop b ] if`, rewritten by the parser, so they cost what the `if` costs, and their diagnostics name `and` or `or`. The answer is the deciding value, not normalised to 0 or 1, as in Lisp and Factor; `or` can give a default (`[ x ] [ 7 ] or`). `i32.and` and `i32.or` stay the bitwise wasm instructions.
 6. **Parsing numbers.** `str.to-i32 ( str -- i32 i32 )` and `str.to-i64` give the value and a flag, 1 or 0, the convention of the I/O words, so bad input is a value the caller tests, not a trap. The string must be exactly an optional `-` and one or more digits: no spaces, no `+`. A number out of range is bad input, never a wrapped value. `str.i32-at ( str i32 -- i32 i32 )` and `str.i64-at`, named with the other `-at` words, read the number at an offset and give the offset after it, or -1, so numbers can be picked out of a line without splitting it.
+7. **Character literals are `"A" char`**, a one-character string literal and the word `char`, read as one `i32` literal holding the codepoint, as `42 i64` is one `i64` literal. A quoted form such as `'A'` was not taken: `'` already begins `'word`, and `' '` cannot be a token while whitespace separates tokens. This way the string escapes serve for characters too, a wrong length is a compile-time error, and nothing is computed at run time.
+8. **`drop-all`** drops everything on the stack. The checker knows the stack's types at every point, so it compiles to that many drops. In a REPL line it clears the REPL stack; in a word, or a quotation, it reaches only that word's or quotation's own values, as no word can reach below its inputs.

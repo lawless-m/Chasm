@@ -44,7 +44,7 @@ GROUPS += [(p, p) for p in ("i32", "i64", "f32", "f64", "memory", "str", "bytes"
 GROUPS += [("console", "Console and files"), ("option", "option"), ("vec", "vec"), ("map", "map")]
 GROUPS += [("implementation", "Implementation"), ("other", "Other")]
 UNDOTTED = {
-    "stack": "dup drop swap over nip tuck rot -rot 2dup 2drop".split(),
+    "stack": "dup drop swap over nip tuck rot -rot 2dup 2drop drop-all".split(),
     "control": "if when unless and or while until times leave call match trap eq hash".split(),
     "console": "print println read-line read-file write-file copy ls now".split(),
 }

@@ -49,6 +49,11 @@ try {
   assert.equal(r.tests[0].status, "fail");
   assert.deepEqual(r.tests[0].actual, ["6"]);
 
+  // Clears everything, the 12 below included; push 12 back for the steps after.
+  r = await repl.step('1 "two" 3.5 drop-all');
+  assert.deepEqual(r.stack, []);
+  r = await repl.step("12");
+
   r = await repl.step("test sq : 1 0 i32.div_s sq -> trap");
   assert.equal(r.tests[0].status, "pass");
   r = await repl.step("test sq : 3 sq -> trap");

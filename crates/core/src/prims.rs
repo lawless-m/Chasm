@@ -419,6 +419,7 @@ pub fn names() -> impl Iterator<Item = &'static str> {
         "-rot",
         "2dup",
         "2drop",
+        "drop-all",
         "str.len",
         "str.addr",
         "str.from-raw",
@@ -444,6 +445,7 @@ pub fn names() -> impl Iterator<Item = &'static str> {
         "until",
         "when",
         "unless",
+        "char",
         "and",
         "or",
         "times",
@@ -603,6 +605,8 @@ pub fn is_builtin(name: &str) -> bool {
                 | "eq"
                 | "spawn"
                 | "alt"
+                | "char"
+                | "drop-all"
         )
         || crate::parser::combinator_arity(name).is_some()
 }

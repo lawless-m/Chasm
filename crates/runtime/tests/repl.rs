@@ -257,6 +257,17 @@ fn numbers_parse_from_strings() {
 }
 
 #[test]
+fn drop_all_clears_the_stack() {
+    let mut r = repl();
+    ok(&mut r, "1 \"two\" 3 i64 2 option.some [ 1 i32.add ]");
+    assert!(ok(&mut r, "drop-all").stack.is_empty());
+    // In a word it drops only the word's own values.
+    ok(&mut r, ": f ( i32 str -- i32 ) drop-all 5 ;");
+    let o = ok(&mut r, "7 1 \"x\" f");
+    assert_eq!(o.stack, vec![e("i32", "7"), e("i32", "5")]);
+}
+
+#[test]
 fn and_and_or_short_circuit() {
     let mut r = repl();
     // The second quotation runs only when it decides the answer.

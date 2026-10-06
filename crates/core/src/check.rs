@@ -3761,6 +3761,15 @@ impl<'c> Walker<'c> {
                 ));
             }
         }
+        // `drop-all`: the stack's types are known here, so drop each value.
+        if n == "drop-all" {
+            let tys = std::mem::take(&mut self.stack);
+            let tys = self.subst.resolve_all(&tys);
+            for _ in self.lower_all(&tys) {
+                self.op(I::Drop);
+            }
+            return Ok(Flow::Normal);
+        }
         // Shuffles.
         if let Some((k, perm)) = prims::shuffle(n) {
             let tys = self.pop_any(n, k, loc)?;

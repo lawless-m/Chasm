@@ -1036,6 +1036,9 @@ fn inferred_effects() {
         "E_BRANCH_MISMATCH"
     );
     assert_eq!(err(": g ( -- i32 ) 1 [ 2 ] and ;"), "E_SYNTAX");
+    assert_eq!(err(": g ( -- i32 ) \"AB\" char ;"), "E_LITERAL_RANGE");
+    assert_eq!(err(": g ( -- i32 ) \"\" char ;"), "E_LITERAL_RANGE");
+    assert_eq!(err(": g ( -- i32 ) 1 char ;"), "E_SYNTAX");
     let c = ok(": sq dup i32.mul ;\n: main ( -- ) 3 sq i32.to-str println ;");
     assert!(c.wasm.is_some());
     assert!(!c.word("main").unwrap().inferred);
