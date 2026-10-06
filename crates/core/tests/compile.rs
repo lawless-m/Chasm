@@ -1022,6 +1022,16 @@ fn inferred_effects() {
     );
     assert_eq!(err(": bad 1 \"x\" i32.add ;"), "E_TYPE_MISMATCH");
     assert_eq!(err(": f 1 ;\n: f 2 i64 ;"), "E_REDEFINE_EFFECT");
+    // A redefinition without an effect keeps the word's effect when the body
+    // fits it, though inference alone would generalise it.
+    assert_eq!(
+        effect(": f ( i32 str -- str i32 ) swap ;\n: f swap ;", "f"),
+        ("( i32 str -- str i32 )".into(), false, false)
+    );
+    assert_eq!(
+        effect(": f 2 i32.mul ;\n: f 3 i32.mul ;", "f"),
+        ("( i32 -- i32 )".into(), true, false)
+    );
     // A body without an effect is checked against the declaration, so the
     // error is where it goes wrong, not a comparison of whole effects.
     assert_eq!(

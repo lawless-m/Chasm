@@ -580,15 +580,24 @@ pub(crate) fn process_item(
                 p.diagnostics.push(d);
                 return vec![];
             }
-            // A word declared (or whose definition failed) and not yet given a
-            // body keeps its effect: the body is checked against it, as if
-            // it were written, rather than inferred and compared.
+            // Without an effect, an existing word keeps its own: a declared
+            // one (or one whose definition failed) always, so errors point
+            // into the body; a redefinition when the body fits it. A body
+            // that does not fit is inferred below and the change reported.
+            let mut kept_inferred = false;
             let effect = effect.or_else(|| {
                 let &id = ctx.by_name.get(&name)?;
                 let w = &ctx.words[id];
-                w.body.is_none().then(|| w.effect.clone())
+                let e = w.effect.clone();
+                if w.body.is_none() {
+                    return Some(e);
+                }
+                kept_inferred = w.inferred;
+                crate::check::check_body(ctx, &name, Mode::Declared(&e), &body, &loc, &[])
+                    .ok()
+                    .map(|_| e)
             });
-            let inferred = effect.is_none();
+            let inferred = effect.is_none() || kept_inferred;
             let effect = match effect {
                 Some(e) => e,
                 None => match crate::infer::infer_effect(ctx, &name, &body, &loc) {
