@@ -448,10 +448,16 @@ is `E_MATCH_ARM`; a variant without an arm, and no `else:`, is
 | `str.cp-at` | `( str i32 -- i32 i32 )` | codepoint and its byte length at an offset |
 | `str.boundary?` | `( str i32 -- i32 )` | is the offset a codepoint boundary |
 | `i32.to-str` `i64.to-str` | `( iNN -- str )` | decimal |
+| `str.to-i32` `str.to-i64` | `( str -- iNN i32 )` | the whole string as a number, and 1; 0 and 0 unless it is exactly an optional `-` and digits that fit |
+| `str.i32-at` `str.i64-at` | `( str i32 -- iNN i32 )` | the number starting at an offset (optional `-`, then digits) and the offset after it; 0 and -1 if none starts there, it does not fit, or the offset is outside the string |
 | `f64.fixed` | `( f64 i32 -- str )` | rounded to that many decimals (ties to even); traps beyond the `i64` range |
 | `str.from-byte` | `( i32 -- str )` | a one-byte string |
 | `str.addr` | `( str -- i32 )` | raw (section 2): the address |
 | `str.from-raw` | `( i32 i32 -- str )` | raw: unchecked addr and length |
+
+`str.i32-at` picks numbers out of a line without splitting it: on
+`"move 3 from 12 to 2"`, offset 5 gives `3 6` and offset 12 gives `12 14`.
+None of the parsing words skips spaces or accepts `+`; none traps.
 | `mem.alloc` | `( i32 -- i32 )` | raw: zeroed bytes, 8-aligned, never freed |
 
 ## 9a. Byte buffers

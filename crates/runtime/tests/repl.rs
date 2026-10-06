@@ -215,6 +215,48 @@ fn lines_definitions_traps_and_redefinition() {
 }
 
 #[test]
+fn numbers_parse_from_strings() {
+    let mut r = repl();
+    for t in [
+        r#"test str.to-i32 : "42" str.to-i32 -> 42 1"#,
+        r#"test str.to-i32 : "-7" str.to-i32 -> -7 1"#,
+        r#"test str.to-i32 : "0" str.to-i32 -> 0 1"#,
+        r#"test str.to-i32 : "" str.to-i32 -> 0 0"#,
+        r#"test str.to-i32 : "A" str.to-i32 -> 0 0"#,
+        r#"test str.to-i32 : "-" str.to-i32 -> 0 0"#,
+        r#"test str.to-i32 : "12x" str.to-i32 -> 0 0"#,
+        r#"test str.to-i32 : " 12" str.to-i32 -> 0 0"#,
+        r#"test str.to-i32 : "+5" str.to-i32 -> 0 0"#,
+        r#"test str.to-i32 : "2147483647" str.to-i32 -> 2147483647 1"#,
+        r#"test str.to-i32 : "-2147483648" str.to-i32 -> -2147483648 1"#,
+        r#"test str.to-i32 : "2147483648" str.to-i32 -> 0 0"#,
+        r#"test str.to-i32 : "-2147483649" str.to-i32 -> 0 0"#,
+        r#"test str.to-i64 : "9223372036854775807" str.to-i64 -> 9223372036854775807 i64 1"#,
+        r#"test str.to-i64 : "-9223372036854775808" str.to-i64 -> -9223372036854775808 i64 1"#,
+        r#"test str.to-i64 : "9223372036854775808" str.to-i64 -> 0 i64 0"#,
+        r#"test str.to-i64 : "-9223372036854775809" str.to-i64 -> 0 i64 0"#,
+        r#"test str.to-i64 : "99999999999999999999999" str.to-i64 -> 0 i64 0"#,
+        r#"test str.i32-at : "move 3 from 12 to 2" 5 str.i32-at -> 3 6"#,
+        r#"test str.i32-at : "move 3 from 12 to 2" 12 str.i32-at -> 12 14"#,
+        r#"test str.i32-at : "move 3 from 12 to 2" 0 str.i32-at -> 0 -1"#,
+        r#"test str.i32-at : "x-15,4" 1 str.i32-at -> -15 4"#,
+        r#"test str.i32-at : "12" 2 str.i32-at -> 0 -1"#,
+        r#"test str.i32-at : "12" -1 str.i32-at -> 0 -1"#,
+        r#"test str.i32-at : "12" 99 str.i32-at -> 0 -1"#,
+        r#"test str.i32-at : "007" 0 str.i32-at -> 7 3"#,
+        r#"test str.i64-at : "a 10000000000 b" 2 str.i64-at -> 10000000000 i64 13"#,
+    ] {
+        let o = ok(&mut r, t);
+        assert_eq!(
+            o.tests[0].status,
+            TestStatus::Pass,
+            "{t}: {:?}",
+            o.tests[0].actual
+        );
+    }
+}
+
+#[test]
 fn and_and_or_short_circuit() {
     let mut r = repl();
     // The second quotation runs only when it decides the answer.
