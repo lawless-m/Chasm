@@ -34,6 +34,10 @@ Each entry says how things stand now and what the decoder does about it.
   gather eight values for a word that takes eight, or hand out eight
   results: the IDCT's eight inputs and outputs per column and per row are
   written out one by one (`idct.block`).
+- A word with eight inputs (`upsample.fancy` takes a plane, a method, two
+  neighbour offsets, a row count, a destination, its offset and a width)
+  binds them all to locals on its first line; there is no record of named
+  arguments short of declaring a struct for the call.
 
 ## Types
 
@@ -58,20 +62,23 @@ Measured with the release compiler (`../target/release/wack run`, wasmtime,
 bounds checks on), median of three runs, on baseline 4:2:0 files made by
 tiling `primary/testorig.jpg` and compressing with the oracle's cjpeg
 (`tmp/m2-timing/big3.jpg`, 2000x1500, 3 megapixels; `big12.jpg`,
-4000x3000, 12 megapixels). Both decode byte-exact against djpeg.
+4000x3000, 12 megapixels). Every output is byte-exact against djpeg in the
+same mode (`-dct int -pnm` for fancy, `-dct int -nosmooth -pnm` for plain).
 
-| File | `wack run` | `wack run --opt` | Decode rate |
-|---|---|---|---|
-| big3, 3 MP | 0.40 s | 0.35 s | 11.6 megapixels/s |
-| big12, 12 MP | 1.19 s | 0.88 s | 11.5 megapixels/s |
+| File | Mode | `wack run` | `wack run --opt` | Decode rate | Oracle |
+|---|---|---|---|---|---|
+| big3, 3 MP | fancy (default) | 0.42 s | 0.37 s | 10.6 megapixels/s | 0.02 s |
+| big3, 3 MP | plain (`nosmooth`) | 0.37 s | 0.35 s | 12.8 megapixels/s | 0.02 s |
+| big12, 12 MP | fancy (default) | 1.21 s | 0.94 s | 11.2 megapixels/s | 0.08 s |
+| big12, 12 MP | plain (`nosmooth`) | 1.14 s | 0.85 s | 12.0 megapixels/s | 0.06 s |
 
 - Compiling the program is 0.14 s of every run (a file that stops at
-  `NOT_YET` takes that long), well inside the harness's 20 s timeout; the
-  decode itself is about 1.05 s for 12 MP.
-- The oracle (libjpeg-turbo 3.2.0, plain C, no SIMD) decodes big12 in
-  0.06 s, so the decoder runs about 17 times slower than C.
-- Where the 1.15 s of a 12 MP run goes, measured by removing one stage at a
-  time in scratch copies: IDCT 0.31 s, colour conversion 0.27 s, entropy
-  decoding and the scan loop 0.21 s, compile 0.14 s, upsampling 0.12 s, and
-  the row writes 0.11 s (one `host.write` per output row, 3000 for big12).
+  `NOT_YET` takes that long), well inside the harness's 20 s timeout.
+- The oracle is libjpeg-turbo 3.2.0 in plain C without SIMD; the decoder
+  runs about 15 times slower than it.
+- Where the time of a 12 MP plain run goes, measured by removing one stage
+  at a time in scratch copies: IDCT 0.31 s, colour conversion 0.27 s,
+  entropy decoding and the scan loop 0.21 s, compile 0.14 s, upsampling
+  0.12 s, and the row writes 0.11 s (one `host.write` per output row, 3000
+  for big12). The fancy filters cost 0.07 s more than replication on big12.
   No stage dominates.

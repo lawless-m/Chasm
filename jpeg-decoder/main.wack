@@ -1,18 +1,22 @@
 # The decoder's entry point.
 #
-# Protocol: stdin gives two lines, the input path and the output path
-# (natively `/file/<absolute path>`). stdout gets `FRAME width height ncomp
-# kind`, then either `DECODED`, with the P5 or P6 image written to the output
-# path, or, for input M2 does not decode yet, `NOT_YET <reason>` (progressive,
-# arithmetic, 12-bit, 4-component or multi-scan) with no output file; the
-# exit status is 0. A refusal is a trap `REFUSED CODE: message` on stderr
-# with exit status 1; any other trap is a decoder bug. The output is opened
-# before decoding, so a refusal mid-scan can leave a partial file: the
-# harness ignores it, and the service deletes the request directory.
+# Protocol: stdin gives the input path and the output path (natively
+# `/file/<absolute path>`), and optionally a third line: `nosmooth` selects
+# plain replication of subsampled components, as `djpeg -nosmooth`; anything
+# else, or no third line, selects fancy (triangle) upsampling, as default
+# djpeg. stdout gets `FRAME width height ncomp kind`, then either `DECODED`,
+# with the P5 or P6 image written to the output path, or, for input the
+# decoder does not handle yet, `NOT_YET <reason>` (progressive, arithmetic, 12-bit,
+# 4-component or multi-scan) with no output file; the exit status is 0. A
+# refusal is a trap `REFUSED CODE: message` on stderr with exit status 1; any
+# other trap is a decoder bug. The output is opened before decoding, so a
+# refusal mid-scan can leave a partial file: the harness ignores it, and the
+# service deletes the request directory.
 
 : main ( -- )
   read-line drop :> inp
   read-line drop :> outp
+  read-line drop :> mode
   inp source.load markers.open :> j
   j markers.walk
   j huffman.scan-tables :> tabs
@@ -21,7 +25,7 @@
   why str.len
   [ "NOT_YET " why str.concat println ]
   [
-    j tabs rows.setup :> d
+    j tabs  mode "nosmooth" str.eq i32.eqz  rows.setup :> d
     outp d decoder.width d decoder.height d decoder.ncomp ppm.open :> h
     d [ ( bytes -- ) h swap ppm.row ] rows.decode
     h host.close drop

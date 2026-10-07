@@ -77,21 +77,25 @@ struct decoder
   f: frame  sc: scanner  tabs: array hufftable  idct: idct  colour: colour  space: i32
   planes: array plane  ups: bytes  out: bytes  coef: array i32  quants: array i32
   width: i32  height: i32  ncomp: i32  mw: i32  mh: i32  hmax: i32  vmax: i32  interleaved: i32
-  scn: scan
+  scn: scan  fancy: i32  methods: array i32
 
 # The jpeg (frame and scan parsed, rows.unsupported "") and the scan's
 # tables. This is the only allocation point of the decode: one plane per
-# component (an MCU row of its blocks), every component upsampled to one MCU
+# component (three MCU rows of its blocks, a ring), every component upsampled to one MCU
 # row at full width, one output row, one coefficient block, the components'
 # natural-order quantisation tables side by side (component ci at ci*64),
 # and the scanner. markers.sof checked the budget with frame.need, which
 # counts exactly these buffers. A scan with one component walks that
 # component's own block grid (non-interleaved), so its MCU count is the
-# grid's block count.
-declare rows.setup ( jpeg array hufftable -- decoder )
+# grid's block count. The flag selects fancy upsampling (1, libjpeg's
+# default) or plain replication (0, djpeg -nosmooth) (M3); methods holds
+# each component's upsampler, libjpeg's choice: in fancy mode h2v1 and h2v2
+# are fancy only when the downsampled width exceeds 2, h1v2 always, and
+# everything else is replication.
+declare rows.setup ( jpeg array hufftable i32 -- decoder )
 
-: rows.setup ( jpeg array hufftable -- decoder )
-  :> tabs :> j
+: rows.setup ( jpeg array hufftable i32 -- decoder )
+  :> fancy :> tabs :> j
   j jpeg.frame none: [ NO_FRAME "decode before SOF" refusal trap ] some: [ ] match :> f
   j jpeg.scan none: [ NO_FRAME "decode before SOS" refusal trap ] some: [ ] match :> scn
   j colour.space :> space
@@ -109,8 +113,18 @@ declare rows.setup ( jpeg array hufftable -- decoder )
     :> ci
     f frame.comps ci array.at :> c
     mw c component.h i32.mul 8 i32.mul :> stride
-    stride c component.v 8 i32.mul i32.mul bytes.new :> pd
-    planes ci  pd 0 stride  hmax c component.h i32.div_u  vmax c component.v i32.div_u  plane.new  array.at!
+    stride c component.v 8 i32.mul i32.mul 3 i32.mul bytes.new :> pd
+    planes ci  pd 0 stride  c component.v 8 i32.mul  hmax c component.h i32.div_u  vmax c component.v i32.div_u  plane.new  array.at!
+  ]
+  times
+  ncomp array.new ( array i32 ) :> methods
+  ncomp
+  [
+    :> mi
+    f frame.comps mi array.at :> mc
+    hmax mc component.h i32.div_u :> mhx
+    vmax mc component.v i32.div_u :> mvx
+    methods mi  fancy mhx mvx  width mhx ceil-div  upsample.method  array.at!
   ]
   times
   ncomp vmax 8 i32.mul i32.mul width i32.mul bytes.new :> ups
@@ -128,11 +142,15 @@ declare rows.setup ( jpeg array hufftable -- decoder )
   interleaved [ mw mh i32.mul ] [ f 0 frame.comp-blocks-wide  f 0 frame.comp-blocks-high  i32.mul ] if :> total
   j jpeg.data  scn scan.data-at  tabs  t idct.natural  ncomp  j jpeg.restart  total  scan.open :> sc
   f sc tabs t colour.make space planes ups out coef quants width height ncomp mw mh hmax vmax interleaved
-  scn decoder.new ;
+  scn fancy methods decoder.new ;
 
-: fx.dec ( -- decoder )  fx.tiny-jpeg dup huffman.scan-tables rows.setup ;
+: fx.dec ( -- decoder )  fx.tiny-jpeg dup huffman.scan-tables 1 rows.setup ;
 
 test rows.setup : fx.dec decoder.width -> 1
+test rows.setup : fx.dec decoder.fancy -> 1
+test rows.setup : fx.dec decoder.methods array.len -> 1
+test rows.setup : fx.dec decoder.methods 0 array.at -> 0
+test rows.setup : fx.tiny-jpeg dup huffman.scan-tables 0 rows.setup decoder.fancy -> 0
 test rows.setup : fx.dec decoder.height -> 1
 test rows.setup : fx.dec decoder.ncomp -> 1
 test rows.setup : fx.dec decoder.mw -> 1
@@ -140,7 +158,7 @@ test rows.setup : fx.dec decoder.interleaved -> 0
 test rows.setup : fx.dec decoder.space -> 0
 test rows.setup : fx.dec decoder.planes array.len -> 1
 test rows.setup : fx.dec decoder.planes 0 array.at plane.stride -> 8
-test rows.setup : fx.dec decoder.planes 0 array.at plane.data bytes.len -> 64
+test rows.setup : fx.dec decoder.planes 0 array.at plane.data bytes.len -> 192
 test rows.setup : fx.dec decoder.planes 0 array.at plane.hexp -> 1
 test rows.setup : fx.dec decoder.ups bytes.len -> 8
 test rows.setup : fx.dec decoder.out bytes.len -> 1
@@ -160,11 +178,18 @@ test rows.setup : fx.dec decoder.sc scanner.br bitreader.pos -> 156
 # padded to whole MCUs (libjpeg's per_scan_setup): a 16x24 image with 2x2
 # sampling has 3 block rows where the MCU grid has 4. Either way an MCU row
 # fills the planes, which are upsampled and converted row by row; the last
-# MCU row is clipped to the image height.
+# MCU row is clipped to the image height. An MCU row's upsampling needs the
+# first sample row of the next MCU row, so emission trails decoding by one
+# MCU row, and the ring holds rows my-1, my and my+1 when row my is emitted.
 declare rows.decode ( decoder [ bytes -- ] -- )
 
-# MCU row i of the planes, upsampled, converted and handed to the sink.
+# MCU row i of the planes, upsampled, converted and handed to the sink. A
+# fancy component takes its context rows from the ring (the previous and
+# next MCU rows' slots, or itself at the top and bottom of the image) and
+# only its real rows; plain mode is the -nosmooth output.
 declare rows.emit ( decoder [ bytes -- ] i32 -- )
+# After MCU row my is decoded: emit row my-1, and at the last MCU row my too.
+declare rows.mcu-done ( decoder [ bytes -- ] i32 -- )
 declare rows.interleaved ( decoder [ bytes -- ] -- )
 declare rows.single ( decoder [ bytes -- ] -- )
 
@@ -174,10 +199,33 @@ declare rows.single ( decoder [ bytes -- ] -- )
   d decoder.width :> width
   d decoder.ups :> ups
   d decoder.out :> out
-  d decoder.ncomp [ :> ci  d decoder.planes ci array.at  ups  ci rr i32.mul width i32.mul  width rr  upsample.plain ] times
+  d decoder.ncomp
+  [
+    :> ci
+    d decoder.planes ci array.at :> p
+    p  p i plane.slot  plane.base!
+    d decoder.methods ci array.at :> method
+    ci rr i32.mul width i32.mul :> at
+    method i32.eqz
+    [ p ups at width rr upsample.plain ]
+    [
+      i 0 i32.gt_s [ p i 1 i32.sub plane.slot ] [ -1 ] if :> prev
+      i 1 i32.add d decoder.mh i32.lt_s [ p i 1 i32.add plane.slot ] [ -1 ] if :> next
+      d decoder.height p plane.vexp ceil-div  i p plane.rows i32.mul  i32.sub :> left-rows
+      left-rows p plane.rows i32.lt_s [ left-rows ] [ p plane.rows ] if :> real
+      p method prev next real ups at width upsample.fancy
+    ]
+    if
+  ]
+  times
   d decoder.height i rr i32.mul i32.sub :> left
   left rr i32.lt_s [ left ] [ rr ] if
   [ :> r  d decoder.colour d decoder.space ups rr r out width colour.row  out sink call ] times ;
+
+: rows.mcu-done ( decoder [ bytes -- ] i32 -- )
+  :> my :> sink :> d
+  my 0 i32.gt_s [ d sink my 1 i32.sub rows.emit ] when
+  my d decoder.mh 1 i32.sub i32.eq [ d sink my rows.emit ] when ;
 
 : rows.interleaved ( decoder [ bytes -- ] -- )
   :> sink :> d
@@ -208,7 +256,7 @@ declare rows.single ( decoder [ bytes -- ] -- )
             :> bx
             sc ci  scn scan.td k array.at  scn scan.ta k array.at  coef scan.block
             t coef quants ci 64 i32.mul  p plane.data
-            by 8 i32.mul stride i32.mul  mx c component.h i32.mul bx i32.add 8 i32.mul  i32.add
+            p my plane.slot  by 8 i32.mul stride i32.mul i32.add  mx c component.h i32.mul bx i32.add 8 i32.mul  i32.add
             stride idct.block
           ]
           times
@@ -219,7 +267,7 @@ declare rows.single ( decoder [ bytes -- ] -- )
       sc scan.end-mcu
     ]
     times
-    d sink my rows.emit
+    d sink my rows.mcu-done
   ]
   times ;
 
@@ -240,7 +288,7 @@ declare rows.single ( decoder [ bytes -- ] -- )
   bh
   [
     :> by
-    by v i32.rem_u 8 i32.mul stride i32.mul :> rowat
+    p by v i32.div_u plane.slot  by v i32.rem_u 8 i32.mul stride i32.mul  i32.add :> rowat
     bw
     [
       :> bx
@@ -250,7 +298,7 @@ declare rows.single ( decoder [ bytes -- ] -- )
     ]
     times
     by 1 i32.add v i32.rem_u i32.eqz  by bh 1 i32.sub i32.eq  i32.or
-    [ d sink by v i32.div_u rows.emit ]
+    [ d sink by v i32.div_u rows.mcu-done ]
     when
   ]
   times ;
@@ -267,13 +315,15 @@ struct sinkbuf  buf: bytes  n: i32
   :> row :> sb
   sb sinkbuf.buf  sb sinkbuf.n row bytes.len i32.mul row bytes.as-str bytes.put
   sb  sb sinkbuf.n 1 i32.add  sinkbuf.n! ;
-: fx.decode-all ( jpeg -- bytes )
-  :> j
+: fx.decode-mode ( jpeg i32 -- bytes )
+  :> mode :> j
   j huffman.scan-tables :> tabs
-  j tabs rows.setup :> d
+  j tabs mode rows.setup :> d
   d decoder.width d decoder.height i32.mul d decoder.ncomp i32.mul bytes.new 0 sinkbuf.new :> sb
   d [ ( bytes -- ) sb swap fx.collect ] rows.decode
   sb sinkbuf.buf ;
+: fx.decode-all ( jpeg -- bytes )  1 fx.decode-mode ;
+: fx.decode-plain ( jpeg -- bytes )  0 fx.decode-mode ;
 # A 1x1 red pixel, YCbCr 4:2:0 (cjpeg -optimize -quality 50 -sample 2x2);
 # the oracle decodes it to 254 0 2.
 : fx.ycc1 ( -- str )
@@ -307,3 +357,71 @@ test rows.decode : fx.grey2 0 356 str.slice "00ffd9" str.concat hex markers.open
 test rows.decode : fx.grey2 0 356 str.slice hex markers.open dup markers.walk fx.decode-all 3 bytes.at -> 246
 test rows.decode : fx.grey2 "0102" str.concat hex markers.open dup markers.walk fx.decode-all 3 bytes.at -> 246
 test rows.decode : fx.grey2 0 332 str.slice "ffd0" str.concat fx.grey2 332 28 str.slice str.concat hex markers.open dup markers.walk fx.decode-all -> trap
+test rows.setup : fx.ycc1 hex markers.open dup markers.walk dup huffman.scan-tables 1 rows.setup decoder.methods 1 array.at -> 0
+
+# Fancy-upsampling regression fixtures from corpus/synthetic-m3 (cjpeg
+# -dct int -optimize, crops of testorig at offset 100,60), with the
+# oracle's pixels in both modes (djpeg -dct int -pnm and -nosmooth, header
+# removed).
+# 6x20 4:2:0, -sample 2x2: h2v2 fancy (downsampled width 3), two MCU rows,
+# a partial last MCU row: the top edge, the cross-MCU-row context and the
+# bottom duplication all matter. 348 bytes.
+: fx.ycc6x20 ( -- str )
+  "FFD8FFE000104A46494600010100000100010000FFDB004300080606070605080707070909080A0C140D0C0B0B0C1912130F141D1A1F1E1D1A1C1C20242E2720222C231C1C28"
+  "37292C30313434341F27393D38323C2E333432FFDB0043010909090C0B0C180D0D1832211C213232323232323232323232323232323232323232323232323232323232323232" str.concat
+  "323232323232323232323232323232323232FFC00011080014000603012200021101031101FFC400160001010100000000000000000000000000000504FFC400201000020300" str.concat
+  "00070100000000000000000001020003110412142131416181FFC40017010003010000000000000000000000000002040507FFC4001A11010100020300000000000000000000" str.concat
+  "0001000204213141FFDA000C03010002110311003F008CD61F2C542FDC894BA0A5AA1B7D82D1DB6A1CC300FC892032B4F7607CB2706CCCF612C4E67B8888675223C5FFD9" str.concat ;
+: fx.ycc6x20-fancy ( -- str )
+  "F92E41F92E41F82F41F72E40F32C3FF0293CFF3347FF3445FE3346FE3346FC3345FB3244F8293BF72838F42537F32436F12435F22536FB2B39F92937F52533F22230F12131F2"
+  "2333FA2835F82633F62431F2222FF22230F42432F1222CF0222CF0222CF1232DF3252FF32730F52C32F52E33F73035F93237F83136F43034E82A2AEA2C2CEB2D2FEA2E2FE729" str.concat
+  "2BE02425DC2827FA4645EB3736DE2C2AE83435EA3838DD3431F44B48E23936D72E2BD9302DD22926CF2D2AE2403DDB3936E03E3BDF403CCF302CDE4341EB504EEE5351FF6462" str.concat
+  "FC615FE04644CE3436D93F41E74D4FFF6F71FF787AFF6F71FF696EFC6366F65D62FF676CF55C61E64D52FA5F67F2575DEA4F57F0555DE34850DE434BE1484DDF464BE2494EF0" str.concat
+  "565EEA5058EF555DDB4949DC4A4AD64143D54042E24B50E54E53CC3E3ACD3F3BC73736C83636D84347DE474CC63834C83A36C23231C63434D84347DE494DC83A36C93B37C333" str.concat
+  "32C73736DC474BE34E52" str.concat ;
+: fx.ycc6x20-plain ( -- str )
+  "F92E41F92E41F82F41F72E40F32C3FF0293CFF3447FF3447FD3446FD3446FA3346F93245F92939F82838F52535F42434F22335F32436FB2B3BF92939F52535F22232F02133F2"
+  "2335FA2833F82631F6242FF4222DF2222FF42431F3212CF3212CF3212CF4222DF42431F52532F22E30F32F31F43135F63337F53236F33034EC282AEE2A2CEE2B2FEE2B2FEA27" str.concat
+  "2BE42125D82B27F64945E73A36DB2E2AE43635E73938E0332FF74A46E53834DA2D29DC2E2DD52726CC2E2BDF413ED83A37DD3F3CDC413DCC312DE0423FED4F4CF0524FFF6360" str.concat
+  "FC615DE14642CD3437D83F42E64D50FF6F72FF787BFF6F72FF696CFC6366F65D60FF676AF55C5FE64D50FA5F67F2575FEA4F57F0555DE34752DE424DE2474FE0454DE34850F1" str.concat
+  "565EEB4F5AF0545FD94B47DA4C48D44242D34141E24B50E54E53CC3E3ACD3F3BC83636C83636D94247DE474CC63834C83A36C23231C53534D84347DE494DC83A36C93B37C333" str.concat
+  "32C73736DC474BE34E52" str.concat ;
+# 6x4 4:2:2, -sample 2x1: h2v1 fancy. 305 bytes.
+: fx.ycc6x4 ( -- str )
+  "FFD8FFE000104A46494600010100000100010000FFDB004300080606070605080707070909080A0C140D0C0B0B0C1912130F141D1A1F1E1D1A1C1C20242E2720222C231C1C28"
+  "37292C30313434341F27393D38323C2E333432FFDB0043010909090C0B0C180D0D1832211C213232323232323232323232323232323232323232323232323232323232323232" str.concat
+  "323232323232323232323232323232323232FFC00011080004000603012100021101031101FFC4001500010100000000000000000000000000000005FFC4001A100002020300" str.concat
+  "000000000000000000000000010211032171FFC4001501010100000000000000000000000000000507FFC40017110100030000000000000000000000000001000211FFDA000C" str.concat
+  "03010002110311003F00892CB2BAD3EA014064AD5AA6CFFFD9" str.concat ;
+: fx.ycc6x4-fancy ( -- str )
+  "FD3238FD313AFA3139F72F3AF32E38EF2B37FD2D3AFD2D3AFC303CFC2F3EF9313EF93040F92436F92436F92639F7263BF7283CF7293EFB1F38FA1E37F71F37F61D38F21E37F1"
+  "1c38" str.concat ;
+: fx.ycc6x4-plain ( -- str )
+  "FD3238FD3238FA313BF82F39F22E3AEF2B37FD2D3AFD2D3AFC303CFC303CF93040F93040F92436F92436F92639F92639F6283DF7293EFB1F38FA1E37F71F37F61E36F21D39F1"
+  "1c38" str.concat ;
+# 5x5 4:4:0, -sample 1x2: h1v2 fancy, odd sizes. 303 bytes.
+: fx.ycc5x5 ( -- str )
+  "FFD8FFE000104A46494600010100000100010000FFDB004300080606070605080707070909080A0C140D0C0B0B0C1912130F141D1A1F1E1D1A1C1C20242E2720222C231C1C28"
+  "37292C30313434341F27393D38323C2E333432FFDB0043010909090C0B0C180D0D1832211C213232323232323232323232323232323232323232323232323232323232323232" str.concat
+  "323232323232323232323232323232323232FFC00011080005000503011200021101031101FFC4001500010100000000000000000000000000000005FFC40019100100030101" str.concat
+  "0000000000000000000000010003210211FFC4001501010100000000000000000000000000000507FFC400161101010100000000000000000000000000010002FFDA000C0301" str.concat
+  "0002110311003F008965BD08639EE910534D5DD05FFFD9" str.concat ;
+: fx.ycc5x5-fancy ( -- str )
+  "FF2E41FF2D43FF2E43FD2D43F62B3FFF2B3FFF2C42FF2E43FE2E44FC2E43F92436FB2638FB2839F8273AF5273BFA2132FB2434F92436F32031EE1D30FE2635FF2938FC2836F4"
+  "2130ed1d2d" str.concat ;
+: fx.ycc5x5-plain ( -- str )
+  "FF2E41FF2D43FF2E43FD2D43F62B3FFF2C3FFF2C42FF2E43FE2E44FA2F43FB2436FB2638FB2839F8273AF6273BF92234F92436F82536F12033ED1E32FF2533FF2936FE2736F5"
+  "212fef1c2b" str.concat ;
+
+test rows.decode : fx.ycc6x20 hex markers.open dup markers.walk fx.decode-all fx.ycc6x20-fancy hex eq -> 1
+test rows.decode : fx.ycc6x20 hex markers.open dup markers.walk fx.decode-plain fx.ycc6x20-plain hex eq -> 1
+test rows.decode : fx.ycc6x20 hex markers.open dup markers.walk fx.decode-all bytes.len -> 360
+test rows.decode : fx.ycc6x20-fancy hex fx.ycc6x20-plain hex eq -> 0
+test rows.decode : fx.ycc6x4 hex markers.open dup markers.walk fx.decode-all fx.ycc6x4-fancy hex eq -> 1
+test rows.decode : fx.ycc6x4 hex markers.open dup markers.walk fx.decode-plain fx.ycc6x4-plain hex eq -> 1
+test rows.decode : fx.ycc6x4 hex markers.open dup markers.walk fx.decode-all bytes.len -> 72
+test rows.decode : fx.ycc6x4-fancy hex fx.ycc6x4-plain hex eq -> 0
+test rows.decode : fx.ycc5x5 hex markers.open dup markers.walk fx.decode-all fx.ycc5x5-fancy hex eq -> 1
+test rows.decode : fx.ycc5x5 hex markers.open dup markers.walk fx.decode-plain fx.ycc5x5-plain hex eq -> 1
+test rows.decode : fx.ycc5x5 hex markers.open dup markers.walk fx.decode-all bytes.len -> 75
+test rows.decode : fx.ycc5x5-fancy hex fx.ycc5x5-plain hex eq -> 0

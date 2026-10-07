@@ -2,13 +2,15 @@
 decoded images with the oracle byte for byte.
 
 Usage: python3 tools/harness.py [--wack PATH] [--timeout SECONDS] [--jobs N]
+                                [--nosmooth]
                                 [--expect any|not-yet|refused:CODE|decoded] PATH...
 
 Each PATH is a file or a directory; directories are walked recursively and
 every regular file is a case, except names ending in .md or .txt.
 
 Protocol: the decoder runs as `wack run <FILES>` from the project root, with
-two lines on stdin: `/file<input>` and `/file<output>`, both absolute. The
+two lines on stdin, `/file<input>` and `/file<output>`, both absolute, and
+with --nosmooth a third, `nosmooth`, which selects plain upsampling. The
 output for a case is ../tmp/harness/out/<path from the project, '/' as
 '_'>.pnm; a stale one is deleted first. Outcomes are classified by text, not
 exit status:
@@ -20,9 +22,10 @@ exit status:
 - not-yet:  exit 0 and the last stdout line starts `NOT_YET` (the rest is
             the reason)
 - decoded:  the last stdout line is `DECODED` and the output file is
-            non-empty, and it is byte-identical to the oracle's
-            (`djpeg -dct int -nosmooth -pnm`, written beside it as
-            .oracle.pnm)
+            non-empty, and it is byte-identical to the oracle's, written
+            beside it as .oracle.pnm: `djpeg -dct int -pnm` (fancy
+            upsampling, the default), or `djpeg -dct int -nosmooth -pnm`
+            with --nosmooth
 - mismatch: decoded, but the oracle failed or its output differs (the note
             gives the first differing byte, row, column and component)
 - odd:      anything else, including an output file without DECODED
@@ -80,14 +83,14 @@ def cases(paths):
     return out
 
 
-def oracle(src, dst, timeout):
+def oracle(src, dst, timeout, nosmooth=False):
     """Decode src with djpeg into dst: (True, note) when it wrote an image
     (exit 0, or 2 for warnings), else (False, its first stderr line)."""
     if os.path.exists(dst):
         os.remove(dst)
     try:
         r = subprocess.run(
-            [DJPEG, "-dct", "int", "-nosmooth", "-pnm", "-outfile", dst, src],
+            [DJPEG, "-dct", "int", *(["-nosmooth"] if nosmooth else []), "-pnm", "-outfile", dst, src],
             capture_output=True,
             text=True,
             errors="replace",
@@ -121,7 +124,7 @@ def compare(ours, theirs):
     return note
 
 
-def run(wack, timeout, path):
+def run(wack, timeout, path, nosmooth=False):
     os.makedirs(OUT, exist_ok=True)
     out = os.path.join(OUT, os.path.relpath(path, ROOT).replace("/", "_") + ".pnm")
     if os.path.exists(out):
@@ -130,7 +133,7 @@ def run(wack, timeout, path):
         r = subprocess.run(
             [wack, "run", *FILES],
             cwd=ROOT,
-            input="/file" + path + "\n/file" + out + "\n",
+            input="/file" + path + "\n/file" + out + "\n" + ("nosmooth\n" if nosmooth else ""),
             capture_output=True,
             text=True,
             errors="replace",
@@ -151,7 +154,7 @@ def run(wack, timeout, path):
         return "not-yet", last[7:].strip() or "-", first
     if last == "DECODED" and wrote:
         theirs = out[: -len(".pnm")] + ".oracle.pnm"
-        ok, note = oracle(path, theirs, timeout)
+        ok, note = oracle(path, theirs, timeout, nosmooth)
         if not ok:
             return "mismatch", "-", "oracle failed: " + note
         diff = compare(out, theirs)
@@ -166,6 +169,7 @@ def main():
     ap.add_argument("--wack", default=os.path.join(ROOT, "..", "target", "release", "wack"))
     ap.add_argument("--timeout", type=float, default=20)
     ap.add_argument("--jobs", type=int, default=4)
+    ap.add_argument("--nosmooth", action="store_true")
     ap.add_argument("--expect", default="any")
     ap.add_argument("paths", nargs="+")
     a = ap.parse_args()
@@ -175,7 +179,7 @@ def main():
         sys.exit(f"harness: unknown --expect {a.expect}")
     files = cases(a.paths)
     with concurrent.futures.ThreadPoolExecutor(a.jobs) as pool:
-        results = list(pool.map(lambda f: run(a.wack, a.timeout, f), files))
+        results = list(pool.map(lambda f: run(a.wack, a.timeout, f, a.nosmooth), files))
 
     failed = 0
     groups = {}
