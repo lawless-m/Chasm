@@ -89,6 +89,34 @@ SOF10, ten scans, a DAC before each):
 - pamark   2: FF D0 inside scan 3's data; a DHT before scan 5's DAC
 - padri    1: a DRI with interval 3 before scan 2
 
+Then two 12-bit sources, after everything above with the same rng:
+corpus/primary/testorig12.jpg (stem testorig12, SOF1, P=12):
+
+- tprec    4: the precision byte set to 8 (djpeg decodes it as 8-bit), 16,
+             0, 13
+- tkind    4: the SOF1 marker changed to C0 (decodes the same), C2, C9, CA
+- tent     8: 1 to 4 random byte values inside the entropy data
+- tcut     4: the file cut inside the entropy data
+- tflip    6: 1 to 4 random byte flips anywhere
+- tdqt16   2: the first DQT rewritten as a 16-bit table (entries x 17,
+             capped at 65535; then every entry 0x0100)
+- tdqt0    1: the first DQT's first entry set to 0
+- tdri     2: a DRI (interval 1, then 7) before the SOS, no RST markers
+- tnoeoi   1: the EOI removed
+- tseglen  3: a random segment's length set to 0, FFFF, random
+- tsofdim  2: width 0; 16384 x 16384
+
+and corpus/synthetic/p12-prog-420.jpg (stem p12-prog-420, SOF2, P=12):
+
+- pprec    4: the precision byte set to 8, 16, 0, 13
+- pkind    3: SOF2 changed to C0, C1, CA
+- pent     6: random bytes in a later scan's data
+- pcut     4: the file cut inside a later scan's data
+- pdrop    2: scan 2 deleted; the last scan deleted
+- ptail    1: everything after scan 3 removed and FF D9 appended (an
+             incomplete, legal 12-bit progressive file that libjpeg smooths)
+- pdqt16   1: the first DQT rewritten as a 16-bit table (entries x 17)
+
 The harness expects every fuzz file to be refused with a code, to reach
 not-yet, or to decode byte-exact against the oracle; never to trap, hang or
 mismatch.
@@ -425,6 +453,112 @@ def arith_prog_mutants(d, rng):
     return out
 
 
+def dqt16(d, seg, f):
+    """The DQT segment seg rewritten with 16-bit entries f(x) (pq 1)."""
+    _, at, n = seg
+    body = d[at + 4 : at + 2 + n]
+    out, j = bytearray(), 0
+    while j < len(body):
+        pq, tq = body[j] >> 4, body[j] & 15
+        w = 2 if pq else 1
+        vals = [int.from_bytes(body[j + 1 + w * k : j + 1 + w * k + w], "big") for k in range(64)]
+        out += bytes([0x10 | tq]) + b"".join(min(65535, f(v)).to_bytes(2, "big") for v in vals)
+        j += 1 + 64 * w
+    return d[:at] + b"\xff\xdb" + (len(out) + 2).to_bytes(2, "big") + bytes(out) + d[at + 2 + n :]
+
+
+def twelve_mutants(d, rng):
+    segs = segments(d)
+    sof = first(segs, lambda m: m == 0xC1)
+    dqt = first(segs, lambda m: m == 0xDB)
+    sos = first(segs, lambda m: m == 0xDA)
+    start, end = sos[1] + 2 + sos[2], len(d) - 2
+    assert d[end:] == b"\xff\xd9"
+    out = []
+
+    def put(kind, b):
+        out.append((kind, bytes(b)))
+
+    for v in (8, 16, 0, 13):
+        b = bytearray(d)
+        b[sof[1] + 4] = v
+        put("tprec", b)
+    for m in (0xC0, 0xC2, 0xC9, 0xCA):
+        b = bytearray(d)
+        b[sof[1] + 1] = m
+        put("tkind", b)
+    for _ in range(8):
+        b = bytearray(d)
+        for _ in range(rng.randint(1, 4)):
+            b[rng.randrange(start, end)] = rng.randrange(256)
+        put("tent", b)
+    for _ in range(4):
+        put("tcut", d[: rng.randrange(start, end)])
+    for _ in range(6):
+        b = bytearray(d)
+        for _ in range(rng.randint(1, 4)):
+            b[rng.randrange(len(b))] ^= rng.randrange(1, 256)
+        put("tflip", b)
+    put("tdqt16", dqt16(d, dqt, lambda v: v * 17))
+    put("tdqt16", dqt16(d, dqt, lambda v: 0x0100))
+    b = bytearray(d)
+    b[dqt[1] + 5] = 0
+    put("tdqt0", b)
+    for v in (1, 7):
+        put("tdri", d[: sos[1]] + b"\xff\xdd\x00\x04" + v.to_bytes(2, "big") + d[sos[1] :])
+    put("tnoeoi", d[:-2])
+    for v in (0, 0xFFFF, rng.randrange(65536)):
+        b = bytearray(d)
+        s = rng.choice(segs)
+        b[s[1] + 2 : s[1] + 4] = v.to_bytes(2, "big")
+        put("tseglen", b)
+    o = sof[1] + 4
+    b = bytearray(d)
+    b[o + 3 : o + 5] = (0).to_bytes(2, "big")
+    put("tsofdim", b)
+    b = bytearray(d)
+    b[o + 1 : o + 5] = (16384).to_bytes(2, "big") * 2
+    put("tsofdim", b)
+    return out
+
+
+def twelve_prog_mutants(d, rng):
+    segs = segments(d)
+    sof = first(segs, lambda m: m == 0xC2)
+    dqt = first(segs, lambda m: m == 0xDB)
+    sc = scans(d)
+    n = len(sc)
+    assert n >= 4
+    out = []
+
+    def put(kind, b):
+        out.append((kind, bytes(b)))
+
+    for v in (8, 16, 0, 13):
+        b = bytearray(d)
+        b[sof[1] + 4] = v
+        put("pprec", b)
+    for m in (0xC0, 0xC1, 0xCA):
+        b = bytearray(d)
+        b[sof[1] + 1] = m
+        put("pkind", b)
+    for _ in range(6):
+        b = bytearray(d)
+        _, _, start, end = sc[rng.randint(1, n - 1)]
+        for _ in range(rng.randint(1, 4)):
+            b[rng.randrange(start, end)] = rng.randrange(256)
+        put("pent", b)
+    for _ in range(4):
+        _, _, start, end = sc[rng.randint(1, n - 1)]
+        put("pcut", d[: rng.randrange(start, end)])
+    for k in (1, n - 1):
+        s0, _, _, e = sc[k]
+        put("pdrop", d[:s0] + d[e:])
+    put("ptail", d[: sc[2][3]] + b"\xff\xd9")
+    put("pdqt16", dqt16(d, dqt, lambda v: v * 17))
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--seed", type=int, default=1)
@@ -452,7 +586,9 @@ def main():
             fh.write(b)
         total += 1
     for path, stem, fn in ((("corpus", "primary", "testimgari.jpg"), "testimgari", arith_mutants),
-                           (("corpus", "synthetic-m5", "a-full-s2x2-prog.jpg"), "a-full-s2x2-prog", arith_prog_mutants)):
+                           (("corpus", "synthetic-m5", "a-full-s2x2-prog.jpg"), "a-full-s2x2-prog", arith_prog_mutants),
+                           (("corpus", "primary", "testorig12.jpg"), "testorig12", twelve_mutants),
+                           (("corpus", "synthetic", "p12-prog-420.jpg"), "p12-prog-420", twelve_prog_mutants)):
         counts = {}
         for kind, b in fn(open(os.path.join(ROOT, *path), "rb").read(), rng):
             counts[kind] = counts.get(kind, 0) + 1

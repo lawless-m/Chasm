@@ -205,6 +205,118 @@ declare idct.block ( idct array i32 array i32 i32 bytes i32 i32 -- )
   ]
   times ;
 
+# The tables for 12-bit samples: idct.make's natural order and workspace
+# with the post-IDCT range-limit table of libjpeg's 12-bit build
+# (jdmaster.c prepare_range_limit_table with MAXJ12SAMPLE 4095 and
+# CENTERJ12SAMPLE 2048), indexed by x & 16383: x + 2048 for 0..2047, 4095
+# for 2048..8191, 0 for 8192..14335 and x - 14336 for 14336..16383.
+declare idct.make12 ( -- idct )
+test idct.make12 : idct.make12 idct.limit array.len -> 16384
+test idct.make12 : idct.make12 idct.limit 0 array.at -> 2048
+test idct.make12 : idct.make12 idct.limit 2047 array.at -> 4095
+test idct.make12 : idct.make12 idct.limit 2048 array.at -> 4095
+test idct.make12 : idct.make12 idct.limit 8191 array.at -> 4095
+test idct.make12 : idct.make12 idct.limit 8192 array.at -> 0
+test idct.make12 : idct.make12 idct.limit 14335 array.at -> 0
+test idct.make12 : idct.make12 idct.limit 14336 array.at -> 0
+test idct.make12 : idct.make12 idct.limit 16383 array.at -> 2047
+test idct.make12 : idct.make12 idct.natural 2 array.at -> 8
+
+# jpeg_idct_islow of libjpeg's 12-bit build into 12-bit samples (an array
+# i32 destination; otherwise the arguments of idct.block). jidctint.c keeps
+# CONST_BITS 13 but sets PASS1_BITS 1 ("lose a little precision to avoid
+# overflow"), so against idct.block: the pass-1 DC shortcut shifts left 1,
+# pass 1 descales by 12, the pass-2 DC shortcut by 4 and pass 2 by 17, and
+# RANGE_MASK is 16383. DEQUANTIZE's scaling_factor is 1 for a 12-bit JPEG.
+# The (int) wraps are the same as the 8-bit word's, and coefficient x quant
+# products of hostile input fit an int in both builds (16-bit by 16-bit).
+declare idct.block12 ( idct array i32 array i32 i32 array i32 i32 i32 -- )
+
+: idct.make12 ( -- idct )
+  idct.make :> t8
+  16384 array.new ( array i32 ) :> lim12
+  16384
+  [
+    :> j
+    lim12 j
+    j 2048 i32.lt_s
+    [ j 2048 i32.add ]
+    [ j 8192 i32.lt_s [ 4095 ] [ j 14336 i32.lt_s [ 0 ] [ j 14336 i32.sub ] if ] if ]
+    if
+    array.at!
+  ]
+  times
+  t8 idct.natural lim12 t8 idct.ws idct.new ;
+
+: idct.block12 ( idct array i32 array i32 i32 array i32 i32 i32 -- )
+  :> stride :> off :> dst :> qoff :> quant :> coef :> t
+  t idct.ws :> ws
+  t idct.limit :> lim
+  # Pass 1: columns, into the workspace.
+  8
+  [
+    :> c
+    coef 8 c i32.add array.at  coef 16 c i32.add array.at  i32.or
+    coef 24 c i32.add array.at i32.or  coef 32 c i32.add array.at i32.or
+    coef 40 c i32.add array.at i32.or  coef 48 c i32.add array.at i32.or
+    coef 56 c i32.add array.at i32.or
+    i32.eqz
+    [
+      coef c array.at  quant qoff c i32.add array.at  i32.mul 1 i32.shl :> dc
+      8 [ :> r0  ws  r0 8 i32.mul c i32.add  dc  array.at! ] times
+    ]
+    [
+      coef quant qoff c idct.dq  coef quant qoff c 8 i32.add idct.dq
+      coef quant qoff c 16 i32.add idct.dq  coef quant qoff c 24 i32.add idct.dq
+      coef quant qoff c 32 i32.add idct.dq  coef quant qoff c 40 i32.add idct.dq
+      coef quant qoff c 48 i32.add idct.dq  coef quant qoff c 56 i32.add idct.dq
+      idct.1d
+      :> p7 :> p6 :> p5 :> p4 :> p3 :> p2 :> p1 :> p0
+      ws c p0 12 idct.descale array.at!
+      ws c 8 i32.add p1 12 idct.descale array.at!
+      ws c 16 i32.add p2 12 idct.descale array.at!
+      ws c 24 i32.add p3 12 idct.descale array.at!
+      ws c 32 i32.add p4 12 idct.descale array.at!
+      ws c 40 i32.add p5 12 idct.descale array.at!
+      ws c 48 i32.add p6 12 idct.descale array.at!
+      ws c 56 i32.add p7 12 idct.descale array.at!
+    ]
+    if
+  ]
+  times
+  # Pass 2: rows, through the range-limit table into the destination.
+  8
+  [
+    :> r
+    r 8 i32.mul :> b
+    ws b 1 i32.add array.at  ws b 2 i32.add array.at  i32.or
+    ws b 3 i32.add array.at i32.or  ws b 4 i32.add array.at i32.or
+    ws b 5 i32.add array.at i32.or  ws b 6 i32.add array.at i32.or
+    ws b 7 i32.add array.at i32.or
+    off r stride i32.mul i32.add :> row
+    i32.eqz
+    [
+      lim  ws b array.at i64 4 idct.descale 16383 i32.and  array.at :> v
+      8 [ :> x0  dst row x0 i32.add v array.at! ] times
+    ]
+    [
+      ws b array.at i64  ws b 1 i32.add array.at i64  ws b 2 i32.add array.at i64  ws b 3 i32.add array.at i64
+      ws b 4 i32.add array.at i64  ws b 5 i32.add array.at i64  ws b 6 i32.add array.at i64  ws b 7 i32.add array.at i64
+      idct.1d
+      :> q7 :> q6 :> q5 :> q4 :> q3 :> q2 :> q1 :> q0
+      dst row  lim q0 17 idct.descale 16383 i32.and array.at  array.at!
+      dst row 1 i32.add  lim q1 17 idct.descale 16383 i32.and array.at  array.at!
+      dst row 2 i32.add  lim q2 17 idct.descale 16383 i32.and array.at  array.at!
+      dst row 3 i32.add  lim q3 17 idct.descale 16383 i32.and array.at  array.at!
+      dst row 4 i32.add  lim q4 17 idct.descale 16383 i32.and array.at  array.at!
+      dst row 5 i32.add  lim q5 17 idct.descale 16383 i32.and array.at  array.at!
+      dst row 6 i32.add  lim q6 17 idct.descale 16383 i32.and array.at  array.at!
+      dst row 7 i32.add  lim q7 17 idct.descale 16383 i32.and array.at  array.at!
+    ]
+    if
+  ]
+  times ;
+
 # Test fixtures: blocks and a runner (qoff 0, a 64-byte destination with
 # stride 8).
 : fx.zeros ( -- array i32 )  64 array.new ( array i32 ) ;
@@ -291,3 +403,79 @@ test idct.block : fx.placed 128 bytes.at -> 0
 test idct.block : fx.placed 15 bytes.at -> 129
 test idct.block : fx.placed 16 bytes.at -> 0
 test idct.block : fx.qoff 0 bytes.at -> 129
+
+# Test fixtures for the 12-bit IDCT: a runner into a fresh 64-entry array
+# (qoff 0, stride 8); a DC-only block; the 8-bit fixtures' blocks at 12
+# bits. Expected values from tmp/m6/ref12.py --vectors (validated against
+# djpeg).
+: fx.run12 ( array i32 array i32 -- array i32 )
+  :> q :> c
+  64 array.new ( array i32 ) :> d
+  idct.make12 c q 0 d 0 8 idct.block12
+  d ;
+: fx.dc12 ( i32 -- array i32 )
+  :> v
+  fx.zeros :> c
+  c 0 v array.at!
+  c fx.ones fx.run12 ;
+: fx.ac1-12 ( -- array i32 )
+  fx.zeros :> c
+  c 1 100 array.at!
+  c fx.ones fx.run12 ;
+: fx.big12 ( -- array i32 )
+  fx.zeros :> c
+  c 0 2047 array.at!  c 1 2047 array.at!
+  64 array.new ( array i32 ) :> q
+  64 [ :> i  q i 65535 array.at! ] times
+  c q fx.run12 ;
+: fx.placed12 ( -- array i32 )
+  fx.zeros :> c
+  c 0 8 array.at!
+  256 array.new ( array i32 ) :> d
+  idct.make12 c fx.ones 0 d 8 16 idct.block12
+  d ;
+: fx.qoff12 ( -- array i32 )
+  fx.zeros :> c
+  c 0 8 array.at!
+  128 array.new ( array i32 ) :> q
+  64 [ :> i  q i 64 i32.add 1 array.at! ] times
+  64 array.new ( array i32 ) :> d
+  idct.make12 c q 64 d 0 8 idct.block12
+  d ;
+
+test idct.block12 : 0 fx.dc12 0 array.at -> 2048
+test idct.block12 : 0 fx.dc12 63 array.at -> 2048
+test idct.block12 : 8 fx.dc12 0 array.at -> 2049
+test idct.block12 : 8 fx.dc12 63 array.at -> 2049
+test idct.block12 : -8 fx.dc12 5 array.at -> 2047
+test idct.block12 : 16376 fx.dc12 0 array.at -> 4095
+test idct.block12 : 16384 fx.dc12 0 array.at -> 4095
+test idct.block12 : -16384 fx.dc12 0 array.at -> 0
+test idct.block12 : 32767 fx.dc12 0 array.at -> 4095
+test idct.block12 : fx.full fx.ones fx.run12 0 array.at -> 2046
+test idct.block12 : fx.full fx.ones fx.run12 1 array.at -> 2044
+test idct.block12 : fx.full fx.ones fx.run12 7 array.at -> 2034
+test idct.block12 : fx.full fx.ones fx.run12 8 array.at -> 2047
+test idct.block12 : fx.full fx.ones fx.run12 27 array.at -> 2044
+test idct.block12 : fx.full fx.ones fx.run12 36 array.at -> 2043
+test idct.block12 : fx.full fx.ones fx.run12 56 array.at -> 2051
+test idct.block12 : fx.full fx.ones fx.run12 63 array.at -> 2043
+test idct.block12 : fx.full fx.ready 0 idct.quant fx.run12 0 array.at -> 2001
+test idct.block12 : fx.full fx.ready 0 idct.quant fx.run12 3 array.at -> 1894
+test idct.block12 : fx.full fx.ready 0 idct.quant fx.run12 9 array.at -> 2015
+test idct.block12 : fx.full fx.ready 0 idct.quant fx.run12 25 array.at -> 2074
+test idct.block12 : fx.full fx.ready 0 idct.quant fx.run12 32 array.at -> 2077
+test idct.block12 : fx.full fx.ready 0 idct.quant fx.run12 63 array.at -> 1970
+test idct.block12 : fx.ac1-12 0 array.at -> 2065
+test idct.block12 : fx.ac1-12 7 array.at -> 2031
+test idct.block12 : fx.ac1-12 57 array.at -> 2063
+test idct.block12 : fx.big12 0 array.at -> 4095
+test idct.block12 : fx.big12 1 array.at -> 2098
+test idct.block12 : fx.big12 4 array.at -> 4095
+test idct.block12 : fx.placed12 8 array.at -> 2049
+test idct.block12 : fx.placed12 0 array.at -> 0
+test idct.block12 : fx.placed12 127 array.at -> 2049
+test idct.block12 : fx.placed12 128 array.at -> 0
+test idct.block12 : fx.placed12 15 array.at -> 2049
+test idct.block12 : fx.placed12 16 array.at -> 0
+test idct.block12 : fx.qoff12 0 array.at -> 2049

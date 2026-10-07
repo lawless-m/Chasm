@@ -27,7 +27,8 @@ exit status:
             upsampling, the default), or `djpeg -dct int -nosmooth -pnm`
             with --nosmooth
 - mismatch: decoded, but the oracle failed or its output differs (the note
-            gives the first differing byte, row, column and component)
+            gives the first differing byte, row, column and component, and for
+            two-byte samples which byte)
 - odd:      anything else, including an output file without DECODED
 
 The exit status is non-zero if any case is trap, hang, odd or mismatch; with
@@ -116,14 +117,26 @@ def compare(ours, theirs):
     if len(a) != len(b):
         return f"size {len(a)} vs {len(b)}"
     k = next(i for i in range(len(a)) if a[i] != b[i])
-    fields = b.split(maxsplit=4)
-    head = len(b) - len(fields[4]) if len(fields) == 5 else 0
+    fields, head = [], 0
+    while len(fields) < 4 and head < len(b):
+        while head < len(b) and b[head : head + 1].isspace():
+            head += 1
+        end = head
+        while end < len(b) and not b[end : end + 1].isspace():
+            end += 1
+        fields.append(b[head:end])
+        head = end
+    head += 1  # one whitespace byte ends the header; samples may start with 0A or 20
     note = f"byte {k}"
-    if len(fields) == 5 and k >= head:
+    if len(fields) == 4 and k >= head:
         ncomp = 1 if fields[0] == b"P5" else 3
         width = int(fields[1])
-        pix = (k - head) // ncomp
-        note += f" row {pix // width} col {pix % width} comp {(k - head) % ncomp}"
+        bps = 2 if int(fields[3]) > 255 else 1
+        sample = (k - head) // bps
+        pix = sample // ncomp
+        note += f" row {pix // width} col {pix % width} comp {sample % ncomp}"
+        if bps == 2:
+            note += " (high byte)" if (k - head) % 2 == 0 else " (low byte)"
     return note
 
 

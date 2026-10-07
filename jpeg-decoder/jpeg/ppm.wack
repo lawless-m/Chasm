@@ -1,36 +1,40 @@
 # The PGM/PPM writer, row-streamed, as djpeg's wrppm.c writes it: a P5 (one
-# component) or P6 (three) header with maxval 255, then raw samples row by
-# row. ppm.row is the only consumer of decoded rows today: the row sink. A
+# component) or P6 (three) header with maxval (1 << precision) - 1, 255 or
+# 4095, then raw samples row by row (two big-endian bytes a sample at 12
+# bits, written so by the row producer). ppm.row is the only consumer of decoded rows today: the row sink. A
 # future encoder is the second.
 #
 # Failures here are plain traps, deliberately not refusals: the output path
 # is the host's business, not the input's.
 
-declare ppm.header ( i32 i32 i32 -- str )
-test ppm.header : 1 1 1 ppm.header -> "P5\n1 1\n255\n"
-test ppm.header : 227 149 3 ppm.header -> "P6\n227 149\n255\n"
-test ppm.header : 800 280 1 ppm.header str.len -> 15
-test ppm.header : 16384 16384 3 ppm.header -> "P6\n16384 16384\n255\n"
+declare ppm.header ( i32 i32 i32 i32 -- str )
+test ppm.header : 1 1 1 8 ppm.header -> "P5\n1 1\n255\n"
+test ppm.header : 227 149 3 8 ppm.header -> "P6\n227 149\n255\n"
+test ppm.header : 800 280 1 8 ppm.header str.len -> 15
+test ppm.header : 16384 16384 3 8 ppm.header -> "P6\n16384 16384\n255\n"
+test ppm.header : 1 1 1 12 ppm.header -> "P5\n1 1\n4095\n"
+test ppm.header : 227 149 3 12 ppm.header -> "P6\n227 149\n4095\n"
 
-# Path, width, height, ncomp: the handle, with the header written.
-declare ppm.open ( str i32 i32 i32 -- i32 )
-test ppm.open : "/nonexistent-dir-for-ppm-test/x.pgm" 1 1 1 ppm.open -> trap
+# Path, width, height, ncomp, precision: the handle, with the header written.
+declare ppm.open ( str i32 i32 i32 i32 -- i32 )
+test ppm.open : "/nonexistent-dir-for-ppm-test/x.pgm" 1 1 1 8 ppm.open -> trap
 
 # One output row of width x ncomp samples. The caller reuses the buffer
 # after each call, which bytes.as-str allows: the write completes before the
 # next row is built.
 declare ppm.row ( i32 bytes -- )
 
-: ppm.header ( i32 i32 i32 -- str )
-  :> n :> ht :> wd
+: ppm.header ( i32 i32 i32 i32 -- str )
+  :> prec :> n :> ht :> wd
   n 1 i32.eq [ "P5\n" ] [ "P6\n" ] if
-  wd i32.to-str str.concat " " str.concat ht i32.to-str str.concat "\n255\n" str.concat ;
+  wd i32.to-str str.concat " " str.concat ht i32.to-str str.concat "\n" str.concat
+  1 prec i32.shl 1 i32.sub i32.to-str str.concat "\n" str.concat ;
 
-: ppm.open ( str i32 i32 i32 -- i32 )
-  :> n :> ht :> wd :> path
+: ppm.open ( str i32 i32 i32 i32 -- i32 )
+  :> prec :> n :> ht :> wd :> path
   path host.OWRITE host.open :> h
   h 0 i32.lt_s [ "cannot open output" trap ] when
-  wd ht n ppm.header :> head
+  wd ht n prec ppm.header :> head
   h head host.write head str.len i32.ne [ "short write" trap ] when
   h ;
 

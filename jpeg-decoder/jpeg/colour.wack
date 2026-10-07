@@ -53,6 +53,21 @@ declare colour.space ( jpeg -- i32 )
 # row and the width.
 declare colour.row ( colour i32 bytes i32 i32 bytes i32 -- )
 
+# The 12-bit counterparts of the words above (libjpeg's 12-bit build of
+# jdcolor.c: build_ycc_rgb_table with _MAXJSAMPLE 4095 and _CENTERJSAMPLE
+# 2048). They are separate words because a 12-bit frame's upsampled samples
+# are an array i32, its output row holds two big-endian bytes a sample and
+# its tables have 4096 entries; the 8-bit words keep their bytes and their
+# speed.
+declare colour.make12 ( -- colour )
+declare colour.clamp12 ( i32 -- i32 )
+declare colour.ycc12 ( colour i32 i32 i32 -- i32 i32 i32 )
+
+# As colour.row, from an array i32 of 12-bit samples into an output row of
+# width x ncomp x 2 bytes, each sample high byte first (wrppm.c's
+# PUTPPMSAMPLE for maxval 4095).
+declare colour.row12 ( colour i32 array i32 i32 i32 bytes i32 -- )
+
 : colour.make ( -- colour )
   256 array.new ( array i32 ) :> crr
   256 array.new ( array i32 ) :> cbb
@@ -200,3 +215,126 @@ test colour.row : 0 "01020304" 2 1 2 fx.row 1 bytes.at -> 4
 test colour.row : 1 "80 80 80 80 80 80 80 80 80 80 80 80" 2 1 2 fx.row 5 bytes.at -> 128
 test colour.row : 2 "0102 0304 0506" 1 0 2 fx.row 4 bytes.at -> 4
 test colour.row : 2 "0102 0304 0506" 1 0 2 fx.row 5 bytes.at -> 6
+
+: colour.make12 ( -- colour )
+  4096 array.new ( array i32 ) :> crr
+  4096 array.new ( array i32 ) :> cbb
+  4096 array.new ( array i32 ) :> crg
+  4096 array.new ( array i32 ) :> cbg
+  4096
+  [
+    :> i
+    i 2048 i32.sub :> x
+    crr i  91881 x i32.mul 32768 i32.add 16 i32.shr_s  array.at!
+    cbb i  116130 x i32.mul 32768 i32.add 16 i32.shr_s  array.at!
+    crg i  -46802 x i32.mul  array.at!
+    cbg i  -22554 x i32.mul 32768 i32.add  array.at!
+  ]
+  times
+  crr cbb crg cbg colour.new ;
+
+: colour.clamp12 ( i32 -- i32 )
+  dup 0 i32.lt_s [ drop 0 ] [ dup 4095 i32.gt_s [ drop 4095 ] when ] if ;
+
+: colour.ycc12 ( colour i32 i32 i32 -- i32 i32 i32 )
+  :> cr :> cb :> y :> t
+  y  t colour.cr-r cr array.at  i32.add colour.clamp12
+  y  t colour.cb-g cb array.at  t colour.cr-g cr array.at  i32.add 16 i32.shr_s  i32.add colour.clamp12
+  y  t colour.cb-b cb array.at  i32.add colour.clamp12 ;
+
+# One 12-bit sample into the output row at byte o, high byte first.
+: colour.put12 ( bytes i32 i32 -- )
+  :> v :> o :> out
+  out o  v 8 i32.shr_u  bytes.at!
+  out o 1 i32.add  v 255 i32.and  bytes.at! ;
+
+: colour.row12 ( colour i32 array i32 i32 i32 bytes i32 -- )
+  :> width :> out :> r :> rows :> ups :> space :> t
+  rows width i32.mul :> block
+  r width i32.mul :> at
+  space 0 i32.eq
+  [ width [ :> x0  out  x0 2 i32.mul  ups at x0 i32.add array.at  colour.put12 ] times ]
+  [
+    space 1 i32.eq
+    [
+      width
+      [
+        :> x1
+        at x1 i32.add :> p
+        t  ups p array.at  ups block p i32.add array.at  ups block 2 i32.mul p i32.add array.at  colour.ycc12
+        :> bl :> gr :> rd
+        x1 6 i32.mul :> o
+        out o rd colour.put12
+        out o 2 i32.add gr colour.put12
+        out o 4 i32.add bl colour.put12
+      ]
+      times
+    ]
+    [
+      width
+      [
+        :> x2
+        at x2 i32.add :> q
+        x2 6 i32.mul :> o2
+        out o2  ups q array.at  colour.put12
+        out o2 2 i32.add  ups block q i32.add array.at  colour.put12
+        out o2 4 i32.add  ups block 2 i32.mul q i32.add array.at  colour.put12
+      ]
+      times
+    ]
+    if
+  ]
+  if ;
+
+# Test fixture: space, a hex string of 16-bit big-endian samples (the
+# upsampled buffer), rows, r and width: one 12-bit output row.
+: fx.row12 ( i32 str i32 i32 i32 -- bytes )
+  :> w :> r :> rows :> h :> space
+  h hex :> b
+  b bytes.len 2 i32.div_u :> n
+  n array.new ( array i32 ) :> ups
+  n [ :> i  ups i  b i 2 i32.mul bytes.at 8 i32.shl  b i 2 i32.mul 1 i32.add bytes.at  i32.or  array.at! ] times
+  space [ 3 ] [ 1 ] if w i32.mul 2 i32.mul bytes.new :> out
+  colour.make12 space ups rows r out w colour.row12
+  out ;
+
+test colour.make12 : colour.make12 colour.cr-r array.len -> 4096
+test colour.make12 : colour.make12 colour.cr-r 0 array.at -> -2871
+test colour.make12 : colour.make12 colour.cr-r 2048 array.at -> 0
+test colour.make12 : colour.make12 colour.cr-r 4095 array.at -> 2870
+test colour.make12 : colour.make12 colour.cb-b 0 array.at -> -3629
+test colour.make12 : colour.make12 colour.cb-b 4095 array.at -> 3627
+test colour.make12 : colour.make12 colour.cr-g 0 array.at -> 95850496
+test colour.make12 : colour.make12 colour.cr-g 4095 array.at -> -95803694
+test colour.make12 : colour.make12 colour.cb-g 2048 array.at -> 32768
+test colour.make12 : colour.make12 colour.cb-g 0 array.at -> 46223360
+test colour.clamp12 : -5 colour.clamp12 -> 0
+test colour.clamp12 : 5000 colour.clamp12 -> 4095
+test colour.clamp12 : 777 colour.clamp12 -> 777
+test colour.ycc12 : colour.make12 2048 2048 2048 colour.ycc12 -> 2048 2048 2048
+test colour.ycc12 : colour.make12 4095 0 0 colour.ycc12 -> 1224 4095 466
+test colour.ycc12 : colour.make12 0 4095 4095 colour.ycc12 -> 2870 0 3627
+test colour.ycc12 : colour.make12 0 0 0 colour.ycc12 -> 0 2167 0
+test colour.ycc12 : colour.make12 4095 4095 4095 colour.ycc12 -> 4095 1929 4095
+test colour.ycc12 : colour.make12 1600 800 3200 colour.ycc12 -> 3215 1207 0
+test colour.ycc12 : colour.make12 2000 1300 2048 colour.ycc12 -> 2000 2257 675
+test colour.ycc12 : colour.make12 256 2048 2048 colour.ycc12 -> 256 256 256
+test colour.row12 : 0 "0FFF" 1 0 1 fx.row12 0 bytes.at -> 15
+test colour.row12 : 0 "0FFF" 1 0 1 fx.row12 1 bytes.at -> 255
+test colour.row12 : 0 "0000" 1 0 1 fx.row12 bytes.len -> 2
+test colour.row12 : 0 "0000" 1 0 1 fx.row12 0 bytes.at -> 0
+test colour.row12 : 1 "0800 0800 0800" 1 0 1 fx.row12 0 bytes.at -> 8
+test colour.row12 : 1 "0800 0800 0800" 1 0 1 fx.row12 1 bytes.at -> 0
+test colour.row12 : 1 "0800 0800 0800" 1 0 1 fx.row12 4 bytes.at -> 8
+test colour.row12 : 1 "0800 0800 0800" 1 0 1 fx.row12 5 bytes.at -> 0
+test colour.row12 : 1 "0FFF 0000 0000" 1 0 1 fx.row12 0 bytes.at -> 4
+test colour.row12 : 1 "0FFF 0000 0000" 1 0 1 fx.row12 1 bytes.at -> 200
+test colour.row12 : 1 "0FFF 0000 0000" 1 0 1 fx.row12 2 bytes.at -> 15
+test colour.row12 : 1 "0FFF 0000 0000" 1 0 1 fx.row12 3 bytes.at -> 255
+test colour.row12 : 1 "0FFF 0000 0000" 1 0 1 fx.row12 4 bytes.at -> 1
+test colour.row12 : 1 "0FFF 0000 0000" 1 0 1 fx.row12 5 bytes.at -> 210
+test colour.row12 : 2 "0102 0304 0506" 1 0 1 fx.row12 0 bytes.at -> 1
+test colour.row12 : 2 "0102 0304 0506" 1 0 1 fx.row12 3 bytes.at -> 4
+test colour.row12 : 2 "0102 0304 0506" 1 0 1 fx.row12 5 bytes.at -> 6
+test colour.row12 : 0 "0001 0002 0003 0004" 2 1 2 fx.row12 1 bytes.at -> 3
+test colour.row12 : 0 "0001 0002 0003 0004" 2 1 2 fx.row12 3 bytes.at -> 4

@@ -5,13 +5,14 @@
 # plain replication of subsampled components, as `djpeg -nosmooth`; anything
 # else, or no third line, selects fancy (triangle) upsampling, as default
 # djpeg. stdout gets `FRAME width height ncomp kind`, then either `DECODED`,
-# with the P5 or P6 image written to the output path, or, for input the
-# decoder does not handle yet, `NOT_YET <reason>` (12-bit or 4-component)
-# with no output file; the exit status is 0. A
-# refusal is a trap `REFUSED CODE: message` on stderr with exit status 1; any
-# other trap is a decoder bug. The output is opened before decoding, so a
-# refusal mid-scan can leave a partial file: the harness ignores it, and the
-# service deletes the request directory.
+# with the P5 or P6 image written to the output path (maxval 255 or, for a
+# 12-bit frame, 4095 with two big-endian bytes a sample, as djpeg writes it),
+# or, for input the decoder does not handle yet, `NOT_YET <reason>`
+# (4-component) with no output file; the exit status is 0. A refusal is a
+# trap `REFUSED CODE: message` on stderr with exit status 1; any other trap
+# is a decoder bug. The output is opened before decoding, so a refusal
+# mid-scan can leave a partial file: the harness ignores it, and the service
+# deletes the request directory.
 
 : main ( -- )
   read-line drop :> inp
@@ -26,7 +27,7 @@
   [ "NOT_YET " why str.concat println ]
   [
     j tabs  mode "nosmooth" str.eq i32.eqz  rows.setup :> d
-    outp d decoder.width d decoder.height d decoder.ncomp ppm.open :> h
+    outp d decoder.width d decoder.height d decoder.ncomp d decoder.f frame.precision ppm.open :> h
     d [ ( bytes -- ) h swap ppm.row ] rows.decode
     h host.close drop
     "DECODED" println
