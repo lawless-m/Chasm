@@ -1164,6 +1164,9 @@ struct Walker<'c> {
     resume_local: u32,
     entry_stack: Vec<ValType>,
     sites: Vec<Site>,
+    /// The quotation values made by this body, with where each is written:
+    /// an ambiguous type left on the stack is blamed on one of them.
+    quotes: Vec<(Ty, Location)>,
 }
 
 /// An arm of `match` or `alt` walked into its own buffer: how it ends, the
@@ -1238,7 +1241,28 @@ impl<'c> Walker<'c> {
             resume_local: 0,
             entry_stack: Vec::new(),
             sites: Vec::new(),
+            quotes: Vec::new(),
         }
+    }
+
+    /// `E_AMBIGUOUS_TYPE` for a type left on the stack: at the quotation
+    /// value whose type is not known, if there is one, else at the body.
+    fn ambiguous_output(&self, t: &Ty, loc: &Location) -> Diagnostic {
+        for (q, at) in &self.quotes {
+            let q = self.subst.resolve(q);
+            if q.has_var() {
+                return Diagnostic::error(
+                    codes::E_AMBIGUOUS_TYPE,
+                    format!("the type `{q}` of this quotation is not fully known; write its effect directly after `[`, e.g. `[ ( i32 -- i32 ) ... ]`"),
+                    at.clone(),
+                );
+            }
+        }
+        Diagnostic::error(
+            codes::E_AMBIGUOUS_TYPE,
+            format!("the type `{t}` left by this code is not fully known; add a stack assertion"),
+            loc.clone(),
+        )
     }
 
     fn run(&mut self, mode: &Mode<'_>, body: &Body, loc: &Location) -> Result<Effect, Diagnostic> {
@@ -1565,11 +1589,7 @@ impl<'c> Walker<'c> {
                     Vec::new()
                 };
                 if let Some(t) = outputs.iter().find(|t| t.has_var()) {
-                    return Err(Diagnostic::error(
-                        codes::E_AMBIGUOUS_TYPE,
-                        format!("the type `{t}` left by this code is not fully known; add a stack assertion"),
-                        loc.clone(),
-                    ));
+                    return Err(self.ambiguous_output(t, loc));
                 }
                 Ok(Effect::new(Vec::new(), outputs))
             }
@@ -1580,11 +1600,7 @@ impl<'c> Walker<'c> {
                     Vec::new()
                 };
                 if let Some(t) = outputs.iter().find(|t| t.has_var()) {
-                    return Err(Diagnostic::error(
-                        codes::E_AMBIGUOUS_TYPE,
-                        format!("the type `{t}` left by this code is not fully known; add a stack assertion"),
-                        loc.clone(),
-                    ));
+                    return Err(self.ambiguous_output(t, loc));
                 }
                 if flow == Flow::Normal {
                     self.line_epilogue(line_base.unwrap(), &outputs);
@@ -2733,6 +2749,7 @@ impl<'c> Walker<'c> {
                     None => self.infer_quote(&qname, body, loc, &visible)?,
                 };
                 let ty = Ty::Quot(Box::new(effect.clone()));
+                self.quotes.push((ty.clone(), loc.clone()));
                 if self.emit {
                     let resolved = self.subst.resolve(&ty);
                     if resolved.has_var() {

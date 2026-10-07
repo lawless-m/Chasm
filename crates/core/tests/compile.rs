@@ -86,6 +86,20 @@ test ap : 3 [ dup ] ap -> 3 3
 "#);
     assert_eq!(err(": amb ( -- ) [ dup ] drop ;"), "E_AMBIGUOUS_TYPE");
     assert_eq!(err(": f ( -- ) 3 [ ( i32 -- ) drop ] times ;"), "E_SYNTAX");
+    // A quotation left on the stack whose type is not known (a missing
+    // `if`) is reported at the quotation, not at the start of the body.
+    let c = compile(
+        &[Source::new("t.wack", "test i32.add : 1 [ drop 3 ] -> 3\n")],
+        &Options::default(),
+    );
+    let d = &c.diagnostics[0];
+    assert_eq!(d.code, "E_AMBIGUOUS_TYPE");
+    assert_eq!(
+        (d.location.line, d.location.column),
+        (1, 18),
+        "{}",
+        d.render()
+    );
 }
 
 #[test]
