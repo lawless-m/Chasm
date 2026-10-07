@@ -10,8 +10,9 @@
 # big-endian bytes a sample for a 12-bit frame; the exit status is 0. A
 # refusal is a trap `REFUSED CODE: message` on stderr with exit status 1; any
 # other trap is a decoder bug. The output is opened before decoding, so a
-# refusal mid-scan can leave a partial file: the harness ignores it, and the
-# service deletes the request directory.
+# refusal mid-scan can leave a partial file holding the rows flushed so far,
+# in whole 1 MiB buffers: the harness ignores it, and the service deletes the
+# request directory.
 
 : main ( -- )
   read-line drop :> inp
@@ -22,7 +23,7 @@
   j huffman.scan-tables :> tabs
   j markers.frame-line println
   j tabs  mode "nosmooth" str.eq i32.eqz  rows.setup :> d
-  outp d decoder.width d decoder.height d decoder.ncomp d decoder.f frame.precision ppm.open :> h
-  d [ ( bytes -- ) h swap ppm.row ] rows.decode
-  h host.close drop
+  outp d decoder.width d decoder.height d decoder.ncomp d decoder.f frame.precision ppm.open :> p
+  d [ ( bytes -- ) p swap ppm.row ] rows.decode
+  p ppm.close
   "DECODED" println ;

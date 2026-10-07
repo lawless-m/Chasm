@@ -96,3 +96,21 @@ it carries. An io_uring backend is not built (`ARCHITECTURE.md` section 18):
 a Whackford host word submits one entry and waits for it, so there is nothing to
 batch.
 
+
+### 2026-10-08
+
+commit a7b0c33; rustc 1.99.0 (b940084d7 2026-09-28); node v22.23.3; AMD Ryzen 5 5500; median of 5 runs.
+
+| Task | Whackford ms | Rust ms | JS ms | Whackford / Rust | Whackford / JS |
+|---|---:|---:|---:|---:|---:|
+| sieve | 96.7 | 86.2 | 189.5 | 1.12 | 0.51 |
+| mandelbrot | 115.9 | 106.7 | 111.5 | 1.09 | 1.04 |
+| n-queens | 105.8 | 80.0 | 104.4 | 1.32 | 1.01 |
+| quicksort | 69.6 | 56.3 | 121.4 | 1.24 | 0.57 |
+
+The record above was taken with the native engine's `compiler_inlining`
+on (`ARCHITECTURE.md` section 28 item 3), in the working tree after commit
+a7b0c33. The same run without it gave sieve 99.6 ms, mandelbrot 115.4 ms,
+n-queens 109.2 ms and quicksort 92.3 ms. The JPEG decoder's 12-megapixel
+baseline decode goes from 0.95 s to 0.50 s and its arithmetic decode from
+1.54 s to 0.75 s, every output byte-identical.

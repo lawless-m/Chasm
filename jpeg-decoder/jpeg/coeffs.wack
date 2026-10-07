@@ -8,16 +8,17 @@
 # bytes, little-endian, a 16-bit JCOEF; the store starts zeroed, as libjpeg's
 # pre-zeroed arrays. frame.need counts exactly data's size. Every index
 # derives from header geometry, never from the data, so an out-of-range
-# index is a decoder bug and traps in bytes.at.
+# index is a decoder bug and traps in bytes.u16-at.
 
 struct coeffs  data: bytes  base: array i32  bwp: array i32  ncomp: i32
 
 # The frame and a flag: 1 allocates the store, 0 leaves it empty (a
 # single-scan file streams and needs none, but the decoder holds a coeffs).
 declare coeffs.make ( frame i32 -- coeffs )
-# Coefficient index i: its signed 16-bit value.
+# Coefficient index i: its signed 16-bit value, one 16-bit read.
 declare coeffs.get ( coeffs i32 -- i32 )
-# Index, value: the low 16 bits are stored, as libjpeg's (JCOEF) cast.
+# Index, value: the low 16 bits are stored (bytes.u16-at! keeps them), as
+# libjpeg's (JCOEF) cast.
 declare coeffs.set ( coeffs i32 i32 -- )
 # ci, block column, absolute block row in the padded grid: the index of the
 # block's first coefficient.
@@ -50,13 +51,12 @@ declare coeffs.put-block ( coeffs i32 array i32 -- )
 : coeffs.get ( coeffs i32 -- i32 )
   :> i :> s
   s coeffs.data :> d
-  d i 2 i32.mul bytes.at  d i 2 i32.mul 1 i32.add bytes.at 8 i32.shl  i32.or i32.extend16_s ;
+  d i 2 i32.mul bytes.u16-at i32.extend16_s ;
 
 : coeffs.set ( coeffs i32 i32 -- )
   :> v :> i :> s
   s coeffs.data :> d
-  d i 2 i32.mul  v 255 i32.and  bytes.at!
-  d i 2 i32.mul 1 i32.add  v 8 i32.shr_s 255 i32.and  bytes.at! ;
+  d i 2 i32.mul v bytes.u16-at! ;
 
 : coeffs.block ( coeffs i32 i32 i32 -- i32 )
   :> by :> bx :> ci :> s

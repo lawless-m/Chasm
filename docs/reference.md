@@ -503,8 +503,8 @@ past its end.
 | `bytes.to-str` | `( bytes -- str )` | a copy |
 | `bytes.as-str` | `( bytes -- str )` | the buffer itself, no copy: for a buffer you are finished with, as a later write shows through the string |
 | `bytes.put` | `( bytes i32 str -- )` | copy a string in at an offset; traps unless it fits |
-| `bytes.u32-at` `bytes.u64-at` | `( bytes i32 -- i32 )` `( bytes i32 -- i64 )` | little-endian number at a byte offset; traps out of range |
-| `bytes.u32-at!` `bytes.u64-at!` | `( bytes i32 i32 -- )` `( bytes i32 i64 -- )` | offset, value; traps out of range |
+| `bytes.u16-at` `bytes.u32-at` `bytes.u64-at` | `( bytes i32 -- i32 )` `( bytes i32 -- i32 )` `( bytes i32 -- i64 )` | little-endian number at a byte offset (u16 is 0 to 65535); traps out of range |
+| `bytes.u16-at!` `bytes.u32-at!` `bytes.u64-at!` | `( bytes i32 i32 -- )` `( bytes i32 i32 -- )` `( bytes i32 i64 -- )` | offset, value (the low 16 bits for u16); traps out of range |
 | `bytes.addr` | `( bytes -- i32 )` | raw (section 2): the address |
 | `bytes.from-raw` | `( i32 i32 -- bytes )` | raw: unchecked addr and length |
 

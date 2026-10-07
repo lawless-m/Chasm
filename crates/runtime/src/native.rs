@@ -371,15 +371,22 @@ pub struct Outcome<T> {
 }
 
 /// The engine every Whackford host uses: WasmGC on, with the copying collector
-/// (far faster than the default for many short-lived structs). With `cache`,
-/// compiled modules are kept on disk (`cache_dir`), keyed by the wasm and the
-/// engine settings, so an unchanged program is not compiled again.
+/// (far faster than the default for many short-lived structs), and Cranelift's
+/// function inliner on. With `cache`, compiled modules are kept on disk
+/// (`cache_dir`), keyed by the wasm and the engine settings, so an unchanged
+/// program is not compiled again.
 pub fn engine(cache: bool) -> Result<Engine, String> {
     // Backtraces (on by default) name the trapping word via the name section.
     let mut cfg = WtConfig::new();
     cfg.wasm_gc(true)
         .wasm_function_references(true)
-        .collector(wasmtime::Collector::Copying);
+        .collector(wasmtime::Collector::Copying)
+        // Whackford has no inliner of its own, so without this every small
+        // word (a struct field accessor, a helper) stays a call. Wasm-level
+        // traps in an inlined word may be attributed to its caller; the
+        // inliner is part of the cache key, so modules cached without it are
+        // compiled afresh.
+        .compiler_inlining(wasmtime::Inlining::Yes);
     if let Some(dir) = cache.then(cache_dir).flatten() {
         let mut cc = wasmtime::CacheConfig::new();
         cc.with_directory(dir);

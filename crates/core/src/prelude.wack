@@ -220,6 +220,18 @@
   [ "bytes.u32-at!: offset out of range" trap ] when
   b bytes.addr i i32.add v i32.store ;
 
+: bytes.u16-at ( bytes i32 -- i32 )
+  :> i :> b
+  b bytes.len 2 i32.lt_u  i b bytes.len 2 i32.sub i32.gt_u  i32.or
+  [ "bytes.u16-at: offset out of range" trap ] when
+  b bytes.addr i i32.add i32.load16_u ;
+
+: bytes.u16-at! ( bytes i32 i32 -- )
+  :> v :> i :> b
+  b bytes.len 2 i32.lt_u  i b bytes.len 2 i32.sub i32.gt_u  i32.or
+  [ "bytes.u16-at!: offset out of range" trap ] when
+  b bytes.addr i i32.add v i32.store16 ;
+
 : bytes.u64-at ( bytes i32 -- i64 )
   :> i :> b
   b bytes.len 8 i32.lt_u  i b bytes.len 8 i32.sub i32.gt_u  i32.or

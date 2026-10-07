@@ -28,6 +28,21 @@ test snapshot : snapshot -> "AB"
   s ;
 test shared : shared -> "ZB"
 
+# Little-endian 16-bit numbers at a byte offset: 0xBEEF stored at offset 1
+# is EF then BE.
+: le16 ( -- bytes )
+  4 bytes.new :> b
+  b 1 0xBEEF bytes.u16-at!
+  b ;
+test le16 : le16 1 bytes.u16-at -> 0xBEEF
+test le16 : le16 1 bytes.at -> 0xEF
+test le16 : le16 2 bytes.at -> 0xBE
+test le16 : le16 0 bytes.u16-at -> 0xEF00
+test le16 : le16 3 bytes.u16-at -> trap
+test le16 : le16 -1 bytes.u16-at -> trap
+test le16 : 2 bytes.new dup 0 70000 bytes.u16-at! 0 bytes.u16-at -> 4464
+test le16 : 1 bytes.new 0 1 bytes.u16-at! -> trap
+
 # Count the bytes of a file, 16 at a time.
 : size ( str -- i32 )
   host.OREAD host.open :> h
