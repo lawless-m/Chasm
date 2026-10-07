@@ -1,0 +1,35 @@
+# Corpus sources
+
+Fetched 2026-10-07. Not committed; refetch from these pins.
+
+| Directory | Source | Pin |
+|---|---|---|
+| `primary/` | libjpeg-turbo `testimages/*.jpg`, https://github.com/libjpeg-turbo/libjpeg-turbo | tag 2.1.5 (3b19db4e6e7493a748369974819b4c5fa84c7614), matching the installed djpeg 2.1.5 |
+| `wild/imagers/` | image-rs jpeg-decoder `tests/reftest/images/*.jpg`, https://github.com/image-rs/jpeg-decoder | eb2d7c0f6a2d0298aba7a7f8b9ca1440353e8f8c |
+| `wild/mozilla/` | the same repository, `tests/reftest/images/mozilla/` | eb2d7c0f6a2d0298aba7a7f8b9ca1440353e8f8c |
+| `wild/lossless/` | the same repository, `tests/reftest/images/lossless/{1,2}/` (renamed `1-*`, `2-*`); lossless SOF3, to be refused `UNSUPPORTED_SOF` | eb2d7c0f6a2d0298aba7a7f8b9ca1440353e8f8c |
+| `wild/pillow/` | Pillow `Tests/images/**/*.jpg`, `*.jpeg` (subdirectories flattened with `-`), https://github.com/python-pillow/Pillow | 68a3fe957d8a4d552e8c69d96066d749f0614c7e |
+| `fuzz/imagetestsuite/` | the same repository, `tests/crashtest/images/imagetestsuite/`: Google's imagetestsuite broken JPEGs | eb2d7c0f6a2d0298aba7a7f8b9ca1440353e8f8c |
+| `fuzz/imagers-crash/` | the same repository, `tests/crashtest/images/`: files that once crashed image-rs | eb2d7c0f6a2d0298aba7a7f8b9ca1440353e8f8c |
+
+`photos/`, `synthetic/` and `regressions/` are ours and start empty.
+
+## synthetic/
+
+Generated from libjpeg-turbo 2.1.5's `testimages/testorig.ppm` (227x149):
+
+- `cmyk-pillow-*`: Pillow 11.1.0, CMYK with Adobe transform 0 (`tools/gen_cmyk.py`)
+- `ycck-tj-*`: TurboJPEG 2.1.5 via ctypes, a CMYK buffer compressed to YCCK (Adobe transform 2), at 4:4:4, 4:2:2, 4:2:0, 4:4:0 and 4:1:1 (`tools/gen_cmyk.py`)
+- `ycck-magick-*`: ImageMagick `magick in.ppm -colorspace CMYK -quality 90 out.jpg` (and `-sampling-factor 2x2 -quality 75`), which writes YCCK, not plain CMYK
+
+Rebuild: `python3 -I tools/gen_cmyk.py <testorig.ppm> corpus/synthetic`, then the two `magick` commands.
+- `p12-*`: 12-bit, cjpeg 3.2.0 `-precision 12 -quality 90` from djpeg 3.2.0's 12-bit decode of `primary/testorig12.jpg` (P6, maxval 4095): `seq-420`, `seq-444` (`-sample 1x1`), `seq-422-rst2` (`-sample 2x1 -restart 2`), `grey` (`-grayscale`), `prog-420` (`-progressive`), `arith-420` (`-arithmetic`), `arith-prog-420` (`-arithmetic -progressive`)
+- `lossless12-psv1`, `lossless8-psv1`: cjpeg 3.2.0 `-lossless 1` (SOF3), to be refused `UNSUPPORTED_SOF`
+
+## The oracle
+
+`oracle/libjpeg-turbo-3.2.0/`: libjpeg-turbo tag 3.2.0 (c85e6b905bf237038faa936dab160ebfc5da0344), built with
+`cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DWITH_SIMD=0 -DENABLE_SHARED=0 -DCMAKE_INSTALL_PREFIX=<that dir>`, then `ninja install`.
+Its `bin/djpeg` decodes 12-bit (PPM maxval 4095) and lossless, and writes CMYK/YCCK to PPM as RGB by
+`cmyk_to_rgb` in `src/cmyk.h`: `r = c*k/maxval + 0.5`, which is `(2*c*k + maxval) / (2*maxval)` in integers.
+The system djpeg (2.1.5) does neither 12-bit nor lossless; do not use it as the oracle.

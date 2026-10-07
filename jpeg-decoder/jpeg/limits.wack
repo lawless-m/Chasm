@@ -1,0 +1,47 @@
+# The decoder's limits and refusal codes (SECURITY.md).
+#
+# Every limit is a word, so a deployment changes it in one place. Sizes are
+# in bytes; MB means 10^6 bytes. A refusal code is a word returning its own
+# name, so a misspelt code is a compile error rather than a wrong message.
+
+# Limits
+
+: MAX_INPUT_BYTES ( -- i32 )  64000000 ;  # 64 MB: a JPEG larger than this is not a photo
+: MAX_DIM ( -- i32 )  16384 ;  # per side, in pixels
+: MAX_PIXELS ( -- i32 )  80000000 ;  # 80 MP: the published service limit
+: MEM_BUDGET ( -- i32 )  1000000000 ;  # 1 GB self-hosted; 90 MB for a Worker
+: MAX_COMPONENTS ( -- i32 )  4 ;  # the spec allows 255; nothing uses more than 4
+: MAX_SCANS ( -- i32 )  256 ;  # bounds progressive work
+: MAX_SEGMENT ( -- i32 )  65535 ;  # the spec's own limit, in bytes
+: MAX_TABLES ( -- i32 )  4 ;  # of each kind: the spec's own limit
+
+test MAX_INPUT_BYTES : MAX_INPUT_BYTES -> 64000000
+test MAX_DIM : MAX_DIM -> 16384
+test MAX_PIXELS : MAX_PIXELS -> 80000000
+test MEM_BUDGET : MEM_BUDGET -> 1000000000
+
+# Refusal codes
+
+: NOT_JPEG ( -- str )  "NOT_JPEG" ;
+: TRUNCATED ( -- str )  "TRUNCATED" ;
+: BAD_SEGMENT_LENGTH ( -- str )  "BAD_SEGMENT_LENGTH" ;
+: UNSUPPORTED_SOF ( -- str )  "UNSUPPORTED_SOF" ;
+: BAD_PRECISION ( -- str )  "BAD_PRECISION" ;
+: LIMIT_DIM ( -- str )  "LIMIT_DIM" ;
+: LIMIT_PIXELS ( -- str )  "LIMIT_PIXELS" ;
+: LIMIT_MEMORY ( -- str )  "LIMIT_MEMORY" ;
+: LIMIT_INPUT ( -- str )  "LIMIT_INPUT" ;
+: BAD_COMPONENT ( -- str )  "BAD_COMPONENT" ;
+: BAD_TABLE ( -- str )  "BAD_TABLE" ;
+: MISSING_TABLE ( -- str )  "MISSING_TABLE" ;
+: BAD_SCAN_HEADER ( -- str )  "BAD_SCAN_HEADER" ;
+: BAD_PROGRESSION ( -- str )  "BAD_PROGRESSION" ;
+: BAD_RESTART ( -- str )  "BAD_RESTART" ;
+: BAD_ENTROPY_DATA ( -- str )  "BAD_ENTROPY_DATA" ;
+: LIMIT_SCANS ( -- str )  "LIMIT_SCANS" ;
+: NO_FRAME ( -- str )  "NO_FRAME" ;
+: TRAILING_GARBAGE ( -- str )  "TRAILING_GARBAGE" ;
+
+test NOT_JPEG : NOT_JPEG -> "NOT_JPEG"
+test BAD_SEGMENT_LENGTH : BAD_SEGMENT_LENGTH -> "BAD_SEGMENT_LENGTH"
+test TRAILING_GARBAGE : TRAILING_GARBAGE -> "TRAILING_GARBAGE"
