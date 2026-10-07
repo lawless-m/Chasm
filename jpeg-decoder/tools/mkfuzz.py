@@ -26,6 +26,13 @@ Kinds, per source (a kind that does not apply to a source is skipped):
 - dropseg  3: the DQT, the first DHT, the SOF deleted
 - dupsof   1: the SOF segment duplicated
 - sos      6: Ns 0, Ns 5, Cs 99, Td 7, Se 70, Ss 5
+- ent      8: 1 to 4 random byte flips inside the entropy-coded data
+- entcut   4: the file cut inside the entropy-coded data
+- dri      2: a DRI (interval 1, then 7) inserted before the SOS, with no
+             RST markers in the data
+- noeoi    1: the final EOI removed
+- preeoi   2: 1 to 3 non-FF bytes inserted before the final EOI
+- posteoi  1: 16 random bytes after the final EOI (allowed: still decodes)
 
 The harness expects every fuzz file to be refused with a code or to reach
 not-yet, never to trap or hang.
@@ -147,6 +154,23 @@ def mutants(d, rng):
             b = bytearray(d)
             b[at] = v
             put("sos", b)
+    if sos and d[-2:] == b"\xff\xd9":
+        start, end = sos[1] + 2 + sos[2], len(d) - 2
+        for _ in range(8):
+            b = bytearray(d)
+            for _ in range(rng.randint(1, 4)):
+                b[rng.randrange(start, end)] = rng.randrange(256)
+            put("ent", b)
+        for _ in range(4):
+            put("entcut", d[: rng.randrange(start, end)])
+        for v in (1, 7):
+            dri = b"\xff\xdd\x00\x04" + v.to_bytes(2, "big")
+            put("dri", d[: sos[1]] + dri + d[sos[1] :])
+        put("noeoi", d[:-2])
+        for _ in range(2):
+            junk = bytes(rng.randrange(255) for _ in range(rng.randint(1, 3)))
+            put("preeoi", d[:-2] + junk + d[-2:])
+        put("posteoi", d + bytes(rng.randrange(256) for _ in range(16)))
     return out
 
 

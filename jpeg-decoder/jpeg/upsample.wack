@@ -1,0 +1,66 @@
+# Upsampling: one component's MCU row of samples expanded to full resolution.
+#
+# A plane is one component's decoded samples for one MCU row: rows of
+# `stride` samples from offset `base` in `data` (the IDCT writes 8x8 blocks
+# into it), and the expansion factors hexp = hmax / h and vexp = vmax / v.
+#
+# upsample.plain replicates each sample hexp times across and vexp times
+# down, which is libjpeg's -nosmooth behaviour for every sampling factor
+# (its merged upsampler for h2v1 and h2v2 YCbCr gives the same bytes). Fancy
+# upsampling is M3 and will live here too.
+
+struct plane  data: bytes  base: i32  stride: i32  hexp: i32  vexp: i32
+
+# The plane, the destination, the destination offset, the output width and
+# the number of output rows.
+declare upsample.plain ( plane bytes i32 i32 i32 -- )
+
+: upsample.plain ( plane bytes i32 i32 i32 -- )
+  :> rows :> width :> off :> dst :> p
+  p plane.data :> src
+  p plane.hexp :> hx
+  p plane.vexp :> vx
+  p plane.stride :> stride
+  p plane.base :> base
+  rows
+  [
+    :> r
+    base  r vx i32.div_u stride i32.mul  i32.add :> from
+    off r width i32.mul i32.add :> to
+    hx 1 i32.eq
+    [ width [ :> x0  dst to x0 i32.add  src from x0 i32.add bytes.at  bytes.at! ] times ]
+    [ width [ :> x1  dst to x1 i32.add  src from x1 hx i32.div_u i32.add bytes.at  bytes.at! ] times ]
+    if
+  ]
+  times ;
+
+# Test fixtures: hex data, stride, hexp, vexp (base 0); and a run into a
+# fresh width x rows destination.
+: fx.plane ( str i32 i32 i32 -- plane )
+  :> vx :> hx :> stride :> h
+  h hex 0 stride hx vx plane.new ;
+: fx.up ( plane i32 i32 -- bytes )
+  :> rows :> width :> p
+  width rows i32.mul bytes.new :> d
+  p d 0 width rows upsample.plain
+  d ;
+
+test upsample.plain : "01020304" 2 2 2 fx.plane 4 4 fx.up 0 bytes.at -> 1
+test upsample.plain : "01020304" 2 2 2 fx.plane 4 4 fx.up 2 bytes.at -> 2
+test upsample.plain : "01020304" 2 2 2 fx.plane 4 4 fx.up 5 bytes.at -> 1
+test upsample.plain : "01020304" 2 2 2 fx.plane 4 4 fx.up 8 bytes.at -> 3
+test upsample.plain : "01020304" 2 2 2 fx.plane 4 4 fx.up 15 bytes.at -> 4
+test upsample.plain : "01020304" 2 2 2 fx.plane 3 4 fx.up 2 bytes.at -> 2
+test upsample.plain : "01020304" 2 2 2 fx.plane 3 4 fx.up 3 bytes.at -> 1
+test upsample.plain : "01020304" 2 2 2 fx.plane 3 4 fx.up 11 bytes.at -> 4
+test upsample.plain : "0102" 2 1 1 fx.plane 2 1 fx.up 1 bytes.at -> 2
+test upsample.plain : "0102" 2 4 1 fx.plane 8 1 fx.up 3 bytes.at -> 1
+test upsample.plain : "0102" 2 4 1 fx.plane 8 1 fx.up 4 bytes.at -> 2
+test upsample.plain : "0102" 1 1 2 fx.plane 1 4 fx.up 1 bytes.at -> 1
+test upsample.plain : "0102" 1 1 2 fx.plane 1 4 fx.up 2 bytes.at -> 2
+test upsample.plain : "0102" 2 3 1 fx.plane 6 1 fx.up 2 bytes.at -> 1
+test upsample.plain : "0102" 2 3 1 fx.plane 6 1 fx.up 3 bytes.at -> 2
+test upsample.plain : "FF0102FF0304" 3 2 1 fx.plane dup 1 plane.base! 4 2 fx.up 0 bytes.at -> 1
+test upsample.plain : "FF0102FF0304" 3 2 1 fx.plane dup 1 plane.base! 4 2 fx.up 7 bytes.at -> 4
+test upsample.plain : "0102" 2 1 1 fx.plane 12 bytes.new dup -rot 4 2 1 upsample.plain 4 bytes.at -> 1
+test upsample.plain : "0102" 2 1 1 fx.plane 12 bytes.new dup -rot 4 2 1 upsample.plain 3 bytes.at -> 0

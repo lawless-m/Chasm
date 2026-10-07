@@ -1,0 +1,192 @@
+# Sequential scan decoding (libjpeg's decode_mcu_slow in jdhuff.c).
+#
+# The scanner holds the bit reader, the scan's Huffman tables (indexed
+# tc*4+th; only the slots the scan references are set, and only those are
+# read), the natural-order table, one DC predictor per frame component, and
+# the restart and MCU counters: restart is the DRI interval in MCUs (0 for
+# none), togo the MCUs left in the current interval, next-rst the expected
+# RSTn number, mcu the MCUs completed and total the MCUs in the scan.
+#
+# scan.block decodes one block into a 64-entry coefficient block in natural
+# order. The caller checks `scanner.br bitreader.exhausted` after each MCU
+# (scan.end-mcu).
+
+struct scanner
+  br: bitreader  tabs: array hufftable  natural: array i32  pred: array i32
+  restart: i32  togo: i32  next-rst: i32  mcu: i32  total: i32
+
+# Data, offset of the first entropy byte, tables, natural order, frame
+# component count, restart interval, total MCUs.
+declare scan.open ( bytes i32 array hufftable array i32 i32 i32 i32 -- scanner )
+
+# Frame component index (for the predictor), DC and AC table indexes (0..3),
+# and the coefficient block, cleared first. The stored DC is libjpeg's
+# (JCOEF)s, a 16-bit value, while the predictor stays an int. A run that
+# passes the end of the block is BAD_ENTROPY_DATA (libjpeg silently stores
+# at 63; strict mode refuses an impossible run).
+declare scan.block ( scanner i32 i32 i32 array i32 -- )
+
+: scan.open ( bytes i32 array hufftable array i32 i32 i32 i32 -- scanner )
+  :> total :> restart :> ncomp :> natural :> tabs :> at :> d
+  ncomp array.new ( array i32 ) :> pred
+  d at bits.open tabs natural pred restart restart 0 0 total scanner.new ;
+
+: scan.block ( scanner i32 i32 i32 array i32 -- )
+  :> coef :> ta :> td :> ci :> sc
+  sc scanner.br :> br
+  sc scanner.natural :> nat
+  64 [ :> i  coef i 0 array.at! ] times
+  br  sc scanner.tabs td array.at  huffman.decode :> s0
+  s0 [ br s0 huffman.receive-extend ] [ 0 ] if  sc scanner.pred ci array.at  i32.add :> dc
+  sc scanner.pred ci dc array.at!
+  coef 0 dc i32.extend16_s array.at!
+  sc scanner.tabs 4 ta i32.add array.at :> act
+  1 :> k!
+  [ k 64 i32.lt_s ]
+  [
+    br act huffman.decode :> rs
+    rs 4 i32.shr_u :> r
+    rs 15 i32.and :> sz
+    sz
+    [
+      k r i32.add k!
+      k 63 i32.gt_s [ BAD_ENTROPY_DATA "coefficient run past the end of the block" refusal trap ] when
+      coef  nat k array.at  br sz huffman.receive-extend i32.extend16_s  array.at!
+      k 1 i32.add k!
+    ]
+    [ r 15 i32.ne [ 64 k! ] [ k 16 i32.add k! ] if ]
+    if
+  ]
+  while ;
+
+# After every MCU's blocks. Running out of entropy-coded data is TRUNCATED
+# (strict: libjpeg fills the rest with grey and warns): the scan is shorter
+# than the frame needs, whether the file ends or a marker comes early. Then,
+# at the end of each restart interval but the last, the next marker must be
+# the expected RSTn (BAD_RESTART otherwise; libjpeg resynchronises), and the
+# predictors reset as libjpeg's process_restart does. Intervals count MCUs,
+# which in a non-interleaved scan are single blocks.
+declare scan.end-mcu ( scanner -- )
+
+# Once, after the last MCU. Whole bytes left in the reader are data that
+# should not be there (libjpeg warns: extraneous bytes before marker), and
+# so is anything but EOI where the scan stops; a missing EOI at the very end
+# of the data is allowed (SECURITY.md). Bytes after the EOI are never read.
+declare scan.finish ( scanner -- )
+
+: scan.end-mcu ( scanner -- )
+  :> sc
+  sc scanner.br :> br
+  br bitreader.exhausted
+  [ TRUNCATED "entropy-coded data ends inside MCU" sc scanner.mcu refusal-n trap ]
+  when
+  sc  sc scanner.mcu 1 i32.add  scanner.mcu!
+  sc scanner.restart 0 i32.gt_s
+  [
+    sc  sc scanner.togo 1 i32.sub  scanner.togo!
+    sc scanner.togo 0 i32.eq  sc scanner.mcu sc scanner.total i32.lt_s  i32.and
+    [
+      br bits.restart :> m
+      m -1 i32.eq [ BAD_RESTART "RST marker missing after MCU" sc scanner.mcu refusal-n trap ] when
+      m 0xD0 sc scanner.next-rst i32.add i32.ne
+      [ BAD_RESTART "RST marker out of sequence, expected" sc scanner.next-rst refusal-n trap ]
+      when
+      sc  sc scanner.next-rst 1 i32.add 7 i32.and  scanner.next-rst!
+      sc  sc scanner.restart  scanner.togo!
+      sc scanner.pred :> pr
+      pr array.len [ :> i  pr i 0 array.at! ] times
+    ]
+    when
+  ]
+  when ;
+
+: scan.finish ( scanner -- )
+  :> sc
+  sc scanner.br :> br
+  br bitreader.nbits 8 i32.ge_s
+  [ BAD_ENTROPY_DATA "extraneous bytes after the last MCU" refusal trap ]
+  when
+  br bits.restart :> m
+  m -1 i32.eq
+  [
+    br bitreader.pos br bitreader.data bytes.len i32.lt_s
+    [ BAD_ENTROPY_DATA "extraneous bytes after the scan at offset" br bitreader.pos refusal-n trap ]
+    when
+  ]
+  [ m 0xD9 i32.ne [ BAD_ENTROPY_DATA "marker after the scan is not EOI" m refusal-n trap ] when ]
+  if ;
+
+# Test fixtures.
+: fx.lum-tabs ( -- array hufftable )
+  8 array.new ( array hufftable ) :> t
+  t 0 fx.dc-lum array.at!
+  t 4 fx.ac-lum array.at!
+  t ;
+: fx.tiny-tabs ( -- array hufftable )
+  8 array.new ( array hufftable ) :> t
+  t 0 fx.tiny-dc array.at!
+  t 4 fx.tiny-ac array.at!
+  t ;
+# Two 2-bit AC codes: 00 is 0xF1 (run 15, size 1), 01 is EOB.
+: fx.ac-f1 ( -- hufftable )  "0002" "00" 14 fx.rep str.concat "F100" str.concat hex 0 0 huffman.build ;
+: fx.f1-tabs ( -- array hufftable )
+  8 array.new ( array hufftable ) :> t
+  t 0 fx.tiny-dc array.at!
+  t 4 fx.ac-f1 array.at!
+  t ;
+# Hex data, tables, restart interval, total MCUs; one component.
+: fx.scanner ( str array hufftable i32 i32 -- scanner )
+  :> total :> restart :> tabs :> h
+  h hex 0 tabs idct.make idct.natural 1 restart total scan.open ;
+: fx.block ( scanner -- array i32 )
+  :> sc
+  64 array.new ( array i32 ) :> c
+  sc 0 0 0 c scan.block
+  c ;
+
+test scan.open : "71AF" fx.lum-tabs 5 9 fx.scanner scanner.togo -> 5
+test scan.open : "71AF" fx.lum-tabs 5 9 fx.scanner scanner.total -> 9
+test scan.open : "71AF" fx.lum-tabs 5 9 fx.scanner scanner.pred array.len -> 1
+test scan.block : "71AF" fx.lum-tabs 0 1 fx.scanner fx.block 0 array.at -> 2
+test scan.block : "71AF" fx.lum-tabs 0 1 fx.scanner fx.block 1 array.at -> 1
+test scan.block : "71AF" fx.lum-tabs 0 1 fx.scanner fx.block 2 array.at -> 0
+test scan.block : "71AF" fx.lum-tabs 0 1 fx.scanner dup fx.block drop scanner.pred 0 array.at -> 2
+test scan.block : "71A2BF" fx.lum-tabs 0 2 fx.scanner dup fx.block drop fx.block 0 array.at -> 2
+test scan.block : "71A2BF" fx.lum-tabs 0 2 fx.scanner dup fx.block drop fx.block 1 array.at -> 0
+test scan.block : "6D7F" fx.lum-tabs 0 1 fx.scanner fx.block 0 array.at -> -2
+test scan.block : "3FC9AF" fx.lum-tabs 0 1 fx.scanner fx.block 19 array.at -> 1
+test scan.block : "3FC9AF" fx.lum-tabs 0 1 fx.scanner fx.block 12 array.at -> 0
+test scan.block : "3FFFD9" fx.tiny-tabs 0 1 fx.scanner fx.block 0 array.at -> 0
+test scan.block : "3FFFD9" fx.tiny-tabs 0 1 fx.scanner dup fx.block drop scanner.br bitreader.exhausted -> 0
+test scan.block : "125F" fx.f1-tabs 0 1 fx.scanner fx.block 12 array.at -> 1
+test scan.block : "125F" fx.f1-tabs 0 1 fx.scanner fx.block 35 array.at -> 1
+test scan.block : "125F" fx.f1-tabs 0 1 fx.scanner fx.block 58 array.at -> 1
+test scan.block : "124F" fx.f1-tabs 0 1 fx.scanner fx.block -> trap
+test scan.block : "FF00FF00FF00" fx.lum-tabs 0 1 fx.scanner fx.block -> trap
+test scan.block : "71AF" fx.lum-tabs 0 1 fx.scanner dup scanner.pred 0 40000 array.at! fx.block 0 array.at -> -25534
+test scan.block : "71AF" fx.lum-tabs 0 1 fx.scanner dup scanner.pred 0 40000 array.at! dup fx.block drop scanner.pred 0 array.at -> 40002
+test scan.block : "" fx.lum-tabs 0 1 fx.scanner dup fx.block drop scanner.br bitreader.exhausted -> 1
+# n blocks, each followed by scan.end-mcu.
+: fx.run-mcus ( scanner i32 -- )
+  :> n :> sc
+  n [ drop  sc fx.block drop  sc scan.end-mcu ] times ;
+
+test scan.end-mcu : "71AFFFD02BFFD9" fx.lum-tabs 1 2 fx.scanner dup fx.block drop dup scan.end-mcu fx.block 0 array.at -> 0
+test scan.end-mcu : "71AFFFD02BFFD9" fx.lum-tabs 1 2 fx.scanner dup fx.block drop dup scan.end-mcu scanner.next-rst -> 1
+test scan.end-mcu : "71AFFFD02BFFD9" fx.lum-tabs 1 2 fx.scanner dup fx.block drop dup scan.end-mcu scanner.togo -> 1
+test scan.end-mcu : "71AFFFD02BFFD9" fx.lum-tabs 1 2 fx.scanner dup fx.block drop dup scan.end-mcu scanner.mcu -> 1
+test scan.end-mcu : "71AFFFD12BFFD9" fx.lum-tabs 1 2 fx.scanner dup fx.block drop scan.end-mcu -> trap
+test scan.end-mcu : "71AF2BFFD9" fx.lum-tabs 1 2 fx.scanner dup fx.block drop scan.end-mcu -> trap
+test scan.end-mcu : "71A2BF" fx.lum-tabs 0 2 fx.scanner dup fx.block drop dup scan.end-mcu fx.block 0 array.at -> 2
+test scan.end-mcu : "71AF" fx.lum-tabs 1 1 fx.scanner dup fx.block drop dup scan.end-mcu scanner.mcu -> 1
+test scan.end-mcu : "" fx.lum-tabs 0 1 fx.scanner dup fx.block drop scan.end-mcu -> trap
+test scan.end-mcu : "71AFFFD071AFFFD171AFFFD271AFFFD371AFFFD471AFFFD571AFFFD671AFFFD72BFFD9" fx.lum-tabs 1 9 fx.scanner dup 8 fx.run-mcus scanner.next-rst -> 0
+test scan.end-mcu : "71AFFFD071AFFFD171AFFFD271AFFFD371AFFFD471AFFFD571AFFFD671AFFFD72BFFD9" fx.lum-tabs 1 9 fx.scanner dup 8 fx.run-mcus fx.block 0 array.at -> 0
+test scan.finish : "71AFFFD9" fx.lum-tabs 0 1 fx.scanner dup 1 fx.run-mcus scan.finish 1 -> 1
+test scan.finish : "71AF" fx.lum-tabs 0 1 fx.scanner dup 1 fx.run-mcus scan.finish 1 -> 1
+test scan.finish : "71AFFFFFD9" fx.lum-tabs 0 1 fx.scanner dup 1 fx.run-mcus scan.finish 1 -> 1
+test scan.finish : "71AFFFD900" fx.lum-tabs 0 1 fx.scanner dup 1 fx.run-mcus scan.finish 1 -> 1
+test scan.finish : "71AF00FFD9" fx.lum-tabs 0 1 fx.scanner dup 1 fx.run-mcus scan.finish -> trap
+test scan.finish : "71AF00" fx.lum-tabs 0 1 fx.scanner dup 1 fx.run-mcus scan.finish -> trap
+test scan.finish : "71AFFFD0" fx.lum-tabs 0 1 fx.scanner dup 1 fx.run-mcus scan.finish -> trap
+test scan.finish : "71AFFFD071AFFFD171AFFFD271AFFFD371AFFFD471AFFFD571AFFFD671AFFFD72BFFD9" fx.lum-tabs 1 9 fx.scanner dup 9 fx.run-mcus scan.finish 1 -> 1

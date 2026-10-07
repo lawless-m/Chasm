@@ -1,0 +1,309 @@
+# The MCU-row driver: from the parsed headers to output rows.
+#
+# rows.unsupported says what M2 cannot decode yet; its reasons are the words
+# main prints after `NOT_YET `, which later milestones remove one by one.
+
+# "" when M2 decodes the file, else the reason: progressive, arithmetic,
+# 12-bit, 4-component or multi-scan (the first scan does not cover every
+# component), checked in that order. A 2-component frame passes here and is
+# refused BAD_COMPONENT by colour.space in rows.setup.
+declare rows.unsupported ( jpeg -- str )
+
+: rows.unsupported ( jpeg -- str )
+  :> j
+  j jpeg.frame none: [ NO_FRAME "decode before SOF" refusal trap ] some: [ ] match :> f
+  j jpeg.scan none: [ NO_FRAME "decode before SOS" refusal trap ] some: [ ] match :> sc
+  f frame.kind :> kind
+  kind 0xC2 i32.eq  kind 0xCA i32.eq  i32.or
+  [ "progressive" ]
+  [
+    kind 0xC9 i32.eq
+    [ "arithmetic" ]
+    [
+      f frame.precision 8 i32.ne
+      [ "12-bit" ]
+      [
+        f frame.ncomp 4 i32.eq
+        [ "4-component" ]
+        [ sc scan.ncomp f frame.ncomp i32.ne [ "multi-scan" ] [ "" ] if ]
+        if
+      ]
+      if
+    ]
+    if
+  ]
+  if ;
+
+# Test fixtures: the 1x1 greyscale fixture with frame and scan parsed; a
+# jpeg with an n-component frame and an m-component scan; the fixture with
+# its frame's kind or precision changed.
+: fx.tiny-jpeg ( -- jpeg )  fx.tiny hex markers.open dup markers.walk ;
+: fx.jpeg-scan ( i32 i32 -- jpeg )
+  :> m :> n
+  m array.new ( array i32 ) :> sc
+  m array.new ( array i32 ) :> td
+  m array.new ( array i32 ) :> ta
+  m [ :> k  sc k k array.at! ] times
+  "FFD8" hex markers.open :> j
+  j  n fx.ncomp option.some  jpeg.frame!
+  j  m sc td ta 0 63 0 0 0 scan.new option.some  jpeg.scan!
+  j ;
+: fx.jpeg-kind ( i32 -- jpeg )
+  :> k
+  fx.tiny-jpeg :> j
+  j jpeg.frame none: [ ] some: [ k frame.kind! ] match
+  j ;
+: fx.jpeg-precision ( i32 -- jpeg )
+  :> p
+  fx.tiny-jpeg :> j
+  j jpeg.frame none: [ ] some: [ p frame.precision! ] match
+  j ;
+
+test rows.unsupported : fx.tiny-jpeg rows.unsupported -> ""
+test rows.unsupported : 0xC1 fx.jpeg-kind rows.unsupported -> ""
+test rows.unsupported : 0xC2 fx.jpeg-kind rows.unsupported -> "progressive"
+test rows.unsupported : 0xCA fx.jpeg-kind rows.unsupported -> "progressive"
+test rows.unsupported : 0xC9 fx.jpeg-kind rows.unsupported -> "arithmetic"
+test rows.unsupported : 12 fx.jpeg-precision rows.unsupported -> "12-bit"
+test rows.unsupported : 3 3 fx.jpeg-scan rows.unsupported -> ""
+test rows.unsupported : 3 1 fx.jpeg-scan rows.unsupported -> "multi-scan"
+test rows.unsupported : 4 4 fx.jpeg-scan rows.unsupported -> "4-component"
+test rows.unsupported : 4 1 fx.jpeg-scan rows.unsupported -> "4-component"
+test rows.unsupported : 2 2 fx.jpeg-scan rows.unsupported -> ""
+test rows.unsupported : "FFD8" hex markers.open rows.unsupported -> trap
+
+# Everything the decode needs, allocated once.
+struct decoder
+  f: frame  sc: scanner  tabs: array hufftable  idct: idct  colour: colour  space: i32
+  planes: array plane  ups: bytes  out: bytes  coef: array i32  quants: array i32
+  width: i32  height: i32  ncomp: i32  mw: i32  mh: i32  hmax: i32  vmax: i32  interleaved: i32
+  scn: scan
+
+# The jpeg (frame and scan parsed, rows.unsupported "") and the scan's
+# tables. This is the only allocation point of the decode: one plane per
+# component (an MCU row of its blocks), every component upsampled to one MCU
+# row at full width, one output row, one coefficient block, the components'
+# natural-order quantisation tables side by side (component ci at ci*64),
+# and the scanner. markers.sof checked the budget with frame.need, which
+# counts exactly these buffers. A scan with one component walks that
+# component's own block grid (non-interleaved), so its MCU count is the
+# grid's block count.
+declare rows.setup ( jpeg array hufftable -- decoder )
+
+: rows.setup ( jpeg array hufftable -- decoder )
+  :> tabs :> j
+  j jpeg.frame none: [ NO_FRAME "decode before SOF" refusal trap ] some: [ ] match :> f
+  j jpeg.scan none: [ NO_FRAME "decode before SOS" refusal trap ] some: [ ] match :> scn
+  j colour.space :> space
+  f frame.width :> width
+  f frame.height :> height
+  f frame.ncomp :> ncomp
+  f frame.mcus-wide :> mw
+  f frame.mcus-high :> mh
+  f frame.hmax :> hmax
+  f frame.vmax :> vmax
+  scn scan.ncomp 1 i32.gt_s :> interleaved
+  ncomp array.new ( array plane ) :> planes
+  ncomp
+  [
+    :> ci
+    f frame.comps ci array.at :> c
+    mw c component.h i32.mul 8 i32.mul :> stride
+    stride c component.v 8 i32.mul i32.mul bytes.new :> pd
+    planes ci  pd 0 stride  hmax c component.h i32.div_u  vmax c component.v i32.div_u  plane.new  array.at!
+  ]
+  times
+  ncomp vmax 8 i32.mul i32.mul width i32.mul bytes.new :> ups
+  width ncomp i32.mul bytes.new :> out
+  64 array.new ( array i32 ) :> coef
+  ncomp 64 i32.mul array.new ( array i32 ) :> quants
+  ncomp
+  [
+    :> qi
+    j  f frame.comps qi array.at component.tq  idct.quant :> q
+    64 [ :> k  quants qi 64 i32.mul k i32.add  q k array.at  array.at! ] times
+  ]
+  times
+  idct.make :> t
+  interleaved [ mw mh i32.mul ] [ f 0 frame.comp-blocks-wide  f 0 frame.comp-blocks-high  i32.mul ] if :> total
+  j jpeg.data  scn scan.data-at  tabs  t idct.natural  ncomp  j jpeg.restart  total  scan.open :> sc
+  f sc tabs t colour.make space planes ups out coef quants width height ncomp mw mh hmax vmax interleaved
+  scn decoder.new ;
+
+: fx.dec ( -- decoder )  fx.tiny-jpeg dup huffman.scan-tables rows.setup ;
+
+test rows.setup : fx.dec decoder.width -> 1
+test rows.setup : fx.dec decoder.height -> 1
+test rows.setup : fx.dec decoder.ncomp -> 1
+test rows.setup : fx.dec decoder.mw -> 1
+test rows.setup : fx.dec decoder.interleaved -> 0
+test rows.setup : fx.dec decoder.space -> 0
+test rows.setup : fx.dec decoder.planes array.len -> 1
+test rows.setup : fx.dec decoder.planes 0 array.at plane.stride -> 8
+test rows.setup : fx.dec decoder.planes 0 array.at plane.data bytes.len -> 64
+test rows.setup : fx.dec decoder.planes 0 array.at plane.hexp -> 1
+test rows.setup : fx.dec decoder.ups bytes.len -> 8
+test rows.setup : fx.dec decoder.out bytes.len -> 1
+test rows.setup : fx.dec decoder.coef array.len -> 64
+test rows.setup : fx.dec decoder.quants 0 array.at -> 16
+test rows.setup : fx.dec decoder.quants 63 array.at -> 99
+test rows.setup : fx.dec decoder.sc scanner.total -> 1
+test rows.setup : fx.dec decoder.sc scanner.br bitreader.pos -> 156
+
+# The whole image, one output row at a time to the sink (out: width x ncomp
+# bytes, reused, so the sink consumes it before returning). The sink is the
+# row interface a future encoder consumes too.
+#
+# An interleaved scan decodes MCUs in raster order; inside an MCU, for each
+# scan component, v rows of h blocks (libjpeg's decompress_onepass). A
+# single-component scan walks that component's own block grid, which is not
+# padded to whole MCUs (libjpeg's per_scan_setup): a 16x24 image with 2x2
+# sampling has 3 block rows where the MCU grid has 4. Either way an MCU row
+# fills the planes, which are upsampled and converted row by row; the last
+# MCU row is clipped to the image height.
+declare rows.decode ( decoder [ bytes -- ] -- )
+
+# MCU row i of the planes, upsampled, converted and handed to the sink.
+declare rows.emit ( decoder [ bytes -- ] i32 -- )
+declare rows.interleaved ( decoder [ bytes -- ] -- )
+declare rows.single ( decoder [ bytes -- ] -- )
+
+: rows.emit ( decoder [ bytes -- ] i32 -- )
+  :> i :> sink :> d
+  d decoder.vmax 8 i32.mul :> rr
+  d decoder.width :> width
+  d decoder.ups :> ups
+  d decoder.out :> out
+  d decoder.ncomp [ :> ci  d decoder.planes ci array.at  ups  ci rr i32.mul width i32.mul  width rr  upsample.plain ] times
+  d decoder.height i rr i32.mul i32.sub :> left
+  left rr i32.lt_s [ left ] [ rr ] if
+  [ :> r  d decoder.colour d decoder.space ups rr r out width colour.row  out sink call ] times ;
+
+: rows.interleaved ( decoder [ bytes -- ] -- )
+  :> sink :> d
+  d decoder.sc :> sc
+  d decoder.idct :> t
+  d decoder.coef :> coef
+  d decoder.quants :> quants
+  d decoder.f frame.comps :> comps
+  d decoder.scn :> scn
+  d decoder.mh
+  [
+    :> my
+    d decoder.mw
+    [
+      :> mx
+      scn scan.ncomp
+      [
+        :> k
+        scn scan.comps k array.at :> ci
+        comps ci array.at :> c
+        d decoder.planes ci array.at :> p
+        p plane.stride :> stride
+        c component.v
+        [
+          :> by
+          c component.h
+          [
+            :> bx
+            sc ci  scn scan.td k array.at  scn scan.ta k array.at  coef scan.block
+            t coef quants ci 64 i32.mul  p plane.data
+            by 8 i32.mul stride i32.mul  mx c component.h i32.mul bx i32.add 8 i32.mul  i32.add
+            stride idct.block
+          ]
+          times
+        ]
+        times
+      ]
+      times
+      sc scan.end-mcu
+    ]
+    times
+    d sink my rows.emit
+  ]
+  times ;
+
+: rows.single ( decoder [ bytes -- ] -- )
+  :> sink :> d
+  d decoder.sc :> sc
+  d decoder.idct :> t
+  d decoder.coef :> coef
+  d decoder.quants :> quants
+  d decoder.scn :> scn
+  d decoder.planes 0 array.at :> p
+  p plane.stride :> stride
+  d decoder.f frame.comps 0 array.at component.v :> v
+  d decoder.f 0 frame.comp-blocks-wide :> bw
+  d decoder.f 0 frame.comp-blocks-high :> bh
+  scn scan.td 0 array.at :> td
+  scn scan.ta 0 array.at :> ta
+  bh
+  [
+    :> by
+    by v i32.rem_u 8 i32.mul stride i32.mul :> rowat
+    bw
+    [
+      :> bx
+      sc 0 td ta coef scan.block
+      t coef quants 0 p plane.data  rowat bx 8 i32.mul i32.add  stride idct.block
+      sc scan.end-mcu
+    ]
+    times
+    by 1 i32.add v i32.rem_u i32.eqz  by bh 1 i32.sub i32.eq  i32.or
+    [ d sink by v i32.div_u rows.emit ]
+    when
+  ]
+  times ;
+
+: rows.decode ( decoder [ bytes -- ] -- )
+  :> sink :> d
+  d decoder.interleaved [ d sink rows.interleaved ] [ d sink rows.single ] if
+  d decoder.sc scan.finish ;
+
+# Test fixtures: a sink that collects every row into one buffer, and a
+# whole-image decode through it.
+struct sinkbuf  buf: bytes  n: i32
+: fx.collect ( sinkbuf bytes -- )
+  :> row :> sb
+  sb sinkbuf.buf  sb sinkbuf.n row bytes.len i32.mul row bytes.as-str bytes.put
+  sb  sb sinkbuf.n 1 i32.add  sinkbuf.n! ;
+: fx.decode-all ( jpeg -- bytes )
+  :> j
+  j huffman.scan-tables :> tabs
+  j tabs rows.setup :> d
+  d decoder.width d decoder.height i32.mul d decoder.ncomp i32.mul bytes.new 0 sinkbuf.new :> sb
+  d [ ( bytes -- ) sb swap fx.collect ] rows.decode
+  sb sinkbuf.buf ;
+# A 1x1 red pixel, YCbCr 4:2:0 (cjpeg -optimize -quality 50 -sample 2x2);
+# the oracle decodes it to 254 0 2.
+: fx.ycc1 ( -- str )
+  "ffd8ffe000104a46494600010100000100010000ffdb004300100b0c0e0c0a100e0d0e1211101318281a181616183123251d283a333d3c3933383740485c4e404457453738506d51575f626768673e4d71797064785c656763"
+  "ffdb0043011112121815182f1a1a2f634238426363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363"
+  str.concat
+  "ffc00011080001000103012200021101031101ffc4001500010100000000000000000000000000000005ffc40014100100000000000000000000000000000000ffc4001501010100000000000000000000000000000506ffc40014110100000000000000000000000000000000"
+  str.concat
+  "ffda000c03010002110311003f008a00b5e3ffd9"
+  str.concat ;
+# A 2x2 greyscale image of 10 80 160 240 (cjpeg -optimize -quality 50); the
+# oracle decodes it to 1 82 165 246. Entropy data at 166..177, EOI at 178.
+: fx.grey2 ( -- str )
+  "ffd8ffe000104a46494600010100000100010000ffdb004300100b0c0e0c0a100e0d0e1211101318281a181616183123251d283a333d3c3933383740485c4e404457453738506d51575f626768673e4d71797064785c656763"
+  "ffc0000b080002000201011100ffc40014000100000000000000000000000000000006ffc4001e10000101090000000000000000000000000402000305142432435171ffda0008010100003f00522c3409573443589c49d71bffd9"
+  str.concat ;
+
+test rows.decode : fx.tiny-jpeg fx.decode-all bytes.len -> 1
+test rows.decode : fx.tiny-jpeg fx.decode-all 0 bytes.at -> 128
+test rows.decode : fx.ycc1 hex markers.open dup markers.walk fx.decode-all bytes.len -> 3
+test rows.decode : fx.ycc1 hex markers.open dup markers.walk fx.decode-all 0 bytes.at -> 254
+test rows.decode : fx.ycc1 hex markers.open dup markers.walk fx.decode-all 1 bytes.at -> 0
+test rows.decode : fx.ycc1 hex markers.open dup markers.walk fx.decode-all 2 bytes.at -> 2
+test rows.decode : fx.grey2 hex markers.open dup markers.walk fx.decode-all bytes.len -> 4
+test rows.decode : fx.grey2 hex markers.open dup markers.walk fx.decode-all 0 bytes.at -> 1
+test rows.decode : fx.grey2 hex markers.open dup markers.walk fx.decode-all 1 bytes.at -> 82
+test rows.decode : fx.grey2 hex markers.open dup markers.walk fx.decode-all 2 bytes.at -> 165
+test rows.decode : fx.grey2 hex markers.open dup markers.walk fx.decode-all 3 bytes.at -> 246
+test rows.decode : fx.grey2 0 336 str.slice hex markers.open dup markers.walk fx.decode-all -> trap
+test rows.decode : fx.grey2 0 356 str.slice "00ffd9" str.concat hex markers.open dup markers.walk fx.decode-all -> trap
+test rows.decode : fx.grey2 0 356 str.slice hex markers.open dup markers.walk fx.decode-all 3 bytes.at -> 246
+test rows.decode : fx.grey2 "0102" str.concat hex markers.open dup markers.walk fx.decode-all 3 bytes.at -> 246
+test rows.decode : fx.grey2 0 332 str.slice "ffd0" str.concat fx.grey2 332 28 str.slice str.concat hex markers.open dup markers.walk fx.decode-all -> trap

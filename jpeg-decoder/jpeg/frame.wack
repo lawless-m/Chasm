@@ -212,12 +212,15 @@ test frame.progressive? : fx.grey dup 0xC2 frame.kind! frame.progressive? -> 1
 test frame.progressive? : fx.grey dup 0xCA frame.kind! frame.progressive? -> 1
 
 # Bytes the decode will need, from the header alone (ARCHITECTURE.md, Memory
-# budget): the input, the coefficient store when progressive (2 bytes x 64
-# coefficients per block, padded to whole MCUs), one MCU row of component
-# planes, one output row at up to 2 bytes a sample, and 1 MiB for tables.
+# budget), counting what rows.setup allocates: the input, the coefficient
+# store when progressive (2 bytes x 64 coefficients per block, padded to
+# whole MCUs), one MCU row of each component's plane (mcus-wide x h x 8
+# samples across, v x 8 down), one MCU row of every component upsampled to
+# full width, one output row at up to 2 bytes a sample, and 1 MiB for tables.
 declare frame.need ( frame i32 -- i64 )
-test frame.need : fx.grey 159 frame.need -> 1048801 i64
-test frame.need : fx.grey dup 0xC2 frame.kind! 159 frame.need -> 1048929 i64
+test frame.need : fx.grey 159 frame.need -> 1048809 i64
+test frame.need : fx.grey dup 0xC2 frame.kind! 159 frame.need -> 1048937 i64
+test frame.need : 17 17 fx.ycc420 0 frame.need -> 1050262 i64
 
 # Frame, input length, budget. The budget is a parameter so the refusal can
 # be tested: with the default MEM_BUDGET of 1 GB no frame within MAX_PIXELS
@@ -237,10 +240,13 @@ test frame.describe : fx.grey frame.describe -> "FRAME 1 1 1 192"
 : frame.need ( frame i32 -- i64 )
   :> len :> f
   f frame.progressive? [ f frame.blocks-padded 128 i64 i64.mul ] [ 0 i64 ] if :> store
-  f frame.mcus-wide i64  f frame.hmax 8 i32.mul i64 i64.mul  f frame.vmax 8 i32.mul i64 i64.mul
-  f frame.ncomp i64 i64.mul :> planes
+  f frame.mcus-wide i64 :> mw
+  f frame.comps 0 i64
+  [ :> c  mw c component.h 8 i32.mul i64 i64.mul  c component.v 8 i32.mul i64 i64.mul  i64.add ]
+  fold :> planes
+  f frame.ncomp i64  f frame.vmax 8 i32.mul i64 i64.mul  f frame.width i64 i64.mul :> ups
   f frame.width i64  f frame.ncomp i64 i64.mul  2 i64 i64.mul :> row
-  len i64 store i64.add planes i64.add row i64.add 1048576 i64 i64.add ;
+  len i64 store i64.add planes i64.add ups i64.add row i64.add 1048576 i64 i64.add ;
 
 : frame.check-memory ( frame i32 i64 -- )
   :> budget
