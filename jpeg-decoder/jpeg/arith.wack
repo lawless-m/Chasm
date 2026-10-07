@@ -1,0 +1,1065 @@
+# Arithmetic decoding: the QM decoder of T.81 Annex D as libjpeg-turbo's
+# jdarith.c implements it.
+#
+# Statistics: one bytes of 1281 bins, DC table t (0..3) at t x 64, AC table t
+# at 256 + t x 256, and libjpeg's fixed-probability bin at 1280 (state 113).
+# Each bin is one byte: the MPS in bit 7, the state index in bits 0..6. The
+# state table (arith.table) is jaricom.c's jpeg_aritab, Qe << 16 |
+# Next_Index_MPS << 8 | Switch_MPS << 7 | Next_Index_LPS, and arith.vs-d3
+# checks entries 0..112 against T.81's Table D.3 (113 is libjpeg's fixed bin).
+#
+# Registers as libjpeg's: c (the code register, with a floating cut point at
+# bit ct), a (the interval), ct (bits left, -16 at a scan's start so the
+# first two bytes are read before the first decision). marker is libjpeg's
+# unread_marker: once a marker is met inside the data the decoder is fed zero
+# bytes, which is how every arithmetic scan normally ends, since the encoder
+# discards trailing zero bytes (jcarith.c finish_pass).
+#
+# Strictness: a marker inside arithmetic data is legal and feeds zeros, as in
+# libjpeg, so a scan cut short and closed with a marker decodes exactly as
+# djpeg decodes it; running out of input (TRUNCATED), bytes the decoder did
+# not consume before the marker (BAD_ENTROPY_DATA), restart faults
+# (BAD_RESTART) and spectral or magnitude overflow (BAD_ENTROPY_DATA) are
+# refused where libjpeg warns. Every arithmetic frame, sequential or
+# progressive, decodes through the whole-image coefficient store
+# (rows.multi), sharing the progression checks, quant table latching, block
+# smoothing and output pass with the Huffman store path. Conditioning comes
+# from DAC segments (markers.dac: libjpeg's 16 tables, L 0 U 1 and Kx 5 by
+# default, validated as get_dac); scans select tables 0..3.
+
+struct arith
+  data: bytes  pos: i32  c: i32  a: i32  ct: i32  marker: i32  stats: bytes  tab: array i32
+  lastdc: array i32  dcctx: array i32  blk: array i32  nat: array i32
+  dcl: array i32  dcu: array i32  ack: array i32
+  scn: option scan  prog: i32  restart: i32  togo: i32  next-rst: i32  mcu: i32  total: i32
+
+# jaricom.c's 114 packed entries.
+declare arith.table ( -- array i32 )
+
+# The jpeg (its data and DAC conditioning), the natural-order table and a
+# flag: 1 allocates the statistics and a block, 0 leaves them empty (a
+# Huffman decoder carries an empty arith). The only allocation of this file.
+declare arith.make ( jpeg array i32 i32 -- arith )
+
+# The entries 0..112 of arith.table that differ from Table D.3 in Qe,
+# Next_Index_LPS, Next_Index_MPS or Switch_MPS.
+declare arith.vs-d3 ( -- i32 )
+
+# jaricom.c's table, 8 hex digits per entry, generated from the source.
+: fx.aritab-hex ( -- str )
+  "5A1D01812586020E11140310080B041203D8051401DA061700E50719006F081C0036091E001A0A21000D0B2300060C0900030D0A00010D0C5A7F0F8F3F251024"
+  "2CF21126207C122717B913281182142A0CEF152B09A1162D072F172E055C18300406193103031A3302401B3401B11C3601441D3800F51E3900B71F3B008A203C" str.concat
+  "0068213E004E223F003B2320002C09215AE125A5484C26403A0D27412EF12843261F29441F332A4519A82B4615182C4811772D490E742E4A0BFB2F4B09F8304D" str.concat
+  "0861314E0706324F05CD333004DE3432040F35320363363302D43734025C383501F8393601A43A3701603B3801253C3900F63D3A00CB3E3B00AB3F3D008F203D" str.concat
+  "5B1241C14D044250412C435137D844522FE84553293C4654237947561EDF48571AA94957174E4A4814244B48119C4C4A0F6B4D4A0D514E4B0BB64F4D0A40304D" str.concat
+  "583251D04D1C5258438E53593BDD545A34EE555B2EAE565C299A575D25164756557059D84CA95A5F44D95B603E225C6138245D6332B45E632E17565D56A860DF" str.concat
+  "4F46616547E5626641CF63673C3D6468375E5D63523166694C0F676A4639686B415E636756276AE950E76B6C4B85676D55976D6E504F6B6F5A106FEE55226D70" str.concat
+  "59EB6FF05A1D7171" str.concat ;
+
+# T.81 Table D.3, 5 bytes per entry (Qe high, Qe low, Next_Index_LPS,
+# Next_Index_MPS, Switch_MPS), extracted from the PDF by tmp/m5/d3.py.
+: fx.d3-hex ( -- str )
+  "5A1D01010125860E02001114100300080B12040003D814050001DA17060000E5190700006F1C080000361E0900001A210A00000D230B000006090C0000030A0D"
+  "0000010C0D005A7F0F0F013F252410002CF2261100207C27120017B928130011822A14000CEF2B150009A12D1600072F2E1700055C3018000406311900030333" str.concat
+  "1A000240341B0001B1361C000144381D0000F5391E0000B73B1F00008A3C200000683E2100004E3F2200003B202300002C2109005AE1252501484C4026003A0D" str.concat
+  "4127002EF1432800261F4429001F33452A0019A8462B001518482C001177492D000E744A2E000BFB4B2F0009F84D300008614E310007064F320005CD30330004" str.concat
+  "DE323400040F323500036333360002D4343700025C35380001F836390001A4373A000160383B000125393C0000F63A3D0000CB3B3E0000AB3D3F00008F3D2000" str.concat
+  "5B124141014D04504200412C51430037D85244002FE8534500293C54460023795647001EDF5748001AA9574900174E484A001424484B00119C4A4C000F6B4A4D" str.concat
+  "000D514B4E000BB64D4F000A404D300058325051014D1C585200438E5953003BDD5A540034EE5B55002EAE5C5600299A5D5700251656470055705859014CA95F" str.concat
+  "5A0044D9605B003E22615C003824635D0032B4635E002E175D560056A85F60014F4665610047E566620041CF6763003C3D686400375E635D0052316966004C0F" str.concat
+  "6A670046396B6800415E6763005627696A0150E76C6B004B856D670055976E6D00504F6F6B005A106E6F015522706D0059EB706F01" str.concat ;
+
+: arith.table ( -- array i32 )
+  fx.aritab-hex hex :> b
+  114 array.new ( array i32 ) :> t
+  114
+  [
+    :> i
+    t i
+    b i 4 i32.mul bytes.at 24 i32.shl  b i 4 i32.mul 1 i32.add bytes.at 16 i32.shl i32.or
+    b i 4 i32.mul 2 i32.add bytes.at 8 i32.shl i32.or  b i 4 i32.mul 3 i32.add bytes.at i32.or
+    array.at!
+  ]
+  times
+  t ;
+
+: arith.make ( jpeg array i32 i32 -- arith )
+  :> alloc :> nat :> j
+  alloc [ 1281 ] [ 0 ] if bytes.new :> st
+  alloc [ st 1280 113 bytes.at! ] when
+  alloc [ 64 ] [ 0 ] if array.new ( array i32 ) :> blk
+  MAX_COMPONENTS array.new ( array i32 ) :> lastdc
+  MAX_COMPONENTS array.new ( array i32 ) :> dcctx
+  arith.table :> t
+  option.none ( option scan ) :> none
+  j jpeg.data 0 0 0 -16 0 st t lastdc dcctx blk nat j jpeg.dc-l j jpeg.dc-u j jpeg.ac-k none 0 0 0 0 0 0 arith.new ;
+
+: arith.vs-d3 ( -- i32 )
+  arith.table :> t
+  fx.d3-hex hex :> d
+  0 :> bad!
+  113
+  [
+    :> i
+    t i array.at :> v
+    i 5 i32.mul :> o
+    v 16 i32.shr_u  d o bytes.at 8 i32.shl d o 1 i32.add bytes.at i32.or  i32.ne
+    v 127 i32.and  d o 2 i32.add bytes.at  i32.ne  i32.or
+    v 8 i32.shr_u 255 i32.and  d o 3 i32.add bytes.at  i32.ne  i32.or
+    v 7 i32.shr_u 1 i32.and  d o 4 i32.add bytes.at  i32.ne  i32.or
+    [ bad 1 i32.add bad! ] when
+  ]
+  times
+  bad ;
+
+# Test fixture: an arithmetic decoder over hex data.
+: fx.arith ( str -- arith )  hex markers.open idct.make idct.natural 1 arith.make ;
+
+test arith.table : arith.table array.len -> 114
+test arith.table : arith.table 0 array.at -> 0x5A1D0181
+test arith.table : arith.table 1 array.at -> 0x2586020E
+test arith.table : arith.table 35 array.at -> 0x002C0921
+test arith.table : arith.table 112 array.at -> 0x59EB6FF0
+test arith.table : arith.table 113 array.at -> 0x5A1D7171
+test arith.table : arith.table 0 i64 [ i64 i64.add ] fold -> 66202512378 i64
+test arith.table : arith.table 0 [ 16 i32.shr_u i32.add ] fold -> 1010145
+test arith.table : arith.table 0 [ 127 i32.and i32.add ] fold -> 7674
+test arith.table : arith.table 0 [ 8 i32.shr_u 255 i32.and i32.add ] fold -> 6409
+test arith.table : arith.table 0 [ 7 i32.shr_u 1 i32.and i32.add ] fold -> 10
+test arith.vs-d3 : arith.vs-d3 -> 0
+test arith.make : "" fx.arith arith.stats bytes.len -> 1281
+test arith.make : "" fx.arith arith.stats 1280 bytes.at -> 113
+test arith.make : "" fx.arith arith.ct -> -16
+test arith.make : "" fx.arith arith.dcu 0 array.at -> 1
+test arith.make : "" fx.arith arith.ack 0 array.at -> 5
+test arith.make : "" fx.arith arith.blk array.len -> 64
+test arith.make : "FFD8" hex markers.open idct.make idct.natural 0 arith.make arith.stats bytes.len -> 0
+
+# One byte for the code register (libjpeg's get_byte inside arith_decode):
+# 0 once a marker has been met, without reading; FF followed by FFs and 00
+# is one FF data byte; FF followed by FFs and another byte is a marker,
+# recorded in arith.marker with pos left at the run's first FF, and the
+# decoder is fed zeros from then on (legal: it is how every scan ends). The
+# end of the data inside a scan is TRUNCATED (libjpeg warns JWRN_JPEG_EOF
+# and inserts a fake EOI; strict refuses).
+declare arith.byte ( arith -- i32 )
+
+# The renormalisation loop of arith_decode: while a < 0x8000, fetch a byte
+# into c whenever ct runs out, and double a. ct starts at -16, so the first
+# two bytes are read before the first decision.
+declare arith.norm ( arith -- )
+
+# One decision with the statistics bin at an index (libjpeg's
+# arith_decode): the interval split, the conditional exchange and the state
+# update ported verbatim. In T.81's terms the spec's C register is
+# c << (16 - ct) and its A is a.
+declare arith.decode ( arith i32 -- i32 )
+
+: arith.byte ( arith -- i32 )
+  :> ar
+  0 :> out!
+  ar arith.marker i32.eqz
+  [
+    ar arith.data :> d
+    d bytes.len :> n
+    ar arith.pos :> p
+    p n i32.ge_s [ TRUNCATED "arithmetic data ends before the scan's last MCU" p refusal-n trap ] when
+    d p bytes.at :> b
+    b 0xFF i32.ne
+    [ ar p 1 i32.add arith.pos!  b out! ]
+    [
+      p 1 i32.add :> q!
+      [ q n i32.lt_s [ d q bytes.at 0xFF i32.eq ] [ 0 ] if ] [ q 1 i32.add q! ] while
+      q n i32.ge_s [ TRUNCATED "arithmetic data ends inside an FF run at" p refusal-n trap ] when
+      d q bytes.at :> m
+      m [ ar m arith.marker! ] [ ar q 1 i32.add arith.pos!  0xFF out! ] if
+    ]
+    if
+  ]
+  when
+  out ;
+
+: arith.norm ( arith -- )
+  :> ar
+  [ ar arith.a 0x8000 i32.lt_s ]
+  [
+    ar  ar arith.ct 1 i32.sub  arith.ct!
+    ar arith.ct 0 i32.lt_s
+    [
+      ar  ar arith.c 8 i32.shl  ar arith.byte i32.or  arith.c!
+      ar  ar arith.ct 8 i32.add  arith.ct!
+      ar arith.ct 0 i32.lt_s
+      [
+        ar  ar arith.ct 1 i32.add  arith.ct!
+        ar arith.ct i32.eqz [ ar 0x8000 arith.a! ] when
+      ]
+      when
+    ]
+    when
+    ar  ar arith.a 1 i32.shl  arith.a!
+  ]
+  while ;
+
+: arith.decode ( arith i32 -- i32 )
+  :> si :> ar
+  ar arith.norm
+  ar arith.stats :> st
+  st si bytes.at :> sv!
+  ar arith.tab sv 127 i32.and array.at :> v
+  v 255 i32.and :> nl
+  v 8 i32.shr_u 255 i32.and :> nm
+  v 16 i32.shr_u :> qe
+  ar arith.a qe i32.sub :> ai
+  ar ai arith.a!
+  ai ar arith.ct i32.shl :> temp
+  ar arith.c temp i32.ge_s
+  [
+    ar  ar arith.c temp i32.sub  arith.c!
+    ai qe i32.lt_s
+    [ ar qe arith.a!  st si  sv 128 i32.and nm i32.xor  bytes.at! ]
+    [ ar qe arith.a!  st si  sv 128 i32.and nl i32.xor  bytes.at!  sv 128 i32.xor sv! ]
+    if
+  ]
+  [
+    ai 0x8000 i32.lt_s
+    [
+      ai qe i32.lt_s
+      [ st si  sv 128 i32.and nl i32.xor  bytes.at!  sv 128 i32.xor sv! ]
+      [ st si  sv 128 i32.and nm i32.xor  bytes.at! ]
+      if
+    ]
+    when
+  ]
+  if
+  sv 7 i32.shr_u ;
+
+# Test fixtures: T.81 K.4.1's input bits and coded bytes; n decisions in one
+# context, or in context i mod m, packed MSB first; the state before event
+# n + 1; the spec's C register; the encoder vectors of tmp/m5/qm.py.
+: fx.k4-in ( -- str )  "00020051000000C00352872AAAAAAAAA82C02000FCD79EF674EAABF7697EE74C" ;
+: fx.k4 ( -- str )  "655B5144F7969D517855BFFF00FC5184C7CEF93900287D46708ECBC0F6FFD900" ;
+: fx.adec-rr ( arith i32 i32 -- bytes )
+  :> n :> m :> ar
+  n 8 i32.div_u bytes.new :> out
+  n
+  [
+    :> i
+    ar i m i32.rem_u arith.decode
+    [ out  i 3 i32.shr_u  out i 3 i32.shr_u bytes.at  128 i 7 i32.and i32.shr_u i32.or  bytes.at! ]
+    when
+  ]
+  times
+  out ;
+: fx.adec ( arith i32 i32 -- bytes )
+  :> n :> si :> ar
+  n 8 i32.div_u bytes.new :> out
+  n
+  [
+    :> i
+    ar si arith.decode
+    [ out  i 3 i32.shr_u  out i 3 i32.shr_u bytes.at  128 i 7 i32.and i32.shr_u i32.or  bytes.at! ]
+    when
+  ]
+  times
+  out ;
+: fx.state ( str i32 -- arith )
+  :> n :> h
+  h fx.arith :> ar
+  n [ drop ar 0 arith.decode drop ] times
+  ar arith.norm
+  ar ;
+: fx.spec-c ( arith -- i32 )  :> ar  ar arith.c  16 ar arith.ct i32.sub  i32.shl ;
+# 2048 zero decisions in context 0.
+: fx.zeros2048 ( -- str )
+  "4CFFD9" ;
+# The K.4.1 bits, decision i in context i mod 8.
+: fx.k4rr8 ( -- str )
+  "4BEF3101743929B5849A9DE293CB02CF91D8DD4BB5C28243EEBD0A408C587AC57910FFD9" ;
+# 1024 bits of an LCG from seed 1, context 0.
+: fx.lcg1024 ( -- str )
+  "966268585E9E6FD777779214C68084A7DE2342FC16BF4A05702D3E2CE42B4CC0D9D712D7A6653BD4FF00B204443F3666C03CF69D5DC4678C2B55293C3022F34E"
+  "C4FB3F83AA2A353EF66182FE80C9206BE6DBBF3FEC73B5A8F5154A83BE4E3B2E90DE4761A2C591510DC254E9236D1F8D099F0F59925D06B3AAF5FDF188F550D4" str.concat
+  "562498C04BFFD9" str.concat ;
+# Those bits.
+: fx.lcg1024-bits ( -- str )
+  "3D33E3B1363B247E5806A75B5552A11B612F5FEFE40F31EB7A9AC8645C8BC62E2E5E52F38ED61ADD3CEEE95E2245DC46605A6FB13CF7FDFD0999A6E4390C7D53"
+  "E729622411CE5EDFDCEC26664A077FF3FA049C6792EBAF9DE52179C9E91698F6FD3572F8FB3244C3A945CD8D0FA0E21AE1B18CBA000B830F81ABB3E0C6D11B2D" str.concat ;
+# The first LCG seed whose coding has FF 00 stuffing and a carry (seed 1).
+: fx.stuff1024 ( -- str )
+  "966268585E9E6FD777779214C68084A7DE2342FC16BF4A05702D3E2CE42B4CC0D9D712D7A6653BD4FF00B204443F3666C03CF69D5DC4678C2B55293C3022F34E"
+  "C4FB3F83AA2A353EF66182FE80C9206BE6DBBF3FEC73B5A8F5154A83BE4E3B2E90DE4761A2C591510DC254E9236D1F8D099F0F59925D06B3AAF5FDF188F550D4" str.concat
+  "562498C04BFFD9" str.concat ;
+# Those bits.
+: fx.stuff1024-bits ( -- str )
+  "3D33E3B1363B247E5806A75B5552A11B612F5FEFE40F31EB7A9AC8645C8BC62E2E5E52F38ED61ADD3CEEE95E2245DC46605A6FB13CF7FDFD0999A6E4390C7D53"
+  "E729622411CE5EDFDCEC26664A077FF3FA049C6792EBAF9DE52179C9E91698F6FD3572F8FB3244C3A945CD8D0FA0E21AE1B18CBA000B830F81ABB3E0C6D11B2D" str.concat ;
+
+test arith.decode : fx.k4 fx.arith 0 256 fx.adec fx.k4-in hex eq -> 1
+test arith.decode : fx.k4 fx.arith 0 arith.decode -> 0
+test arith.decode : fx.k4 fx.arith dup 0 arith.decode drop 0 arith.decode -> 0
+test arith.decode : fx.k4 fx.arith dup 0 arith.decode drop dup 0 arith.decode drop 0 arith.decode -> 0
+test arith.decode : fx.k4 2 fx.state arith.a -> 0xB43A
+test arith.decode : fx.k4 2 fx.state arith.c -> 0x199551
+test arith.decode : fx.k4 2 fx.state arith.ct -> 7
+test arith.decode : fx.k4 2 fx.state fx.spec-c -> 0x332AA200
+test arith.decode : fx.k4 2 fx.state arith.stats 0 bytes.at -> 0x01
+test arith.decode : fx.k4 2 fx.state arith.pos -> 3
+test arith.decode : fx.k4 15 fx.state arith.a -> 0x80B0
+test arith.decode : fx.k4 15 fx.state fx.spec-c -> 0x2FC88000
+test arith.decode : fx.k4 15 fx.state arith.ct -> 1
+test arith.decode : fx.k4 15 fx.state arith.stats 0 bytes.at -> 0x12
+test arith.decode : fx.k4 26 fx.state arith.a -> 0xCEF0
+test arith.decode : fx.k4 26 fx.state fx.spec-c -> 0xB0588000
+test arith.decode : fx.k4 26 fx.state arith.ct -> 3
+test arith.decode : fx.k4 26 fx.state arith.stats 0 bytes.at -> 0x2B
+test arith.decode : fx.k4 249 fx.state arith.a -> 0xF0F4
+test arith.decode : fx.k4 249 fx.state fx.spec-c -> 0x75C80000
+test arith.decode : fx.k4 249 fx.state arith.ct -> 7
+test arith.decode : fx.k4 249 fx.state arith.stats 0 bytes.at -> 0xE8
+test arith.decode : fx.k4 249 fx.state arith.marker -> 0xD9
+test arith.decode : fx.k4 249 fx.state arith.pos -> 29
+test arith.decode : fx.k4 255 fx.state arith.a -> 0x8C72
+test arith.decode : fx.k4 255 fx.state fx.spec-c -> 0x126A0000
+test arith.decode : fx.k4 255 fx.state arith.ct -> 2
+test arith.decode : fx.k4 255 fx.state arith.stats 0 bytes.at -> 0xEB
+test arith.decode : fx.k4 241 fx.state arith.marker -> 0
+test arith.decode : fx.k4 242 fx.state arith.marker -> 0xD9
+test arith.decode : fx.zeros2048 fx.arith 0 2048 fx.adec 256 bytes.new eq -> 1
+test arith.decode : fx.k4rr8 fx.arith 8 256 fx.adec-rr fx.k4-in hex eq -> 1
+test arith.decode : fx.lcg1024 fx.arith 0 1024 fx.adec fx.lcg1024-bits hex eq -> 1
+test arith.decode : fx.stuff1024 fx.arith 0 1024 fx.adec fx.stuff1024-bits hex eq -> 1
+test arith.byte : "12FF00FFFFD9" fx.arith arith.byte -> 0x12
+test arith.byte : "12FF00FFFFD9" fx.arith dup arith.byte drop arith.byte -> 0xFF
+test arith.byte : "12FF00FFFFD9" fx.arith dup arith.byte drop dup arith.byte drop arith.pos -> 3
+test arith.byte : "12FF00FFFFD9" fx.arith dup arith.byte drop dup arith.byte drop arith.byte -> 0
+test arith.byte : "12FF00FFFFD9" fx.arith dup arith.byte drop dup arith.byte drop dup arith.byte drop arith.marker -> 0xD9
+test arith.byte : "12FF00FFFFD9" fx.arith dup arith.byte drop dup arith.byte drop dup arith.byte drop arith.pos -> 3
+test arith.byte : "12FF00FFFFD9" fx.arith dup arith.byte drop dup arith.byte drop dup arith.byte drop dup arith.byte drop arith.pos -> 3
+test arith.byte : "12FF00FFFFD9" fx.arith dup arith.byte drop dup arith.byte drop dup arith.byte drop arith.byte -> 0
+test arith.byte : "FFFF00" fx.arith arith.byte -> 0xFF
+test arith.byte : "FFFF00" fx.arith dup arith.byte drop arith.pos -> 3
+test arith.byte : "" fx.arith arith.byte -> trap
+test arith.byte : "12" fx.arith dup arith.byte drop arith.byte -> trap
+test arith.byte : "12FF" fx.arith dup arith.byte drop arith.byte -> trap
+test arith.byte : "12FFFF" fx.arith dup arith.byte drop arith.byte -> trap
+test arith.byte : "FFD0" fx.arith arith.byte -> 0
+test arith.byte : "FFD0" fx.arith dup arith.byte drop arith.marker -> 0xD0
+
+# The scan, the progressive flag, the offset of its first entropy byte, the
+# restart interval and the MCU total: the decoder set up for that scan as
+# libjpeg's start_pass does (statistics, predictors and registers).
+declare arith.reopen ( arith scan i32 i32 i32 i32 -- )
+
+# After each MCU: at the end of every restart interval but the last the next
+# marker must be the expected RSTn (libjpeg's read_restart_marker, which
+# warns and resyncs where strict refuses), and process_restart's resets run.
+# A marker met while fetching data leaves pos at its first FF, so the same
+# search finds it.
+declare arith.end-mcu ( arith -- )
+
+# After the last MCU: the marker that ends the data (pos just after it), or
+# -1 at the very end of the data. A data byte, or FF 00, the decoder did not
+# consume is BAD_ENTROPY_DATA (libjpeg warns: extraneous bytes before
+# marker); bytes it consumed are not reported, as in libjpeg. Strict refuses
+# exactly where libjpeg warns.
+declare arith.end ( arith -- i32 )
+
+# The resets of start_pass and process_restart for the current scan: a
+# component's DC table, predictor and context when not progressive or
+# Ss = 0 and Ah = 0; its AC table when not progressive or Ss > 0; then the
+# registers (c 0, a 0, ct -16: two bytes are read before the first decision).
+: arith.reset ( arith -- )
+  :> ar
+  ar arith.scn none: [ NO_FRAME "arithmetic scan not set" refusal trap ] some: [ ] match :> scn
+  ar arith.prog :> prog
+  ar arith.stats :> st
+  scn scan.ss :> ss
+  scn scan.ncomp
+  [
+    :> k
+    scn scan.comps k array.at :> ci
+    prog i32.eqz  ss i32.eqz scn scan.ah i32.eqz i32.and  i32.or
+    [
+      scn scan.td k array.at 64 i32.mul :> dc
+      64 [ :> z  st dc z i32.add 0 bytes.at! ] times
+      ar arith.lastdc ci 0 array.at!
+      ar arith.dcctx ci 0 array.at!
+    ]
+    when
+    prog i32.eqz  ss 0 i32.gt_s  i32.or
+    [
+      scn scan.ta k array.at 256 i32.mul 256 i32.add :> ac
+      256 [ :> y  st ac y i32.add 0 bytes.at! ] times
+    ]
+    when
+  ]
+  times
+  ar 0 arith.c!
+  ar 0 arith.a!
+  ar -16 arith.ct!
+  ar 0 arith.marker! ;
+
+: arith.reopen ( arith scan i32 i32 i32 i32 -- )
+  :> total :> restart :> at :> prog :> scn :> ar
+  ar scn option.some arith.scn!
+  ar prog arith.prog!
+  ar arith.reset
+  ar at arith.pos!
+  ar restart arith.restart!
+  ar restart arith.togo!
+  ar 0 arith.next-rst!
+  ar 0 arith.mcu!
+  ar total arith.total! ;
+
+# From pos: past any fill FFs to a marker byte, returning it with pos just
+# after it, or -1 (pos unchanged) when there is no marker there.
+: arith.marker-at ( arith -- i32 )
+  :> ar
+  ar arith.data :> d
+  d bytes.len :> n
+  ar arith.pos :> p
+  p :> q!
+  [ q n i32.lt_s [ d q bytes.at 0xFF i32.eq ] [ 0 ] if ] [ q 1 i32.add q! ] while
+  q p i32.gt_s  q n i32.lt_s  i32.and [ d q bytes.at ] [ 0 ] if :> m
+  m [ ar q 1 i32.add arith.pos!  m ] [ -1 ] if ;
+
+: arith.end-mcu ( arith -- )
+  :> ar
+  ar  ar arith.mcu 1 i32.add  arith.mcu!
+  ar arith.restart 0 i32.gt_s
+  [
+    ar  ar arith.togo 1 i32.sub  arith.togo!
+    ar arith.togo i32.eqz  ar arith.mcu ar arith.total i32.lt_s  i32.and
+    [
+      ar arith.marker-at :> m
+      m -1 i32.eq [ BAD_RESTART "RST marker missing after MCU" ar arith.mcu refusal-n trap ] when
+      m 0xD0 ar arith.next-rst i32.add i32.ne
+      [ BAD_RESTART "RST marker out of sequence, expected" ar arith.next-rst refusal-n trap ]
+      when
+      ar  ar arith.next-rst 1 i32.add 7 i32.and  arith.next-rst!
+      ar  ar arith.restart  arith.togo!
+      ar arith.reset
+    ]
+    when
+  ]
+  when ;
+
+: arith.end ( arith -- i32 )
+  :> ar
+  ar arith.pos ar arith.data bytes.len i32.ge_s  ar arith.marker i32.eqz  i32.and
+  [ -1 ]
+  [
+    ar arith.marker-at :> m
+    m -1 i32.eq [ BAD_ENTROPY_DATA "extraneous bytes after the scan at offset" ar arith.pos refusal-n trap ] when
+    m
+  ]
+  if ;
+
+# Test fixtures: a scan of n components c0, c0+1, ...; a fresh decoder with
+# DC byte 5 and AC byte 300 preset to 0x41 and lastdc[0] to 7, then reopened
+# for a sequential or progressive one-component scan.
+: fx.ascan ( i32 i32 i32 i32 i32 i32 -- scan )
+  :> al :> ah :> se :> ss :> n :> c0
+  n array.new ( array i32 ) :> cs
+  n array.new ( array i32 ) :> td
+  n array.new ( array i32 ) :> ta
+  n [ :> i  cs i c0 i i32.add array.at! ] times
+  n cs td ta ss se ah al 0 scan.new ;
+: fx.preset ( str -- arith )
+  fx.arith :> ar
+  ar arith.stats 5 0x41 bytes.at!
+  ar arith.stats 300 0x41 bytes.at!
+  ar arith.lastdc 0 7 array.at!
+  ar ;
+: fx.reopened ( str i32 i32 i32 -- arith )
+  :> total :> restart :> prog :> h
+  h fx.preset :> ar
+  ar  0 1 0 63 0 0 fx.ascan  prog 0 restart total  arith.reopen
+  ar ;
+: fx.preopened ( str i32 i32 i32 -- arith )
+  :> al :> ah :> ss :> h
+  h fx.preset :> ar
+  ar  0 1 ss ss [ 63 ] [ 0 ] if ah al fx.ascan  1 0 0 1  arith.reopen
+  ar ;
+: fx.end-mcus ( arith i32 -- arith )
+  :> n :> ar
+  n [ drop ar arith.end-mcu ] times
+  ar ;
+
+test arith.reopen : "" 0 0 1 fx.reopened arith.stats 5 bytes.at -> 0
+test arith.reopen : "" 0 0 1 fx.reopened arith.stats 300 bytes.at -> 0
+test arith.reopen : "" 0 0 1 fx.reopened arith.lastdc 0 array.at -> 0
+test arith.reopen : "" 0 0 1 fx.reopened arith.ct -> -16
+test arith.reopen : "" 0 0 1 fx.reopened arith.togo -> 0
+test arith.reopen : "" 0 0 0 fx.preopened arith.stats 5 bytes.at -> 0
+test arith.reopen : "" 0 0 0 fx.preopened arith.stats 300 bytes.at -> 0x41
+test arith.reopen : "" 1 0 0 fx.preopened arith.stats 5 bytes.at -> 0x41
+test arith.reopen : "" 1 0 0 fx.preopened arith.lastdc 0 array.at -> 7
+test arith.reopen : "" 1 0 0 fx.preopened arith.stats 300 bytes.at -> 0
+test arith.reopen : "" 0 1 0 fx.preopened arith.stats 5 bytes.at -> 0x41
+test arith.reopen : "" 0 1 0 fx.preopened arith.stats 300 bytes.at -> 0x41
+test arith.reopen : "12" 0 3 9 fx.reopened arith.togo -> 3
+test arith.end-mcu : "FFD0A5" 0 1 2 fx.reopened dup arith.end-mcu arith.next-rst -> 1
+test arith.end-mcu : "FFD0A5" 0 1 2 fx.reopened dup arith.end-mcu arith.pos -> 2
+test arith.end-mcu : "FFD0A5" 0 1 2 fx.reopened dup arith.end-mcu arith.togo -> 1
+test arith.end-mcu : "FFD0A5" 0 1 2 fx.reopened dup arith.end-mcu arith.mcu -> 1
+test arith.end-mcu : "FFD0A5" 0 1 2 fx.reopened dup arith.end-mcu arith.ct -> -16
+test arith.end-mcu : "FFD0A5" 0 1 2 fx.reopened dup arith.end-mcu arith.marker -> 0
+test arith.end-mcu : "FFD0A5" 0 1 2 fx.reopened dup arith.byte drop dup arith.end-mcu arith.pos -> 2
+test arith.end-mcu : "FFFFD0" 0 1 2 fx.reopened dup arith.end-mcu arith.pos -> 3
+test arith.end-mcu : "FFD1A5" 0 1 2 fx.reopened arith.end-mcu -> trap
+test arith.end-mcu : "12FFD0" 0 1 2 fx.reopened arith.end-mcu -> trap
+test arith.end-mcu : "" 0 1 2 fx.reopened arith.end-mcu -> trap
+test arith.end-mcu : "FFD9" 0 1 2 fx.reopened arith.end-mcu -> trap
+test arith.end-mcu : "12" 0 0 2 fx.reopened dup arith.end-mcu arith.mcu -> 1
+test arith.end-mcu : "" 0 1 1 fx.reopened dup arith.end-mcu arith.mcu -> 1
+test arith.end-mcu : "FFD0FFD1FFD2FFD3FFD4FFD5FFD6FFD7" 0 1 9 fx.reopened 8 fx.end-mcus arith.next-rst -> 0
+test arith.end-mcu : "FFD0FFD1FFD2FFD3FFD4FFD5FFD6FFD7" 0 1 9 fx.reopened 8 fx.end-mcus arith.pos -> 16
+test arith.end : "FFD9" 0 0 1 fx.reopened arith.end -> 0xD9
+test arith.end : "FFD9" 0 0 1 fx.reopened dup arith.end drop arith.pos -> 2
+test arith.end : "FFFFD9" 0 0 1 fx.reopened arith.end -> 0xD9
+test arith.end : "FFFFD9" 0 0 1 fx.reopened dup arith.end drop arith.pos -> 3
+test arith.end : "FFC4" 0 0 1 fx.reopened arith.end -> 0xC4
+test arith.end : "" 0 0 1 fx.reopened arith.end -> -1
+test arith.end : "12FFD9" 0 0 1 fx.reopened arith.end -> trap
+test arith.end : "FF00FFD9" 0 0 1 fx.reopened arith.end -> trap
+test arith.end : "FFD9" 0 0 1 fx.reopened dup arith.byte drop arith.end -> 0xD9
+test arith.end : "FFD0" 0 0 1 fx.reopened arith.end -> 0xD0
+
+# The DC difference of libjpeg's decode_mcu and decode_mcu_DC_first for
+# frame component ci with DC table td (T.81 Table F.4: the context dcctx
+# picks bin 0, 4, 8, 12 or 16, then sign, category, X1 at 20, and the
+# magnitude bits 14 further on), updating lastdc (& 0xFFFF, as libjpeg) and
+# the context from the DAC bounds L and U. A magnitude past 15 bits is
+# BAD_ENTROPY_DATA (libjpeg warns JWRN_ARITH_BAD_CODE and leaves the rest of
+# the scan zero).
+declare arith.dc-diff ( arith i32 i32 -- )
+
+# One block of a sequential scan (libjpeg's decode_mcu): ci, td, ta and the
+# block's index in the store. The DC as arith.dc-diff, stored as
+# (JCOEF) lastdc; then per k an EOB decision, nonzero decisions skipping
+# zeros, the sign from the fixed bin, the category (X at 189 when k <= Kx,
+# else 217: Kx 0 sends every k to 217, Kx 63 or more every k to 189) and the
+# magnitude bits. A run past k 63 or a magnitude past 15 bits is
+# BAD_ENTROPY_DATA where libjpeg warns.
+declare arith.block ( arith coeffs i32 i32 i32 i32 -- )
+
+# A nonzero AC coefficient's value, shared by decode_mcu and
+# decode_mcu_AC_first: st is k's first bin, ta the table. The sign from the
+# fixed bin, the category, the magnitude bits; returns the signed value.
+declare arith.ac-value ( arith i32 i32 i32 -- i32 )
+
+: arith.dc-diff ( arith i32 i32 -- )
+  :> td :> ci :> ar
+  td 64 i32.mul :> base
+  base ar arith.dcctx ci array.at i32.add :> st0
+  ar st0 arith.decode i32.eqz
+  [ ar arith.dcctx ci 0 array.at! ]
+  [
+    ar st0 1 i32.add arith.decode :> sign
+    st0 2 i32.add sign i32.add :> st!
+    ar st arith.decode :> m!
+    m
+    [
+      base 20 i32.add st!
+      [ ar st arith.decode ]
+      [
+        m 1 i32.shl m!
+        m 0x8000 i32.eq [ BAD_ENTROPY_DATA "arithmetic DC magnitude overflow" refusal trap ] when
+        st 1 i32.add st!
+      ]
+      while
+    ]
+    when
+    m  1 ar arith.dcl td array.at i32.shl 1 i32.shr_s  i32.lt_s
+    [ ar arith.dcctx ci 0 array.at! ]
+    [
+      m  1 ar arith.dcu td array.at i32.shl 1 i32.shr_s  i32.gt_s
+      [ ar arith.dcctx ci 12 sign 4 i32.mul i32.add array.at! ]
+      [ ar arith.dcctx ci 4 sign 4 i32.mul i32.add array.at! ]
+      if
+    ]
+    if
+    m :> v!
+    st 14 i32.add st!
+    m 1 i32.shr_s m!
+    [ m ] [ ar st arith.decode [ v m i32.or v! ] when  m 1 i32.shr_s m! ] while
+    v 1 i32.add v!
+    sign [ 0 v i32.sub v! ] when
+    ar arith.lastdc ci  ar arith.lastdc ci array.at v i32.add 0xFFFF i32.and  array.at!
+  ]
+  if ;
+
+: arith.ac-value ( arith i32 i32 i32 -- i32 )
+  :> ta :> k :> st0 :> ar
+  ar 1280 arith.decode :> sign
+  st0 2 i32.add :> st!
+  ar st arith.decode :> m!
+  m
+  [
+    ar st arith.decode
+    [
+      m 1 i32.shl m!
+      256 ta 256 i32.mul i32.add  k ar arith.ack ta array.at i32.le_s [ 189 ] [ 217 ] if  i32.add st!
+      [ ar st arith.decode ]
+      [
+        m 1 i32.shl m!
+        m 0x8000 i32.eq [ BAD_ENTROPY_DATA "arithmetic AC magnitude overflow" refusal trap ] when
+        st 1 i32.add st!
+      ]
+      while
+    ]
+    when
+  ]
+  when
+  m :> v!
+  st 14 i32.add st!
+  m 1 i32.shr_s m!
+  [ m ] [ ar st arith.decode [ v m i32.or v! ] when  m 1 i32.shr_s m! ] while
+  v 1 i32.add v!
+  sign [ 0 v i32.sub v! ] when
+  v ;
+
+: arith.block ( arith coeffs i32 i32 i32 i32 -- )
+  :> off :> ta :> td :> ci :> store :> ar
+  ar arith.blk :> blk
+  ar arith.nat :> nat
+  64 [ :> z  blk z 0 array.at! ] times
+  ar ci td arith.dc-diff
+  blk 0  ar arith.lastdc ci array.at i32.extend16_s  array.at!
+  256 ta 256 i32.mul i32.add :> base
+  1 :> k!
+  [ k 63 i32.le_s ]
+  [
+    base k 1 i32.sub 3 i32.mul i32.add :> st!
+    ar st arith.decode
+    [ 64 k! ]
+    [
+      [ ar st 1 i32.add arith.decode i32.eqz ]
+      [
+        st 3 i32.add st!
+        k 1 i32.add k!
+        k 63 i32.gt_s [ BAD_ENTROPY_DATA "arithmetic AC run past the end of the block" refusal trap ] when
+      ]
+      while
+      ar st k ta arith.ac-value :> v
+      blk  nat k array.at  v i32.extend16_s  array.at!
+      k 1 i32.add k!
+    ]
+    if
+  ]
+  while
+  store off blk coeffs.put-block ;
+
+# The 2x2 grey image 10 80 160 240, cjpeg -arithmetic -quality 50: 142
+# bytes, entropy data at 120..139; the oracle gives 01 52 A5 F6.
+: fx.g2a ( -- str )
+  "FFD8FFE000104A46494600010100000100010000FFDB004300100B0C0E0C0A100E0D0E1211101318281A181616183123251D283A333D3C3933383740"
+  "485C4E404457453738506D51575F626768673E4D71797064785C656763FFC9000B080002000201011100FFCC000600101005FFDA0008010100003F00" str.concat
+  "D2661AABA996AF11700871DA7FDD00D474FF00F0" str.concat
+  "FFD9" str.concat ;
+# 1x1 grey 128 the same way: 122 bytes, no entropy bytes (EOI at 120).
+: fx.g1a ( -- str )
+  "FFD8FFE000104A46494600010100000100010000FFDB004300100B0C0E0C0A100E0D0E1211101318281A181616183123251D283A333D3C3933383740"
+  "485C4E404457453738506D51575F626768673E4D71797064785C656763FFC9000B080001000101011100FFCC000600101005FFDA0008010100003F00" str.concat
+  "FFD9" str.concat ;
+
+# Test fixtures: a whole file's only block decoded into a one-block store,
+# with the file's DAC conditioning; the arith afterwards; one block of raw
+# entropy data.
+: fx.seq-run ( str i32 -- arith coeffs )
+  :> at :> h
+  h hex markers.open :> j
+  j markers.walk
+  j idct.make idct.natural 1 arith.make :> ar
+  j jpeg.scan none: [ NO_FRAME "no scan" refusal trap ] some: [ ] match :> scn
+  ar scn 0 at 0 1 arith.reopen
+  fx.grey 1 coeffs.make :> st
+  ar st 0 0 0 0 arith.block
+  ar st ;
+: fx.seq-block ( str i32 -- coeffs )  fx.seq-run nip ;
+: fx.seq-block-ar ( str i32 -- arith )  fx.seq-run drop ;
+: fx.raw-block ( str -- coeffs )
+  fx.arith :> ar
+  ar  0 1 0 63 0 0 fx.ascan  0 0 0 1  arith.reopen
+  fx.grey 1 coeffs.make :> st
+  ar st 0 0 0 0 arith.block
+  st ;
+
+# Block (0, 0) of fx.g2a as tmp/m5/qm.py decodes it (natural order, the
+# nonzero ones): 0:41 1:-10 2:-10 3:-6 4:-3 5:-2 6:-1 8:-18 16:-15 24:-13 32:-9 40:-5 48:-2 56:-1.
+test arith.block : fx.g2a 120 fx.seq-block 0 coeffs.get -> 41
+test arith.block : fx.g2a 120 fx.seq-block 1 coeffs.get -> -10
+test arith.block : fx.g2a 120 fx.seq-block 2 coeffs.get -> -10
+test arith.block : fx.g2a 120 fx.seq-block 3 coeffs.get -> -6
+test arith.block : fx.g2a 120 fx.seq-block 4 coeffs.get -> -3
+test arith.block : fx.g2a 120 fx.seq-block 5 coeffs.get -> -2
+test arith.block : fx.g2a 120 fx.seq-block 6 coeffs.get -> -1
+test arith.block : fx.g2a 120 fx.seq-block 8 coeffs.get -> -18
+test arith.block : fx.g2a 120 fx.seq-block 16 coeffs.get -> -15
+test arith.block : fx.g2a 120 fx.seq-block 24 coeffs.get -> -13
+test arith.block : fx.g2a 120 fx.seq-block 32 coeffs.get -> -9
+test arith.block : fx.g2a 120 fx.seq-block 40 coeffs.get -> -5
+test arith.block : fx.g2a 120 fx.seq-block 48 coeffs.get -> -2
+test arith.block : fx.g2a 120 fx.seq-block 56 coeffs.get -> -1
+test arith.block : fx.g2a 120 fx.seq-block 7 coeffs.get -> 0
+test arith.block : fx.g2a 120 fx.seq-block 63 coeffs.get -> 0
+test arith.block : fx.g2a 120 fx.seq-block-ar arith.lastdc 0 array.at -> 41
+test arith.block : fx.g1a 120 fx.seq-block 0 coeffs.get -> 0
+test arith.block : fx.g1a 120 fx.seq-block 63 coeffs.get -> 0
+test arith.block : fx.g1a 120 fx.seq-block-ar arith.marker -> 0xD9
+# Streams made with qm.py's QMEncoder in decode_mcu's reading order: a DC
+# magnitude past 15 bits; zero runs past k 63; a +1 at k 62 then EOB at 63.
+test arith.block : "D2F160FFD9" fx.raw-block -> trap
+test arith.block : "4BC6FFD9" fx.raw-block -> trap
+test arith.block : "4BC6000000000001C0FFD9" fx.raw-block 62 coeffs.get -> 1
+test arith.block : "4BC6000000000001C0FFD9" fx.raw-block 0 coeffs.get -> 0
+
+# libjpeg's decode_mcu_DC_first for one block: ci, td, Al and the block's
+# index. Every block gets (JCOEF) LEFT_SHIFT(lastdc, Al), also when the
+# difference decision is 0.
+declare arith.dc-first ( arith coeffs i32 i32 i32 i32 -- )
+
+# libjpeg's decode_mcu_DC_refine for one block: Al and the block's index. One
+# decision in the fixed bin (state 113, which maps to itself, so it never
+# adapts); 1 ORs 1 << Al into block[0].
+declare arith.dc-refine ( arith coeffs i32 i32 -- )
+
+: arith.dc-first ( arith coeffs i32 i32 i32 i32 -- )
+  :> off :> al :> td :> ci :> store :> ar
+  ar ci td arith.dc-diff
+  store off  ar arith.lastdc ci array.at al i32.shl i32.extend16_s  coeffs.set ;
+
+: arith.dc-refine ( arith coeffs i32 i32 -- )
+  :> off :> al :> store :> ar
+  ar 1280 arith.decode
+  [ store off  store off coeffs.get  1 al i32.shl  i32.or  coeffs.set ]
+  when ;
+
+# The 2x2 grey image, cjpeg -arithmetic -grayscale -quality 50 -progressive:
+# 212 bytes, six scans (scan 1 DC first Al 1, data at 118; scan 5 DC refine
+# Ah 1 Al 0, data at 188); the oracle gives 01 52 A5 F6.
+: fx.g2pa ( -- str )
+  "FFD8FFE000104A46494600010100000100010000FFDB004300100B0C0E0C0A100E0D0E1211101318281A181616183123251D283A333D3C3933383740"
+  "485C4E404457453738506D51575F626768673E4D71797064785C656763FFCA000B080002000201011100FFCC00040010FFDA0008010100000001D1C0" str.concat
+  "FFCC00041005FFDA00080101000105021EA82CFFCC00041005FFDA0008010100063F020ACC6D24FFCC00041005FFDA0008010100013F21F1F0C1FFDA" str.concat
+  "0008010100000010C0FFCC00041005FFDA0008010100013F1079E88F7916FFD9" str.concat ;
+# The 1x1 red progressive arithmetic file, defined with the other file
+# fixtures in rows.wack.
+declare fx.red1pa ( -- str )
+
+# Test fixtures: a file parsed to its first scan, and a fresh arith with its
+# DAC conditioning reopened for a one-component progressive DC scan at an
+# offset (ss ah al), with a one-block store; the DC first block of g2pa's
+# scan 1; DC first over raw data with a preset predictor; DC refine over
+# raw data with a preset DC.
+: fx.pdc ( str i32 i32 i32 i32 -- arith coeffs )
+  :> al :> ah :> ss :> at :> h
+  h hex markers.open :> j
+  j markers.walk
+  j idct.make idct.natural 1 arith.make :> ar
+  ar  0 1 ss ss ah al fx.ascan  1 at 0 1  arith.reopen
+  ar fx.grey 1 coeffs.make ;
+: fx.g2pa-dc-run ( -- arith coeffs )
+  fx.g2pa 118 0 0 1 fx.pdc :> st :> ar
+  ar st 0 0 1 0 arith.dc-first
+  ar st ;
+: fx.g2pa-dc ( -- coeffs )  fx.g2pa-dc-run nip ;
+: fx.g2pa-dc-ar ( -- arith )  fx.g2pa-dc-run drop ;
+: fx.raw-dc ( str i32 i32 -- coeffs )
+  :> al :> pre :> h
+  h fx.arith :> ar
+  ar  0 1 0 0 0 al fx.ascan  1 0 0 1  arith.reopen
+  ar arith.lastdc 0 pre array.at!
+  fx.grey 1 coeffs.make :> st
+  ar st 0 0 al 0 arith.dc-first
+  st ;
+: fx.raw-dcr ( str i32 i32 -- coeffs )
+  :> al :> pre :> h
+  h fx.arith :> ar
+  ar  0 1 0 0 1 al fx.ascan  1 0 0 1  arith.reopen
+  fx.grey 1 coeffs.make :> st
+  st 0 pre coeffs.set
+  ar st al 0 arith.dc-refine
+  st ;
+# red1pa's first scan, with its own table selectors, in MCU order into a
+# 4:2:0 store: Y's four blocks, then Cb and Cr.
+: fx.red1pa-dc ( -- coeffs )
+  fx.red1pa hex markers.open :> j
+  j markers.walk
+  j jpeg.scan none: [ NO_FRAME "no scan" refusal trap ] some: [ ] match :> scn
+  j idct.make idct.natural 1 arith.make :> ar
+  ar scn 1 scn scan.data-at 0 1 arith.reopen
+  1 1 fx.ycc420 1 coeffs.make :> st
+  4 [ :> b  ar st 0 0 1  st 0 b 1 i32.and b 1 i32.shr_u coeffs.block  arith.dc-first ] times
+  ar st 1 1 1  st 1 0 0 coeffs.block  arith.dc-first
+  ar st 2 1 1  st 2 0 0 coeffs.block  arith.dc-first
+  st ;
+
+# Expected values from tmp/m5/qm.py: g2pa's DC is 40 after scan 1 (a
+# difference of 20 at Al 1, whose leading power of two m = 16 exceeds
+# (1 << U) >> 1 = 1, so the context becomes 12 for a positive sign) and 41
+# after scan 5; red1pa's scan 1 gives -26 for each Y block, -20 for Cb, 60
+# for Cr. C0 FF D9 is one fixed-bin decision 1 and FF D9 one decision 0
+# (qm.py's encoder with the fixed state 113 in its statistics array).
+test arith.dc-first : fx.g2pa-dc 0 coeffs.get -> 40
+test arith.dc-first : fx.g2pa-dc-ar arith.lastdc 0 array.at -> 20
+test arith.dc-first : fx.g2pa-dc-ar arith.dcctx 0 array.at -> 12
+test arith.dc-first : fx.red1pa-dc 0 coeffs.get -> -26
+test arith.dc-first : fx.red1pa-dc 64 coeffs.get -> -26
+test arith.dc-first : fx.red1pa-dc 192 coeffs.get -> -26
+test arith.dc-first : fx.red1pa-dc 256 coeffs.get -> -20
+test arith.dc-first : fx.red1pa-dc 320 coeffs.get -> 60
+test arith.dc-first : "FFD9" 0 0 fx.raw-dc 0 coeffs.get -> 0
+test arith.dc-first : "D2F160FFD9" 0 0 fx.raw-dc -> trap
+test arith.dc-first : "FFD9" 40000 0 fx.raw-dc 0 coeffs.get -> -25536
+test arith.dc-first : "FFD9" 40000 1 fx.raw-dc 0 coeffs.get -> 14464
+test arith.dc-refine : fx.g2pa 188 0 1 0 fx.pdc dup 0 40 coeffs.set 2dup 0 0 arith.dc-refine nip 0 coeffs.get -> 41
+test arith.dc-refine : "C0FFD9" 4 0 fx.raw-dcr 0 coeffs.get -> 5
+test arith.dc-refine : "C0FFD9" 4 1 fx.raw-dcr 0 coeffs.get -> 6
+test arith.dc-refine : "FFD9" 4 0 fx.raw-dcr 0 coeffs.get -> 4
+test arith.dc-refine : "C0FFD9" 5 0 fx.raw-dcr 0 coeffs.get -> 5
+
+# libjpeg's decode_mcu_AC_first for one block: ta, Ss, Se, Al and the
+# block's index. Per k an EOB decision, nonzero decisions skipping zeros, and
+# arith.ac-value; stored as (JCOEF)((unsigned)v << Al). A run past Se is
+# BAD_ENTROPY_DATA where libjpeg warns and leaves the rest of the scan zero
+# (its ct == -1 early return).
+declare arith.ac-first ( arith coeffs i32 i32 i32 i32 i32 -- )
+
+# libjpeg's decode_mcu_AC_refine for one block: ta, Ss, Se, Al and the
+# block's index, read and written in the store directly (coeffs.get/set). kex
+# is the previous stage's end of block: an EOB decision is read only past it.
+# A coefficient already nonzero takes a correction bit (adding p1 or m1); a
+# zero one either becomes +-1 << Al (sign from the fixed bin, used for every
+# sign) or is skipped. Past Se is BAD_ENTROPY_DATA where libjpeg warns.
+declare arith.ac-refine ( arith coeffs i32 i32 i32 i32 i32 -- )
+
+: arith.ac-first ( arith coeffs i32 i32 i32 i32 i32 -- )
+  :> off :> al :> se :> ss :> ta :> store :> ar
+  ar arith.nat :> nat
+  256 ta 256 i32.mul i32.add :> base
+  ss :> k!
+  [ k se i32.le_s ]
+  [
+    base k 1 i32.sub 3 i32.mul i32.add :> st!
+    ar st arith.decode
+    [ se 1 i32.add k! ]
+    [
+      [ ar st 1 i32.add arith.decode i32.eqz ]
+      [
+        st 3 i32.add st!
+        k 1 i32.add k!
+        k se i32.gt_s [ BAD_ENTROPY_DATA "arithmetic AC run past the end of the band" refusal trap ] when
+      ]
+      while
+      ar st k ta arith.ac-value :> v
+      store  off nat k array.at i32.add  v al i32.shl i32.extend16_s  coeffs.set
+      k 1 i32.add k!
+    ]
+    if
+  ]
+  while ;
+
+: arith.ac-refine ( arith coeffs i32 i32 i32 i32 i32 -- )
+  :> off :> al :> se :> ss :> ta :> store :> ar
+  ar arith.nat :> nat
+  256 ta 256 i32.mul i32.add :> base
+  1 al i32.shl :> p1
+  -1 al i32.shl :> m1
+  se :> kex!
+  [ kex 0 i32.gt_s [ store off nat kex array.at i32.add coeffs.get i32.eqz ] [ 0 ] if ] [ kex 1 i32.sub kex! ] while
+  ss :> k!
+  [ k se i32.le_s ]
+  [
+    base k 1 i32.sub 3 i32.mul i32.add :> st!
+    k kex i32.gt_s [ ar st arith.decode ] [ 0 ] if
+    [ se 1 i32.add k! ]
+    [
+      1 :> more!
+      [ more ]
+      [
+        off nat k array.at i32.add :> idx
+        store idx coeffs.get :> coef
+        coef
+        [
+          ar st 2 i32.add arith.decode
+          [ store idx  coef  coef 0 i32.lt_s [ m1 ] [ p1 ] if  i32.add i32.extend16_s  coeffs.set ]
+          when
+          0 more!
+        ]
+        [
+          ar st 1 i32.add arith.decode
+          [
+            store idx  ar 1280 arith.decode [ m1 ] [ p1 ] if i32.extend16_s  coeffs.set
+            0 more!
+          ]
+          [
+            st 3 i32.add st!
+            k 1 i32.add k!
+            k se i32.gt_s [ BAD_ENTROPY_DATA "arithmetic AC refinement past the end of the band" refusal trap ] when
+          ]
+          if
+        ]
+        if
+      ]
+      while
+      k 1 i32.add k!
+    ]
+    if
+  ]
+  while ;
+
+# Test fixtures: a file parsed to its first scan, a fresh arith with its
+# DAC conditioning reopened for one progressive AC scan of component 0 at an
+# offset (ss se ah al), and a one-block store; g2pa's scans chained on one
+# store (offsets from tmp/m5/qm.py --layout: 118, 136, 155, 175, 188, 205);
+# raw streams over a store with presets.
+: fx.pac ( str i32 i32 i32 i32 i32 -- arith coeffs )
+  :> al :> ah :> se :> ss :> at :> h
+  h hex markers.open :> j
+  j markers.walk
+  j idct.make idct.natural 1 arith.make :> ar
+  ar  0 1 ss se ah al fx.ascan  1 at 0 1  arith.reopen
+  ar fx.grey 1 coeffs.make ;
+: fx.ar-on ( coeffs i32 i32 i32 i32 i32 -- arith )
+  :> al :> ah :> se :> ss :> at :> st
+  fx.g2pa hex markers.open :> j
+  j markers.walk
+  j idct.make idct.natural 1 arith.make :> ar
+  ar  0 1 ss se ah al fx.ascan  1 at 0 1  arith.reopen
+  ar ;
+: fx.g2pa-s2 ( -- coeffs )
+  fx.g2pa-dc :> st
+  st 136 1 5 0 2 fx.ar-on st 0 1 5 2 0 arith.ac-first
+  st ;
+: fx.g2pa-s3 ( -- coeffs )
+  fx.g2pa-s2 :> st
+  st 155 6 63 0 2 fx.ar-on st 0 6 63 2 0 arith.ac-first
+  st ;
+: fx.g2pa-s4 ( -- coeffs )
+  fx.g2pa-s3 :> st
+  st 175 1 63 2 1 fx.ar-on st 0 1 63 1 0 arith.ac-refine
+  st ;
+: fx.g2pa-s6 ( -- coeffs )
+  fx.g2pa-s4 :> st
+  st 188 0 0 1 0 fx.ar-on st 0 0 arith.dc-refine
+  st 205 1 63 1 0 fx.ar-on st 0 1 63 0 0 arith.ac-refine
+  st ;
+: fx.raw-ac ( str i32 i32 i32 i32 i32 i32 -- coeffs )
+  :> pre :> at :> refine :> al :> se :> ss :> h
+  h fx.arith :> ar
+  ar  0 1 ss se refine [ al 1 i32.add ] [ 0 ] if al fx.ascan  1 0 0 1  arith.reopen
+  fx.grey 1 coeffs.make :> st
+  pre [ st at pre coeffs.set ] when
+  refine [ ar st 0 ss se al 0 arith.ac-refine ] [ ar st 0 ss se al 0 arith.ac-first ] if
+  st ;
+: fx.block-of ( coeffs -- array i32 )
+  :> st
+  64 array.new ( array i32 ) :> a
+  st 0 a coeffs.get-block
+  a ;
+# g2pa's block after scans 1 and 2, from tmp/m5/qm.py --scans 2.
+: fx.g2pa-s2-out ( -- array i32 )
+  64 array.new ( array i32 ) :> a
+  a 0 40 array.at!
+  a 1 -8 array.at!
+  a 2 -8 array.at!
+  a 8 -16 array.at!
+  a 16 -12 array.at!
+  a ;
+# After scan 3.
+: fx.g2pa-s3-out ( -- array i32 )
+  64 array.new ( array i32 ) :> a
+  a 0 40 array.at!
+  a 1 -8 array.at!
+  a 2 -8 array.at!
+  a 3 -4 array.at!
+  a 8 -16 array.at!
+  a 16 -12 array.at!
+  a 24 -12 array.at!
+  a 32 -8 array.at!
+  a 40 -4 array.at!
+  a ;
+# After scan 4.
+: fx.g2pa-s4-out ( -- array i32 )
+  64 array.new ( array i32 ) :> a
+  a 0 40 array.at!
+  a 1 -10 array.at!
+  a 2 -10 array.at!
+  a 3 -6 array.at!
+  a 4 -2 array.at!
+  a 5 -2 array.at!
+  a 8 -18 array.at!
+  a 16 -14 array.at!
+  a 24 -12 array.at!
+  a 32 -8 array.at!
+  a 40 -4 array.at!
+  a 48 -2 array.at!
+  a ;
+# After all six scans: the final coefficients.
+: fx.g2pa-s6-out ( -- array i32 )
+  64 array.new ( array i32 ) :> a
+  a 0 41 array.at!
+  a 1 -10 array.at!
+  a 2 -10 array.at!
+  a 3 -6 array.at!
+  a 4 -3 array.at!
+  a 5 -2 array.at!
+  a 6 -1 array.at!
+  a 8 -18 array.at!
+  a 16 -15 array.at!
+  a 24 -13 array.at!
+  a 32 -9 array.at!
+  a 40 -5 array.at!
+  a 48 -2 array.at!
+  a 56 -1 array.at!
+  a ;
+# red1pa's scan 2 (component 0, Ss 1 Se 5 Al 2, data at 220) on block (0,0)
+# after its scan 1.
+: fx.red1pa-s2 ( -- coeffs )
+  fx.red1pa-dc :> st
+  fx.red1pa hex markers.open :> j
+  j markers.walk
+  j idct.make idct.natural 1 arith.make :> ar
+  ar  0 1 1 5 0 2 fx.ascan  1 220 0 1  arith.reopen
+  ar st 0 1 5 2 0 arith.ac-first
+  st ;
+
+# Streams from qm.py's QMEncoder in libjpeg's reading order: 4BC6 FF D9 runs
+# zero coefficients past the band (EOB 0 at k 1, then nonzero 0 to k 63);
+# 4BC6...0380 FF D9 places +1 at k 62 then an EOB at 63; E0 FF D9 is a
+# correction 1 at k 1 then EOB at k 2; 78 FF D9 places a new coefficient at
+# k 3 (natural 16) with sign 1 then EOB. FF D9 alone, decoded from the zero
+# feed, gives -1 at natural 1 in an AC first scan and leaves a refinement
+# block's +4 at natural 1 unchanged.
+test arith.ac-first : fx.g2pa-s2 fx.block-of fx.g2pa-s2-out eq -> 1
+test arith.ac-first : fx.g2pa-s2 1 coeffs.get -> -8
+test arith.ac-first : fx.g2pa-s2 16 coeffs.get -> -12
+test arith.ac-first : fx.g2pa-s2 3 coeffs.get -> 0
+test arith.ac-first : fx.g2pa-s3 fx.block-of fx.g2pa-s3-out eq -> 1
+test arith.ac-first : fx.g2pa-s3 24 coeffs.get -> -12
+test arith.ac-first : fx.g2pa-s3 40 coeffs.get -> -4
+test arith.ac-first : fx.g2pa-s3 48 coeffs.get -> 0
+test arith.ac-first : "FFD9" 1 63 0 0 0 0 fx.raw-ac 1 coeffs.get -> -1
+test arith.ac-first : "FFD9" 1 63 0 0 0 0 fx.raw-ac 2 coeffs.get -> 0
+test arith.ac-first : "4BC6FFD9" 1 63 0 0 0 0 fx.raw-ac -> trap
+test arith.ac-first : "4BC6FFD9" 1 5 0 0 0 0 fx.raw-ac -> trap
+test arith.ac-first : "4BC600000000000380FFD9" 1 63 0 0 0 0 fx.raw-ac 62 coeffs.get -> 1
+test arith.ac-first : "4BC600000000000380FFD9" 1 63 0 0 0 0 fx.raw-ac 1 coeffs.get -> 0
+test arith.ac-first : fx.red1pa-s2 0 coeffs.get -> -26
+test arith.ac-first : fx.red1pa-s2 1 coeffs.get -> 0
+test arith.ac-refine : fx.g2pa-s4 fx.block-of fx.g2pa-s4-out eq -> 1
+test arith.ac-refine : fx.g2pa-s4 1 coeffs.get -> -10
+test arith.ac-refine : fx.g2pa-s4 48 coeffs.get -> -2
+test arith.ac-refine : fx.g2pa-s6 fx.block-of fx.g2pa-s6-out eq -> 1
+test arith.ac-refine : fx.g2pa-s6 0 coeffs.get -> 41
+test arith.ac-refine : fx.g2pa-s6 56 coeffs.get -> -1
+test arith.ac-refine : "E0FFD9" 1 63 0 1 1 4 fx.raw-ac 1 coeffs.get -> 5
+test arith.ac-refine : "E0FFD9" 1 63 1 1 1 4 fx.raw-ac 1 coeffs.get -> 6
+test arith.ac-refine : "E0FFD9" 1 63 0 1 1 -4 fx.raw-ac 1 coeffs.get -> -5
+test arith.ac-refine : "E0FFD9" 1 63 1 1 1 -4 fx.raw-ac 1 coeffs.get -> -6
+test arith.ac-refine : "78FFD9" 1 63 0 1 1 0 fx.raw-ac 16 coeffs.get -> -1
+test arith.ac-refine : "78FFD9" 1 63 2 1 1 0 fx.raw-ac 16 coeffs.get -> -4
+test arith.ac-refine : "4BC6FFD9" 1 63 0 1 1 0 fx.raw-ac -> trap
+test arith.ac-refine : "FFD9" 1 63 0 1 1 4 fx.raw-ac 1 coeffs.get -> 4

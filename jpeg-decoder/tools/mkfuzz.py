@@ -57,6 +57,38 @@ from the same rng, so every earlier mutant is unchanged:
 - pnoeoi   1: the final EOI removed
 - pseq     2: the SOF2 marker changed to C0, then C1
 
+Then two arithmetic sources, again after everything above with the same
+rng: corpus/primary/testimgari.jpg (stem testimgari, SOF9 with one DAC):
+
+- adac     8: the DAC payload edited (L > U; L 0 U 15; Kx 0, 1, 63, 255;
+             index 32; DC table 15)
+- adaclen  3: the DAC length field set to 11 (odd), 2 (empty), 1
+- adacdrop 1: the DAC removed (the defaults are the same values)
+- adacdup  1: the DAC duplicated
+- aent     8: 1 to 4 random byte values inside the data
+- acut     6: the data cut at a random offset, FF D9 appended (libjpeg feeds
+             zeros past a marker, so these decode)
+- acutraw  4: the data cut at a random offset, nothing appended
+- amark    3: FF D9, a DHT, FF D0 inserted at a random data offset
+- adri     2: a DRI (interval 1, then 7) before the SOS, no RST markers
+- akind    3: the SOF9 marker changed to CA, C1, C0
+- anoeoi   1: the EOI removed
+- aextra   2: a random non-zero byte, then two zero bytes, before the EOI
+
+and corpus/synthetic-m5/a-full-s2x2-prog.jpg (stem a-full-s2x2-prog,
+SOF10, ten scans, a DAC before each):
+
+- pakind   2: SOF10 changed to C9, to C2
+- padac    3: the DAC before scan 3 given L > U, given Kx 0, removed
+- padrop   3: scans 2, 7, 10 deleted with their DACs (scan 7, a DC refine,
+             has none)
+- paswap   1: scans 1 and 2 exchanged, DACs included
+- pacut    4: the file cut inside a later scan's data, FF D9 appended
+- pacutraw 3: the same, nothing appended
+- paent    6: 1 to 4 random bytes in a later scan's data
+- pamark   2: FF D0 inside scan 3's data; a DHT before scan 5's DAC
+- padri    1: a DRI with interval 3 before scan 2
+
 The harness expects every fuzz file to be refused with a code, to reach
 not-yet, or to decode byte-exact against the oracle; never to trap, hang or
 mismatch.
@@ -281,6 +313,118 @@ def progressive_mutants(d, rng):
     return out
 
 
+def arith_mutants(d, rng):
+    segs = segments(d)
+    dac = first(segs, lambda m: m == 0xCC)
+    sof = first(segs, lambda m: m == 0xC9)
+    sos = first(segs, lambda m: m == 0xDA)
+    start, end = sos[1] + 2 + sos[2], len(d) - 2
+    assert d[end:] == b"\xff\xd9"
+    out = []
+
+    def put(kind, b):
+        out.append((kind, bytes(b)))
+
+    p = dac[1] + 4  # the DAC payload: pairs (index, value)
+    for at, v in ((p + 1, 0x12), (p + 1, 0xF0), (p + 5, 0), (p + 5, 1), (p + 5, 63), (p + 5, 255), (p, 0x20), (p, 0x0F)):
+        b = bytearray(d)
+        b[at] = v
+        put("adac", b)
+    for v in (0x0B, 0x02, 0x01):
+        b = bytearray(d)
+        b[dac[1] + 2 : dac[1] + 4] = v.to_bytes(2, "big")
+        put("adaclen", b)
+    seg = d[dac[1] : dac[1] + 2 + dac[2]]
+    put("adacdrop", d[: dac[1]] + d[dac[1] + 2 + dac[2] :])
+    put("adacdup", d[: dac[1]] + seg + d[dac[1] :])
+    for _ in range(8):
+        b = bytearray(d)
+        for _ in range(rng.randint(1, 4)):
+            b[rng.randrange(start, end)] = rng.randrange(256)
+        put("aent", b)
+    for _ in range(6):
+        put("acut", d[: rng.randrange(start, end)] + b"\xff\xd9")
+    for _ in range(4):
+        put("acutraw", d[: rng.randrange(start, end)])
+    for ins in (b"\xff\xd9", b"\xff\xc4\x00\x14\x00" + bytes(17), b"\xff\xd0"):
+        at = rng.randrange(start, end)
+        put("amark", d[:at] + ins + d[at:])
+    for v in (1, 7):
+        put("adri", d[: sos[1]] + b"\xff\xdd\x00\x04" + v.to_bytes(2, "big") + d[sos[1] :])
+    for m in (0xCA, 0xC1, 0xC0):
+        b = bytearray(d)
+        b[sof[1] + 1] = m
+        put("akind", b)
+    put("anoeoi", d[:-2])
+    put("aextra", d[:-2] + bytes([rng.randrange(1, 256)]) + d[-2:])
+    put("aextra", d[:-2] + b"\x00\x00" + d[-2:])
+    return out
+
+
+def dac_before(d, sos_at):
+    """(offset, length) of the DAC segment that ends right at sos_at, or
+    (sos_at, 0) when there is none (a DC refine scan needs no DAC)."""
+    i = d.rfind(b"\xff\xcc", 0, sos_at)
+    n = int.from_bytes(d[i + 2 : i + 4], "big") if i >= 0 else 0
+    return (i, n) if i >= 0 and i + 2 + n == sos_at else (sos_at, 0)
+
+
+def arith_prog_mutants(d, rng):
+    sc = scans(d)
+    assert len(sc) == 10
+    out = []
+
+    def put(kind, b):
+        out.append((kind, bytes(b)))
+
+    def at(k):
+        return sc[k - 1]
+
+    def block(k):
+        """The scan's DAC, header and data: (start, end)."""
+        s0, _, _, end = at(k)
+        return dac_before(d, s0)[0], end
+
+    sof = d.index(b"\xff\xca")
+    for m in (0xC9, 0xC2):
+        b = bytearray(d)
+        b[sof + 1] = m
+        put("pakind", b)
+    i, n = dac_before(d, at(3)[0])
+    assert n == 4
+    b = bytearray(d)
+    b[i + 5] = 0x12
+    put("padac", b)
+    put("padac", d[: i + 4] + b"\x10\x00" + d[i + 6 :])
+    put("padac", d[:i] + d[i + 2 + n :])
+    for k in (2, 7, 10):
+        a, e = block(k)
+        put("padrop", d[:a] + d[e:])
+    a1, e1 = block(1)
+    a2, e2 = block(2)
+    put("paswap", d[:a1] + d[a2:e2] + d[e1:a2] + d[a1:e1] + d[e2:])
+    for _ in range(4):
+        _, _, start, end = at(rng.randint(2, 10))
+        put("pacut", d[: rng.randrange(start, end)] + b"\xff\xd9")
+    for _ in range(3):
+        _, _, start, end = at(rng.randint(2, 10))
+        put("pacutraw", d[: rng.randrange(start, end)])
+    for _ in range(6):
+        b = bytearray(d)
+        _, _, start, end = at(rng.randint(2, 10))
+        for _ in range(rng.randint(1, 4)):
+            b[rng.randrange(start, end)] = rng.randrange(256)
+        put("paent", b)
+    _, _, start, end = at(3)
+    mid = (start + end) // 2
+    put("pamark", d[:mid] + b"\xff\xd0" + d[mid:])
+    i5 = dac_before(d, at(5)[0])[0]
+    put("pamark", d[:i5] + b"\xff\xc4\x00\x14\x00" + bytes(17) + d[i5:])
+    a2 = block(2)[0]
+    put("padri", d[:a2] + b"\xff\xdd\x00\x04\x00\x03" + d[a2:])
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--seed", type=int, default=1)
@@ -307,6 +451,14 @@ def main():
         with open(os.path.join(outdir, f"jpg-progressive-{kind}-{counts[kind]}.jpg"), "wb") as fh:
             fh.write(b)
         total += 1
+    for path, stem, fn in ((("corpus", "primary", "testimgari.jpg"), "testimgari", arith_mutants),
+                           (("corpus", "synthetic-m5", "a-full-s2x2-prog.jpg"), "a-full-s2x2-prog", arith_prog_mutants)):
+        counts = {}
+        for kind, b in fn(open(os.path.join(ROOT, *path), "rb").read(), rng):
+            counts[kind] = counts.get(kind, 0) + 1
+            with open(os.path.join(outdir, f"{stem}-{kind}-{counts[kind]}.jpg"), "wb") as fh:
+                fh.write(b)
+            total += 1
     print(f"mkfuzz: {total} mutants in {os.path.relpath(outdir, ROOT)}")
 
 

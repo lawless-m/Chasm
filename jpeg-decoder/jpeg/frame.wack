@@ -222,7 +222,8 @@ test frame.progressive? : fx.grey dup 0xCA frame.kind! frame.progressive? -> 1
 # full width; one output row at up to 2 bytes a sample; and 8 MiB for the
 # tables built once (range limit, colour, natural order) and the Huffman
 # tables rebuilt for each scan, bounded by MAX_SCANS (256 scans x 8 tables x
-# 2192 bytes is under 4.5 MB).
+# 2192 bytes is under 4.5 MB), and the arithmetic decoder's 1281 bytes of
+# statistics and 114-entry state table.
 declare frame.need ( frame i32 -- i64 )
 test frame.need : fx.grey 159 frame.need -> 8389097 i64
 test frame.need : fx.grey dup 0xC2 frame.kind! 159 frame.need -> 8389097 i64

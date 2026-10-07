@@ -55,6 +55,7 @@ FILES = [
     "jpeg/huffman.wack",
     "jpeg/idct.wack",
     "jpeg/scan.wack",
+    "jpeg/arith.wack",
     "jpeg/progressive.wack",
     "jpeg/upsample.wack",
     "jpeg/colour.wack",

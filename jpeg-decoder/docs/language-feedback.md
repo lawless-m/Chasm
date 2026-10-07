@@ -60,38 +60,53 @@ Each entry says how things stand now and what the decoder does about it.
 ## Speed
 
 Measured with the release compiler (`../target/release/wack run`, wasmtime,
-bounds checks on), median of three runs, all on the same day, on files made
-with the oracle's cjpeg from a tiling of `primary/testorig.jpg`:
-`tmp/m2-timing/big12.jpg` (4000x3000, 12 megapixels, baseline 4:2:0),
-`tmp/m4-timing/big12p.jpg` and `big3p.jpg` (12 and 3 megapixels,
-progressive with libjpeg's standard ten scans) and `big12s3.jpg` (12
-megapixels, three one-component sequential scans). Every output is
-byte-exact against djpeg in the same mode (`-dct int -pnm` for fancy,
-`-dct int -nosmooth -pnm` for plain).
+bounds checks on), median of three runs, all in one session, on files made
+with the oracle's cjpeg from a tiling of `primary/testorig.jpg`, 4000x3000
+(12 megapixels), 4:2:0: `tmp/m2-timing/big12.jpg` (baseline),
+`tmp/m4-timing/big12p.jpg` (progressive, libjpeg's standard ten scans),
+`big12s3.jpg` (three one-component sequential scans), and
+`tmp/m5-timing/big12a.jpg` and `big12pa.jpg` (`cjpeg -arithmetic`,
+sequential and progressive). Every output is byte-exact against djpeg in the
+same mode (`-dct int -pnm` for fancy, `-dct int -nosmooth -pnm` for plain).
 
 | File | Mode | `wack run` | `wack run --opt` | Decode rate | Oracle |
 |---|---|---|---|---|---|
-| big12, baseline | fancy (default) | 0.87 s | 0.79 s | 16.4 megapixels/s | 0.08 s |
-| big12, baseline | plain (`nosmooth`) | 0.88 s | 0.70 s | 16.2 megapixels/s | 0.06 s |
-| big12p, progressive | fancy (default) | 1.36 s | 0.99 s | 9.8 megapixels/s | 0.13 s |
-| big12p, progressive | plain (`nosmooth`) | 1.34 s | 1.02 s | 10.0 megapixels/s | 0.12 s |
-| big3p, progressive | fancy (default) | 0.37 s | 0.40 s | 13.1 megapixels/s | 0.04 s |
-| big3p, progressive | plain (`nosmooth`) | 0.36 s | 0.43 s | 13.7 megapixels/s | 0.03 s |
-| big12s3, three scans | fancy (default) | 1.06 s | 0.88 s | 13.0 megapixels/s | 0.08 s |
-| big12s3, three scans | plain (`nosmooth`) | 1.07 s | 0.87 s | 12.9 megapixels/s | 0.07 s |
+| big12, baseline | fancy (default) | 0.95 s | 0.81 s | 14.8 megapixels/s | 0.08 s |
+| big12, baseline | plain (`nosmooth`) | 0.93 s | 0.75 s | 15.1 megapixels/s | 0.06 s |
+| big12p, progressive | fancy (default) | 1.38 s | 1.01 s | 9.7 megapixels/s | 0.13 s |
+| big12p, progressive | plain (`nosmooth`) | 1.38 s | 1.03 s | 9.7 megapixels/s | 0.11 s |
+| big12s3, three scans | fancy (default) | 1.10 s | 0.82 s | 12.5 megapixels/s | 0.08 s |
+| big12s3, three scans | plain (`nosmooth`) | 1.10 s | 0.83 s | 12.5 megapixels/s | 0.07 s |
+| big12a, arithmetic | fancy (default) | 1.48 s | 0.94 s | 8.9 megapixels/s | 0.22 s |
+| big12a, arithmetic | plain (`nosmooth`) | 1.50 s | 0.99 s | 8.8 megapixels/s | 0.21 s |
+| big12pa, progressive arithmetic | fancy (default) | 1.60 s | 1.05 s | 8.2 megapixels/s | 0.25 s |
+| big12pa, progressive arithmetic | plain (`nosmooth`) | 1.56 s | 1.00 s | 8.4 megapixels/s | 0.24 s |
 
 - Compiling the program is 0.14 s of every run (a file that stops at
   `NOT_YET` takes that long), well inside the harness's 20 s timeout.
 - The oracle is libjpeg-turbo 3.2.0 in plain C without SIMD; the decoder
-  runs 10 to 13 times slower than it.
-- The store path costs 0.19 s on 12 megapixels for the same entropy work
+  runs 6 to 13 times slower than it (closest on arithmetic files, where the
+  oracle itself is three times slower than on Huffman ones).
+- The store path costs 0.15 s on 12 megapixels for the same entropy work
   (big12s3 against big12): every coefficient goes into the store and back
   out through two `bytes.at` or two `bytes.at!` (there is no 16-bit
   accessor), and the IDCT runs in a second pass. Ten progressive scans cost
-  another 0.30 s (big12p against big12s3), mostly entropy decoding of the
+  another 0.28 s (big12p against big12s3), mostly entropy decoding of the
   refinement scans.
+- Arithmetic decoding costs 0.38 s more than Huffman decoding of the same
+  picture through the same store (big12a against big12s3). A block takes
+  about 52 binary decisions for 7 nonzero AC coefficients (counted on
+  `primary/testimgari.jpg`); each decision reads and writes the arith
+  record's c, a and ct fields, fetches and stores its statistics byte with
+  `bytes.at` and `bytes.at!`, and indexes the state table, every access
+  bounds-checked. `--opt` (Binaryen) recovers most of that: 0.94 s against
+  1.48 s.
 - In a baseline decode the stages take, measured by removing one at a time
   in scratch copies: IDCT 27% of the run, colour conversion 23%, entropy
   decoding and the scan loop 18%, compile 12%, upsampling 10% and the row
   writes 10% (one `host.write` per output row). The fancy filters cost
   about 6% over replication. No stage dominates.
+- The arithmetic decoder's registers live in a struct, so every decision
+  costs several field reads and writes: a word cannot keep c, a and ct in
+  locals across calls without returning three values, and a loop body
+  cannot change the stack.
