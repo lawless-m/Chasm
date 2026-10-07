@@ -191,16 +191,6 @@
   n 0 i32.lt_s [ "bytes.new: negative length" trap ] when
   n mem.alloc n bytes.from-raw ;
 
-: bytes.at ( bytes i32 -- i32 )
-  :> i :> b
-  i b bytes.len i32.ge_u [ "bytes.at: offset out of range" trap ] when
-  b bytes.addr i i32.add i32.load8_u ;
-
-: bytes.at! ( bytes i32 i32 -- )
-  :> v :> i :> b
-  i b bytes.len i32.ge_u [ "bytes.at!: offset out of range" trap ] when
-  b bytes.addr i i32.add v i32.store8 ;
-
 # Start and length; shares the buffer, no copy.
 : bytes.slice ( bytes i32 i32 -- bytes )
   :> n :> start :> b

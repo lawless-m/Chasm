@@ -94,7 +94,7 @@ pub struct NativeRepl {
 impl NativeRepl {
     pub fn new(config: Config, prelude: bool) -> Result<Self, String> {
         let e = |e: wasmtime::Error| e.to_string();
-        let engine = crate::native::engine()?;
+        let engine = crate::native::engine(false)?;
         let mut store = Store::new(
             &engine,
             ReplState {

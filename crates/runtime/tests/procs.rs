@@ -34,7 +34,7 @@ fn build(src: &str) -> Compilation {
 /// Run `main`: its result and the captured console.
 fn run(src: &str) -> (Result<(), RunError>, String) {
     let c = build(src);
-    let runner = Runner::new(c.wasm.as_ref().unwrap()).unwrap();
+    let runner = Runner::new(c.wasm.as_ref().unwrap(), false).unwrap();
     let o = runner.run_main(config());
     let out = String::from_utf8_lossy(o.host.captured_output()).into_owned();
     (o.result, out)
@@ -162,7 +162,7 @@ fn tests_of(src: &str) -> Vec<wack_runtime::native::TestResult> {
         },
     );
     assert!(c.ok(), "{:?}", c.diagnostics);
-    wack_runtime::native::run_tests(&c, &config()).unwrap()
+    wack_runtime::native::run_tests(&c, &config(), false).unwrap()
 }
 
 #[test]

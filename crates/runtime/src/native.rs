@@ -371,19 +371,39 @@ pub struct Outcome<T> {
 }
 
 /// The engine every Whackford host uses: WasmGC on, with the copying collector
-/// (far faster than the default for many short-lived structs).
-pub fn engine() -> Result<Engine, String> {
+/// (far faster than the default for many short-lived structs). With `cache`,
+/// compiled modules are kept on disk (`cache_dir`), keyed by the wasm and the
+/// engine settings, so an unchanged program is not compiled again.
+pub fn engine(cache: bool) -> Result<Engine, String> {
     // Backtraces (on by default) name the trapping word via the name section.
     let mut cfg = WtConfig::new();
     cfg.wasm_gc(true)
         .wasm_function_references(true)
         .collector(wasmtime::Collector::Copying);
+    if let Some(dir) = cache.then(cache_dir).flatten() {
+        let mut cc = wasmtime::CacheConfig::new();
+        cc.with_directory(dir);
+        // A cache that cannot be set up only costs the compile.
+        if let Ok(c) = wasmtime::Cache::new(cc) {
+            cfg.cache(Some(c));
+        }
+    }
     Engine::new(&cfg).map_err(|e| e.to_string())
 }
 
+/// `$XDG_CACHE_HOME/wack`, else `$HOME/.cache/wack`.
+fn cache_dir() -> Option<std::path::PathBuf> {
+    let base = match std::env::var_os("XDG_CACHE_HOME").filter(|v| !v.is_empty()) {
+        Some(x) => std::path::PathBuf::from(x),
+        None => std::path::PathBuf::from(std::env::var_os("HOME")?).join(".cache"),
+    };
+    Some(base.join("wack"))
+}
+
 impl Runner {
-    pub fn new(wasm: &[u8]) -> Result<Self, String> {
-        let engine = engine()?;
+    /// With `cache`, see `engine`.
+    pub fn new(wasm: &[u8], cache: bool) -> Result<Self, String> {
+        let engine = engine(cache)?;
         let module = Module::new(&engine, wasm).map_err(|e| e.to_string())?;
         Ok(Runner { engine, module })
     }
@@ -639,10 +659,10 @@ pub(crate) fn same(a: &Value, b: &Value) -> bool {
 }
 
 /// Run every test of a compilation built with `test_exports`, each in a
-/// fresh instance with a captured console.
-pub fn run_tests(c: &Compilation, base: &Config) -> Result<Vec<TestResult>, String> {
+/// fresh instance with a captured console. With `cache`, see `engine`.
+pub fn run_tests(c: &Compilation, base: &Config, cache: bool) -> Result<Vec<TestResult>, String> {
     let wasm = c.wasm.as_ref().ok_or("no module: the program has errors")?;
-    let runner = Runner::new(wasm)?;
+    let runner = Runner::new(wasm, cache)?;
     let mut out = Vec::new();
     for t in &c.tests {
         if t.pending {

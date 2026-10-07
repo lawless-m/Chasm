@@ -170,6 +170,31 @@ fn process_traps_name_the_process() {
 }
 
 #[test]
+fn bytes_at_is_checked_inline() {
+    let src = scratch("bytes.wack");
+    std::fs::write(
+        &src,
+        ": poke ( -- i32 i32 ) 4 bytes.new :> b  b 3 255 bytes.at!  b 3 bytes.at  b 0 bytes.at ;\ntest poke : poke -> 255 0\n: main ( -- ) 4 bytes.new 4 bytes.at drop ;\n",
+    )
+    .unwrap();
+    let src = src.to_str().unwrap();
+    let (ok, json, err) = wack(&["test", "--json", src]);
+    assert!(ok, "{json}{err}");
+    let j: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(j["results"]["summary"]["pass"], 1, "{json}");
+    let (ok, _, err) = wack(&["run", src]);
+    assert!(!ok);
+    assert!(
+        err.contains("trap in `main`: bytes.at: offset out of range"),
+        "{err}"
+    );
+    std::fs::write(src, ": main ( -- ) 4 bytes.new -1 9 bytes.at! ;\n").unwrap();
+    let (ok, _, err) = wack(&["run", src]);
+    assert!(!ok);
+    assert!(err.contains("bytes.at!: offset out of range"), "{err}");
+}
+
+#[test]
 fn alt_runs_natively() {
     let (ok, out, err) = wack(&["run", "examples/alt.wack"]);
     assert!(ok, "{out}{err}");

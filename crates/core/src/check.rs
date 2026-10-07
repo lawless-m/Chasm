@@ -3862,6 +3862,38 @@ impl<'c> Walker<'c> {
                 }
                 "str.addr" | "bytes.addr" => self.op(I::Drop),
                 "str.from-raw" | "bytes.from-raw" => {}
+                // ( addr len i [v] ): checked against the length, inline.
+                "bytes.at" | "bytes.at!" => {
+                    let mut ta = TempAlloc::default();
+                    let val = (n == "bytes.at!").then(|| self.temp(&mut ta, ValType::I32));
+                    let idx = self.temp(&mut ta, ValType::I32);
+                    let len = self.temp(&mut ta, ValType::I32);
+                    if let Some(v) = val {
+                        self.op(I::LocalSet(v));
+                    }
+                    self.op(I::LocalSet(idx));
+                    self.op(I::LocalSet(len));
+                    self.op(I::LocalGet(idx));
+                    self.op(I::LocalGet(len));
+                    self.op(I::I32GeU);
+                    self.op(I::If(BlockType::Empty));
+                    self.trap(&format!("{n}: offset out of range"));
+                    self.op(I::End);
+                    self.op(I::LocalGet(idx));
+                    self.op(I::I32Add);
+                    let byte = MemArg {
+                        offset: 0,
+                        align: 0,
+                        memory_index: 0,
+                    };
+                    match val {
+                        Some(v) => {
+                            self.op(I::LocalGet(v));
+                            self.op(I::I32Store8(byte));
+                        }
+                        None => self.op(I::I32Load8U(byte)),
+                    }
+                }
                 "mem.alloc" => self.op(I::Call(FN_ALLOC)),
                 // ( a0 a1 a2 op -- result ): exactly `rt.ring`'s parameters.
                 "ring.submit" => match self.code.last() {

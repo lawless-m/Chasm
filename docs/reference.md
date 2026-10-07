@@ -71,6 +71,11 @@ fails, the unoptimised module is written with a note. `run` skips that step
 unless given `--opt`, because under wasmtime it is as often slower as faster
 (`docs/performance.md`).
 
+`run` and `test` keep the machine code wasmtime compiles in
+`$XDG_CACHE_HOME/wack` (else `~/.cache/wack`), keyed by the module and the
+wasmtime version, so running an unchanged program again skips that compile.
+Deleting the directory is always safe.
+
 `build --wasi` maps the four host words onto WASI preview1 in place of the
 ring: `/dev/cons` is stdin and stdout, `/dev/time` is `clock_time_get`,
 `/file/<path>` is `path_open` of `<path>` under the runtime's first

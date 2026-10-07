@@ -34,7 +34,7 @@ fn scratch(name: &str) -> PathBuf {
 
 /// Run `_start` with `dir` preopened as `/`; stdout, and whether it succeeded.
 fn run(wasm: &[u8], dir: &PathBuf) -> (String, bool) {
-    let engine = wack_runtime::native::engine().unwrap();
+    let engine = wack_runtime::native::engine(false).unwrap();
     let stdout = MemoryOutputPipe::new(1 << 20);
     let ctx = WasiCtxBuilder::new()
         .stdout(stdout.clone())

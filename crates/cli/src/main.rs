@@ -489,7 +489,7 @@ fn exec(cli: Cli) -> (Report, bool) {
                 };
             }
             let (wasm, note) = optimise(wasm, !opt);
-            let runner = match Runner::new(&wasm) {
+            let runner = match Runner::new(&wasm, true) {
                 Ok(r) => r,
                 Err(m) => {
                     return (
@@ -540,7 +540,7 @@ fn exec(cli: Cli) -> (Report, bool) {
             if !comp.ok() {
                 return (failed("test", comp.diagnostics), json);
             }
-            let results = match run_tests(&comp, &cfg) {
+            let results = match run_tests(&comp, &cfg, true) {
                 Ok(r) => r,
                 Err(m) => {
                     return (
