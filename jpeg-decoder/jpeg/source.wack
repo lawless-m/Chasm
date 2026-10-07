@@ -1,0 +1,36 @@
+# The input: one file loaded into one bytes buffer.
+#
+# There is no way to learn a file's size before reading it, so the buffer is
+# allocated once at MAX_INPUT_BYTES + 1 and filled from the front; reading
+# more than MAX_INPUT_BYTES refuses LIMIT_INPUT. A path that cannot be opened
+# refuses NOT_JPEG: the refusal table has no code for an unreadable file, and
+# to the service an input it cannot open is not a JPEG.
+
+declare source.check-size ( i32 -- )
+test source.check-size : 64000001 source.check-size -> trap
+test source.check-size : 64000000 source.check-size 1 -> 1
+
+declare source.load ( str -- bytes )
+
+: source.check-size ( i32 -- )
+  MAX_INPUT_BYTES i32.gt_s [ LIMIT_INPUT "input over MAX_INPUT_BYTES" refusal trap ] when ;
+
+# Every pass of the loop reads into the unread tail, so the position only
+# grows; a full buffer leaves an empty tail, which reads 0 and ends it.
+: source.load ( str -- bytes )
+  host.OREAD host.open :> h
+  h 0 i32.lt_s [ NOT_JPEG "cannot open input" refusal trap ] when
+  MAX_INPUT_BYTES 1 i32.add :> cap
+  cap bytes.new :> buf
+  0 :> total!
+  1 :> n!
+  [ n 0 i32.gt_s ]
+  [
+    h  buf total cap total i32.sub bytes.slice  host.read n!
+    n 0 i32.lt_s [ TRUNCATED "read error" refusal trap ] when
+    total n i32.add total!
+  ]
+  while
+  h host.close drop
+  total source.check-size
+  buf 0 total bytes.slice ;

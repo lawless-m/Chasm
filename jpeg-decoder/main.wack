@@ -1,0 +1,13 @@
+# The decoder's entry point.
+#
+# Protocol: stdin gives one line, the input path (natively `/file/<absolute
+# path>`). On success stdout gets `FRAME width height ncomp kind` and then
+# `NOT_YET SOS`, and the exit status is 0. A refusal is a trap
+# `REFUSED CODE: message` on stderr with exit status 1; any other trap is a
+# decoder bug. M2 replaces NOT_YET with decoding.
+
+: main ( -- )
+  read-line drop source.load markers.open :> j
+  j markers.walk
+  j markers.frame-line println
+  "NOT_YET SOS" println ;

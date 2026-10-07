@@ -1,0 +1,77 @@
+# Test fixtures: a hex reader and a real, minimal JPEG cut into segments.
+#
+# Whackford has no `bytes` literal, so tests build buffers from hex strings.
+# The JPEG is a 1x1 greyscale image from libjpeg-turbo's cjpeg
+# (`-grayscale -optimize -quality 50`), 159 bytes; the oracle decodes it to
+# `P5 1 1 255`. Layout (byte offsets):
+#
+#   0-1      SOI
+#   2-19     APP0 JFIF, length 16
+#   20-88    DQT, length 67: Pq/Tq 00, 64 entries, the first 0x10
+#   89-101   SOF0, length 11: precision 8, height 1, width 1, one component
+#            (id 1, sampling 1x1, Tq 0)
+#   102-123  DHT, length 20: DC table 0, counts at 107, one symbol 00
+#   124-145  DHT, length 20: AC table 0, counts at 129
+#   146-155  SOS, length 8: Cs 1, Td 0, Ta 0, Ss 0, Se 63, Ah/Al 0
+#   156      entropy data 3F
+#   157-158  EOI
+
+# The value of one hex digit, upper or lower case.
+: hex-digit ( i32 -- i32 )
+  :> c
+  c 58 i32.lt_u [ c 48 i32.sub ] [ c 32 i32.or 87 i32.sub ] if ;
+test hex-digit : "7" char hex-digit -> 7
+test hex-digit : "a" char hex-digit -> 10
+test hex-digit : "F" char hex-digit -> 15
+
+# Hex digit pairs, spaces ignored, as bytes.
+: hex ( str -- bytes )
+  :> s
+  0 :> n!
+  s str.len [ :> i  s i str.byte-at 32 i32.ne [ n 1 i32.add n! ] when ] times
+  n 2 i32.div_u bytes.new :> out
+  0 :> k!
+  0 :> hi!
+  s str.len
+  [
+    :> j
+    s j str.byte-at :> c
+    c 32 i32.ne
+    [
+      k 1 i32.and
+      [ out k 1 i32.shr_u  hi 4 i32.shl c hex-digit i32.or  bytes.at! ]
+      [ c hex-digit hi! ]
+      if
+      k 1 i32.add k!
+    ]
+    when
+  ]
+  times
+  out ;
+test hex : "FF D8 ffd9" hex bytes.len -> 4
+test hex : "FF D8 ffd9" hex 3 bytes.at -> 0xD9
+test hex : "" hex bytes.len -> 0
+
+# The fixture JPEG, one word per segment.
+
+: fx.soi ( -- str )  "ffd8" ;
+: fx.app0 ( -- str )  "ffe000104a46494600010100000100010000" ;
+: fx.dqt ( -- str )  "ffdb004300100b0c0e0c0a100e0d0e1211101318281a181616183123251d283a333d3c3933383740485c4e404457453738506d51575f626768673e4d71797064785c656763" ;
+: fx.sof ( -- str )  "ffc0000b080001000101011100" ;
+: fx.dht-dc ( -- str )  "ffc40014000100000000000000000000000000000000" ;
+: fx.dht-ac ( -- str )  "ffc40014100100000000000000000000000000000000" ;
+: fx.sos ( -- str )  "ffda0008010100003f00" ;
+: fx.tail ( -- str )  "3fffd9" ;
+
+: fx.head ( -- str )
+  fx.soi fx.app0 str.concat fx.dqt str.concat fx.sof str.concat
+  fx.dht-dc str.concat fx.dht-ac str.concat ;
+
+: fx.tiny ( -- str )  fx.head fx.sos str.concat fx.tail str.concat ;
+
+test fx.tiny : fx.tiny hex bytes.len -> 159
+test fx.head : fx.head hex bytes.len -> 146
+test fx.tiny : fx.tiny hex 89 bytes.at -> 0xFF
+test fx.tiny : fx.tiny hex 90 bytes.at -> 0xC0
+test fx.tiny : fx.tiny hex 156 bytes.at -> 0x3F
+test fx.sof : fx.sof hex bytes.len -> 13

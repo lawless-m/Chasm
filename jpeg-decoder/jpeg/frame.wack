@@ -1,0 +1,256 @@
+# Frame geometry: components, sampling factors, MCUs and blocks (T.81 B.2.2).
+#
+# This file comes before markers.wack: the SOF parser there fills these
+# structs and calls the checks here, so dependencies point downwards with no
+# forward declarations.
+#
+# kind is the SOF marker byte: 0xC0 0xC1 0xC2 0xC9 0xCA.
+
+struct component  id: i32  h: i32  v: i32  tq: i32
+struct frame  kind: i32  precision: i32  height: i32  width: i32  ncomp: i32  comps: array component
+
+: imax ( i32 i32 -- i32 )  2dup i32.lt_s [ nip ] [ drop ] if ;
+
+declare ceil-div ( i32 i32 -- i32 )
+test ceil-div : 17 8 ceil-div -> 3
+test ceil-div : 16 8 ceil-div -> 2
+test ceil-div : 1 8 ceil-div -> 1
+
+declare frame.hmax ( frame -- i32 )
+declare frame.vmax ( frame -- i32 )
+declare frame.mcus-wide ( frame -- i32 )
+declare frame.mcus-high ( frame -- i32 )
+declare frame.comp-blocks-wide ( frame i32 -- i32 )
+declare frame.comp-blocks-high ( frame i32 -- i32 )
+declare frame.blocks-padded ( frame -- i64 )
+
+# Test frames: 1x1 greyscale, and width x height YCbCr 4:2:0.
+declare fx.grey ( -- frame )
+declare fx.ycc420 ( i32 i32 -- frame )
+
+test frame.width : fx.grey frame.width -> 1
+test frame.hmax : 17 17 fx.ycc420 frame.hmax -> 2
+test frame.vmax : 17 17 fx.ycc420 frame.vmax -> 2
+test frame.mcus-wide : 17 17 fx.ycc420 frame.mcus-wide -> 2
+test frame.mcus-high : 17 17 fx.ycc420 frame.mcus-high -> 2
+test frame.mcus-wide : fx.grey frame.mcus-wide -> 1
+test frame.comp-blocks-wide : 17 17 fx.ycc420 0 frame.comp-blocks-wide -> 3
+test frame.comp-blocks-wide : 17 17 fx.ycc420 1 frame.comp-blocks-wide -> 2
+test frame.comp-blocks-high : 17 17 fx.ycc420 0 frame.comp-blocks-high -> 3
+test frame.blocks-padded : 17 17 fx.ycc420 frame.blocks-padded -> 24 i64
+test frame.blocks-padded : fx.grey frame.blocks-padded -> 1 i64
+
+: ceil-div ( i32 i32 -- i32 )
+  :> d
+  d i32.add 1 i32.sub d i32.div_u ;
+
+: frame.hmax ( frame -- i32 )  frame.comps 0 [ component.h imax ] fold ;
+: frame.vmax ( frame -- i32 )  frame.comps 0 [ component.v imax ] fold ;
+
+: frame.mcus-wide ( frame -- i32 )
+  :> f
+  f frame.width  f frame.hmax 8 i32.mul  ceil-div ;
+
+: frame.mcus-high ( frame -- i32 )
+  :> f
+  f frame.height  f frame.vmax 8 i32.mul  ceil-div ;
+
+# A component's own block grid, as a non-interleaved scan walks it: not
+# padded to whole MCUs.
+: frame.comp-blocks-wide ( frame i32 -- i32 )
+  :> i :> f
+  f frame.width  f frame.comps i array.at component.h i32.mul  f frame.hmax ceil-div
+  8 ceil-div ;
+
+: frame.comp-blocks-high ( frame i32 -- i32 )
+  :> i :> f
+  f frame.height  f frame.comps i array.at component.v i32.mul  f frame.vmax ceil-div
+  8 ceil-div ;
+
+# Blocks over all components, padded to whole MCUs: what the coefficient
+# store holds.
+: frame.blocks-padded ( frame -- i64 )
+  :> f
+  f frame.mcus-wide i64 :> mw
+  f frame.mcus-high i64 :> mh
+  f frame.comps 0 i64
+  [ :> c  mw c component.h i64 i64.mul  mh c component.v i64 i64.mul  i64.mul  i64.add ]
+  fold ;
+
+: fx.grey ( -- frame )
+  1 array.new ( array component ) :> cs
+  cs 0  1 1 1 0 component.new  array.at!
+  0xC0 8 1 1 1 cs frame.new ;
+
+: fx.ycc420 ( i32 i32 -- frame )
+  :> ht :> wd
+  3 array.new ( array component ) :> cs
+  cs 0  1 2 2 0 component.new  array.at!
+  cs 1  2 1 1 1 component.new  array.at!
+  cs 2  3 1 1 1 component.new  array.at!
+  0xC0 8 ht wd 3 cs frame.new ;
+
+# The frame header's checks, in order (refusals at the first one that fails):
+# component count, precision, dimensions, pixel count, sampling factors 1 to 4,
+# hmax and vmax multiples of every factor (libjpeg's rule), unique component
+# ids, quantisation table indexes 0 to 3. It runs before any geometry word,
+# which divides by hmax and vmax. A zero dimension is refused LIMIT_DIM, as
+# libjpeg refuses an empty image; DNL (a height given after the first scan)
+# is a later decision.
+declare frame.check ( frame -- )
+
+# Test frames from scalars: one component (precision width height h v tq),
+# two components (id h of each; v 1, tq 0, 8x8), and n components with ids 1
+# to n.
+declare fx.one ( i32 i32 i32 i32 i32 i32 -- frame )
+declare fx.two ( i32 i32 i32 i32 -- frame )
+declare fx.ncomp ( i32 -- frame )
+
+test frame.check : fx.grey frame.check 1 -> 1
+test frame.check : 17 17 fx.ycc420 frame.check 1 -> 1
+test frame.check : 12 8 8 1 1 0 fx.one frame.check 1 -> 1
+test frame.check : 4 fx.ncomp frame.check 1 -> 1
+test frame.check : 1 2 2 2 fx.two frame.check 1 -> 1
+test frame.check : 0 fx.ncomp frame.check -> trap
+test frame.check : 5 fx.ncomp frame.check -> trap
+test frame.check : 7 8 8 1 1 0 fx.one frame.check -> trap
+test frame.check : 8 0 8 1 1 0 fx.one frame.check -> trap
+test frame.check : 8 8 0 1 1 0 fx.one frame.check -> trap
+test frame.check : 8 16385 8 1 1 0 fx.one frame.check -> trap
+test frame.check : 8 16384 16384 1 1 0 fx.one frame.check -> trap
+test frame.check : 8 8 8 0 1 0 fx.one frame.check -> trap
+test frame.check : 8 8 8 1 5 0 fx.one frame.check -> trap
+test frame.check : 1 2 2 3 fx.two frame.check -> trap
+test frame.check : 1 1 1 1 fx.two frame.check -> trap
+test frame.check : 8 8 8 1 1 4 fx.one frame.check -> trap
+
+: frame.check ( frame -- )
+  :> f
+  f frame.ncomp :> n
+  f frame.comps :> cs
+  n 1 i32.lt_s  n MAX_COMPONENTS i32.gt_s  i32.or  cs array.len n i32.ne  i32.or
+  [ BAD_COMPONENT "component count" n refusal-n trap ]
+  when
+  f frame.precision :> p
+  p 8 i32.ne  p 12 i32.ne  i32.and
+  [ BAD_PRECISION "sample precision" p refusal-n trap ]
+  when
+  f frame.width :> w
+  f frame.height :> ht
+  w 1 i32.lt_s  w MAX_DIM i32.gt_s  i32.or
+  [ LIMIT_DIM "width" w refusal-n trap ]
+  when
+  ht 1 i32.lt_s  ht MAX_DIM i32.gt_s  i32.or
+  [ LIMIT_DIM "height" ht refusal-n trap ]
+  when
+  w i64 ht i64 i64.mul  MAX_PIXELS i64  i64.gt_s
+  [ LIMIT_PIXELS "pixels over MAX_PIXELS" refusal trap ]
+  when
+  cs
+  [
+    :> c
+    c component.h 1 i32.lt_s  c component.h 4 i32.gt_s  i32.or
+    c component.v 1 i32.lt_s  c component.v 4 i32.gt_s  i32.or  i32.or
+    [ BAD_COMPONENT "sampling factor of component" c component.id refusal-n trap ]
+    when
+  ]
+  each
+  f frame.hmax :> hmax
+  f frame.vmax :> vmax
+  cs
+  [
+    :> d
+    hmax d component.h i32.rem_u  vmax d component.v i32.rem_u  i32.or
+    [ BAD_COMPONENT "sampling factor not dividing the maximum, component" d component.id refusal-n trap ]
+    when
+  ]
+  each
+  n
+  [
+    :> i
+    n
+    [
+      :> j
+      [ i j i32.lt_s ] [ cs i array.at component.id  cs j array.at component.id  i32.eq ] and
+      [ BAD_COMPONENT "duplicate component id" cs i array.at component.id refusal-n trap ]
+      when
+    ]
+    times
+  ]
+  times
+  cs
+  [
+    :> e
+    e component.tq 3 i32.gt_u
+    [ BAD_TABLE "quantisation table index" e component.tq refusal-n trap ]
+    when
+  ]
+  each ;
+
+: fx.one ( i32 i32 i32 i32 i32 i32 -- frame )
+  :> tq :> v :> h :> ht :> wd :> p
+  1 array.new ( array component ) :> cs
+  cs 0  1 h v tq component.new  array.at!
+  0xC0 p ht wd 1 cs frame.new ;
+
+: fx.two ( i32 i32 i32 i32 -- frame )
+  :> hb :> idb :> ha :> ida
+  2 array.new ( array component ) :> cs
+  cs 0  ida ha 1 0 component.new  array.at!
+  cs 1  idb hb 1 0 component.new  array.at!
+  0xC0 8 8 8 2 cs frame.new ;
+
+: fx.ncomp ( i32 -- frame )
+  :> n
+  n array.new ( array component ) :> cs
+  n [ :> i  cs i  i 1 i32.add 1 1 0 component.new  array.at! ] times
+  0xC0 8 8 8 n cs frame.new ;
+
+declare frame.progressive? ( frame -- i32 )
+test frame.progressive? : fx.grey frame.progressive? -> 0
+test frame.progressive? : fx.grey dup 0xC2 frame.kind! frame.progressive? -> 1
+test frame.progressive? : fx.grey dup 0xCA frame.kind! frame.progressive? -> 1
+
+# Bytes the decode will need, from the header alone (ARCHITECTURE.md, Memory
+# budget): the input, the coefficient store when progressive (2 bytes x 64
+# coefficients per block, padded to whole MCUs), one MCU row of component
+# planes, one output row at up to 2 bytes a sample, and 1 MiB for tables.
+declare frame.need ( frame i32 -- i64 )
+test frame.need : fx.grey 159 frame.need -> 1048801 i64
+test frame.need : fx.grey dup 0xC2 frame.kind! 159 frame.need -> 1048929 i64
+
+# Frame, input length, budget. The budget is a parameter so the refusal can
+# be tested: with the default MEM_BUDGET of 1 GB no frame within MAX_PIXELS
+# exceeds it. Call sites pass `MEM_BUDGET i64`.
+declare frame.check-memory ( frame i32 i64 -- )
+test frame.check-memory : fx.grey 159 1000 i64 frame.check-memory -> trap
+test frame.check-memory : fx.grey 159 MEM_BUDGET i64 frame.check-memory 1 -> 1
+
+# The line main prints: FRAME width height ncomp kind.
+declare frame.describe ( frame -- str )
+test frame.describe : fx.grey frame.describe -> "FRAME 1 1 1 192"
+
+: frame.progressive? ( frame -- i32 )
+  frame.kind :> k
+  k 0xC2 i32.eq  k 0xCA i32.eq  i32.or ;
+
+: frame.need ( frame i32 -- i64 )
+  :> len :> f
+  f frame.progressive? [ f frame.blocks-padded 128 i64 i64.mul ] [ 0 i64 ] if :> store
+  f frame.mcus-wide i64  f frame.hmax 8 i32.mul i64 i64.mul  f frame.vmax 8 i32.mul i64 i64.mul
+  f frame.ncomp i64 i64.mul :> planes
+  f frame.width i64  f frame.ncomp i64 i64.mul  2 i64 i64.mul :> row
+  len i64 store i64.add planes i64.add row i64.add 1048576 i64 i64.add ;
+
+: frame.check-memory ( frame i32 i64 -- )
+  :> budget
+  frame.need budget i64.gt_s
+  [ LIMIT_MEMORY "memory needed over MEM_BUDGET" refusal trap ]
+  when ;
+
+: frame.describe ( frame -- str )
+  :> f
+  "FRAME " f frame.width i32.to-str str.concat
+  " " str.concat f frame.height i32.to-str str.concat
+  " " str.concat f frame.ncomp i32.to-str str.concat
+  " " str.concat f frame.kind i32.to-str str.concat ;

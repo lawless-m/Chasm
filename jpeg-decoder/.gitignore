@@ -1,0 +1,4 @@
+# Rebuilt locally: the oracle build (corpus/SOURCES.md has the recipe) and
+# the mutants tools/mkfuzz.py writes.
+/oracle/
+/corpus/fuzz/mutants/

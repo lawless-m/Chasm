@@ -1,0 +1,33 @@
+# Refusals.
+#
+# Whackford has no exceptions, so a refusal is a trap whose message starts
+# `REFUSED CODE:`. A word that calls a trapping word still owes its declared
+# outputs, so every refusal site is written
+#
+#   CODE "message" refusal trap
+#
+# with the primitive `trap` ending the `if` branch or `when` body. Under
+# `wack run` the trap prints `trap in `word`: REFUSED CODE: message` on
+# stderr. Any trap whose message lacks `REFUSED ` is a decoder bug.
+
+declare refusal ( str str -- str )
+test refusal : TRUNCATED "x" refusal -> "REFUSED TRUNCATED: x"
+
+: refusal ( str str -- str )
+  :> msg :> code
+  "REFUSED " code str.concat ": " str.concat msg str.concat ;
+
+declare refusal-n ( str str i32 -- str )
+test refusal-n : BAD_TABLE "index" 4 refusal-n -> "REFUSED BAD_TABLE: index 4"
+
+: refusal-n ( str str i32 -- str )
+  :> n
+  " " str.concat n i32.to-str str.concat refusal ;
+
+# The pattern, shown once; nothing else uses this word.
+declare refuse-demo ( i32 -- i32 )
+test refuse-demo : -1 refuse-demo -> trap
+test refuse-demo : 3 refuse-demo -> 3
+
+: refuse-demo ( i32 -- i32 )
+  dup 0 i32.lt_s [ LIMIT_DIM "negative" refusal trap ] when ;
