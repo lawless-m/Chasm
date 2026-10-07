@@ -55,6 +55,10 @@ Each entry says how things stand now and what the decoder does about it.
   16-bit `bytes` accessor would let one buffer type serve both precisions,
   at the cost of the 8-bit path's single-byte loads.
 
+- Choosing among five colour spaces is a nest of `if`s in colour.row and
+  colour.row12 (grey, YCbCr, RGB, CMYK, YCCK), each new space one level
+  deeper; there is no `case` on an integer.
+
 ## Tooling
 
 - `wack test` exits 0 even with pending tests, so gates grep the summary line
@@ -72,8 +76,12 @@ with the oracle's cjpeg from a tiling of `primary/testorig.jpg`, 4000x3000
 `tmp/m4-timing/big12p.jpg` (progressive, libjpeg's standard ten scans),
 `big12s3.jpg` (three one-component sequential scans),
 `tmp/m5-timing/big12a.jpg` and `big12pa.jpg` (`cjpeg -arithmetic`,
-sequential and progressive), and `tmp/m6-timing/big12b12.jpg` (`cjpeg
--precision 12` of the same 8-bit picture, SOF1). Every output is byte-exact
+sequential and progressive), `tmp/m6-timing/big12b12.jpg` (`cjpeg
+-precision 12` of the same 8-bit picture, SOF1), and `tmp/m7-timing/big12cmyk.jpg`
+(Pillow's CMYK of the same picture, quality 75, Adobe transform 0, C
+subsampled 2x2 and M, Y, K full size) and `big12ycck.jpg` (tjbench
+`-pixelformat cmyk`, quality 85, Adobe transform 2, Y and K full size, Cb
+and Cr 2x2); djpeg writes both as P6 RGB through cmyk_to_rgb. Every output is byte-exact
 against djpeg in the same mode (`-dct int -pnm` for fancy, `-dct int
 -nosmooth -pnm` for plain).
 
@@ -91,6 +99,10 @@ against djpeg in the same mode (`-dct int -pnm` for fancy, `-dct int
 | big12pa, progressive arithmetic | plain (`nosmooth`) | 1.58 s | 1.06 s | 8.3 megapixels/s | 0.24 s |
 | big12b12, 12-bit | fancy (default) | 1.66 s | 1.10 s | 7.9 megapixels/s | 0.14 s |
 | big12b12, 12-bit | plain (`nosmooth`) | 1.61 s | 1.24 s | 8.1 megapixels/s | 0.12 s |
+| big12cmyk, CMYK | fancy (default) | 0.95 s | 0.88 s | 14.8 megapixels/s | 0.12 s |
+| big12cmyk, CMYK | plain (`nosmooth`) | 1.01 s | 0.86 s | 13.7 megapixels/s | 0.10 s |
+| big12ycck, YCCK | fancy (default) | 1.51 s | 1.03 s | 8.8 megapixels/s | 0.17 s |
+| big12ycck, YCCK | plain (`nosmooth`) | 1.53 s | 1.01 s | 8.7 megapixels/s | 0.15 s |
 
 - Compiling the program is 0.14 s of every run (a file that stops at
   `NOT_YET` takes that long), well inside the harness's 20 s timeout.
@@ -117,6 +129,15 @@ against djpeg in the same mode (`-dct int -pnm` for fancy, `-dct int
   two big-endian bytes; the oracle's time rises in the same proportion
   (0.14 s against 0.08 s). The 8-bit path pays one `decoder.wide` branch per
   block and per component row, which these measurements do not show.
+- The CMYK file decodes in 0.95 s against big12's 0.90 s although it carries
+  a fourth plane and only one subsampled component (2.7 MB of entropy data
+  against 1.8 MB): its colour stage is three multiply-divides a pixel
+  (colour.ink) where YCbCr needs four table lookups and a shift. The YCCK
+  file takes 1.51 s: 4.3 MB of entropy data at quality 85 with two full-size
+  planes, then the YCbCr conversion plus three subtractions and three
+  multiply-divides a pixel. Re-measured in the same session, the 8-bit
+  baseline, progressive, arithmetic and 12-bit rows above are unchanged
+  within noise (big12 fancy 0.90 s).
 - In a baseline decode the stages take, measured by removing one at a time
   in scratch copies: IDCT 27% of the run, colour conversion 23%, entropy
   decoding and the scan loop 18%, compile 12%, upsampling 10% and the row

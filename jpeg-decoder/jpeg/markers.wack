@@ -249,11 +249,23 @@ declare markers.app0 ( jpeg i32 i32 -- )
 test markers.app0 : fx.app0 hex markers.open dup 4 14 markers.app0 jpeg.jfif -> 1
 test markers.app0 : "FFE0 0007 0000000000" hex markers.open dup 4 5 markers.app0 jpeg.jfif -> 0
 
-# APP14: Adobe, version (2 bytes), flags0 (2), flags1 (2), transform (1).
+# APP14 as libjpeg's examine_app14: an Adobe marker only when the payload
+# has at least 12 bytes and starts `Adobe`; then version (2 bytes), flags0
+# (2), flags1 (2) and the transform at payload offset 11, kept for any value
+# (colour.space refuses unknown ones). Every APP14 is examined, so a later
+# one overrides an earlier one.
 declare markers.app14 ( jpeg i32 i32 -- )
 test markers.app14 : "FFEE 000E 41646F6265 0064 0000 0000 01" hex markers.open dup 4 12 markers.app14 jpeg.adobe -> 1
 test markers.app14 : "FFEE 000E 41646F6265 0064 0000 0000 01" hex markers.open dup 4 12 markers.app14 jpeg.transform -> 1
 test markers.app14 : "FFEE 0007 41646F6265" hex markers.open dup 4 5 markers.app14 jpeg.adobe -> 0
+test markers.app14 : "FFEE 000D 41646F6265 0064 0000 0000" hex markers.open dup 4 11 markers.app14 jpeg.adobe -> 0
+test markers.app14 : "FFEE 000E 41646F6266 0064 0000 0000 02" hex markers.open dup 4 12 markers.app14 jpeg.adobe -> 0
+test markers.app14 : "FFEE 000E 41646F6265 0064 0000 0000 FF" hex markers.open dup 4 12 markers.app14 jpeg.transform -> 255
+test markers.app14 : "FFEE 000E 41646F6265 0064 0000 0000 02" hex markers.open dup 4 12 markers.app14 jpeg.transform -> 2
+test markers.app14 : "FFEE 000E 41646F6265 0064 0000 0000 00" hex markers.open dup 4 12 markers.app14 jpeg.transform -> 0
+test markers.app14 : "FFEE 000E 41646F6265 0064 0000 0000 00" hex markers.open dup 4 12 markers.app14 jpeg.adobe -> 1
+test markers.app14 : "FFEE 0021 41646F6265 0064 0000 0000 02 00000000000000000000000000000000000000" hex markers.open dup 4 31 markers.app14 jpeg.transform -> 2
+test markers.app14 : "FFEE 000E 41646F6265 0064 0000 0000 01 FFEE 000E 41646F6265 0064 0000 0000 02" hex markers.open dup 4 12 markers.app14 dup 20 12 markers.app14 jpeg.transform -> 2
 
 # SOF (B.2.2): marker byte, payload start and length. Builds the frame, runs
 # frame.check before any geometry word (hmax may be 0 in hostile input),

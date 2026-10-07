@@ -232,7 +232,8 @@ test frame.progressive? : fx.grey dup 0xCA frame.kind! frame.progressive? -> 1
 # MAX_SCANS (256 scans x 8 tables x 2192 bytes is under 4.5 MB), the
 # arithmetic decoder's 1281 bytes of statistics and 114-entry state table,
 # and the 12-bit tables (a 16384-entry range limit, four 4096-entry colour
-# tables: about 128 KB).
+# tables: about 128 KB). A 4-component frame (CMYK or YCCK) writes 3 samples
+# a pixel, within the output-row term's ncomp x 2 bytes.
 declare frame.need ( frame i32 -- i64 )
 test frame.need : fx.grey 159 frame.need -> 8389097 i64
 test frame.need : fx.grey dup 0xC2 frame.kind! 159 frame.need -> 8389097 i64
@@ -240,6 +241,7 @@ test frame.need : 17 17 fx.ycc420 0 frame.need -> 8394902 i64
 test frame.need : 12 8 8 1 1 0 fx.one 159 frame.need -> 8389935 i64
 test frame.need : 17 17 fx.ycc420 dup 12 frame.precision! 0 frame.need -> 8404262 i64
 test frame.need : fx.grey dup 12 frame.precision! 159 frame.need -> 8389697 i64
+test frame.need : 4 fx.ncomp 159 frame.need -> 8390367 i64
 
 # Frame, input length, budget. The budget is a parameter so the refusal can
 # be tested: with the default MEM_BUDGET of 1 GB no frame within MAX_PIXELS

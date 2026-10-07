@@ -117,6 +117,27 @@ and corpus/synthetic/p12-prog-420.jpg (stem p12-prog-420, SOF2, P=12):
              incomplete, legal 12-bit progressive file that libjpeg smooths)
 - pdqt16   1: the first DQT rewritten as a 16-bit table (entries x 17)
 
+Then two 4-component sources, after everything above with the same rng:
+corpus/synthetic/cmyk-pillow-q75-420.jpg (CMYK, Adobe transform 0) and
+corpus/synthetic/ycck-tj-q85-420.jpg (YCCK, transform 2; its output is
+all black, so its decoded mutants test parsing, not colour), each with:
+
+- xform    5: the Adobe transform byte set to 0, 1, 2, 3, 255 (libjpeg
+             warns about 1, 3 and 255: refused BAD_COMPONENT)
+- adobe    3: the APP14 removed; shortened to 11 payload bytes (ignored by
+             libjpeg); its identifier changed to `Adobf` (ignored)
+- jfif     1: a JFIF APP0 inserted before the APP14 (changes nothing for
+             4 components)
+- nf       2: the component count set to 3 with the fourth component's
+             bytes and the length removed; set to 3 with nothing else
+- ids      3: the ids changed consistently in the SOF and the SOS; the
+             second made equal to the first; SOF ids R G B K with the SOS
+             unchanged
+- samp     3: the fourth component's sampling set to the first's (or 1x1),
+             to 0x00, to 0x33
+- ent      8: 1 to 4 random byte values inside the entropy data
+- cut      4: the file cut inside the entropy data
+
 The harness expects every fuzz file to be refused with a code, to reach
 not-yet, or to decode byte-exact against the oracle; never to trap, hang or
 mismatch.
@@ -559,6 +580,70 @@ def twelve_prog_mutants(d, rng):
     return out
 
 
+def four_mutants(d, rng):
+    segs = segments(d)
+    app = first(segs, lambda m: m == 0xEE)
+    sof = first(segs, lambda m: m in (0xC0, 0xC1))
+    sos = first(segs, lambda m: m == 0xDA)
+    assert d[app[1] + 4 : app[1] + 9] == b"Adobe" and d[sof[1] + 9] == 4
+    start, end = sos[1] + 2 + sos[2], len(d) - 2
+    assert d[end:] == b"\xff\xd9"
+    t = app[1] + 15
+    o = sof[1] + 10  # first component spec: id, sampling, tq
+    out = []
+
+    def put(kind, b):
+        out.append((kind, bytes(b)))
+
+    for v in (0, 1, 2, 3, 255):
+        b = bytearray(d)
+        b[t] = v
+        put("xform", b)
+    put("adobe", d[: app[1]] + d[app[1] + 2 + app[2] :])
+    b = bytearray(d)
+    b[app[1] + 2 : app[1] + 4] = (13).to_bytes(2, "big")
+    put("adobe", bytes(b[: app[1] + 2 + 13]) + d[app[1] + 2 + 14 :])
+    b = bytearray(d)
+    b[app[1] + 8] = ord("f")
+    put("adobe", b)
+    jfif = bytes.fromhex("FFE000104A46494600010100000100010000")
+    put("jfif", d[: app[1]] + jfif + d[app[1] :])
+    b = bytearray(d)
+    b[sof[1] + 2 : sof[1] + 4] = (sof[2] - 3).to_bytes(2, "big")
+    b[sof[1] + 9] = 3
+    put("nf", bytes(b[: o + 9]) + d[o + 12 :])
+    b = bytearray(d)
+    b[sof[1] + 9] = 3
+    put("nf", b)
+    old = [d[o + 3 * c] for c in range(4)]
+    new = [1, 2, 3, 4] if old != [1, 2, 3, 4] else [11, 12, 13, 14]
+    b = bytearray(d)
+    for c in range(4):
+        b[o + 3 * c] = new[c]
+    for k in range(d[sos[1] + 4]):
+        b[sos[1] + 5 + 2 * k] = new[old.index(d[sos[1] + 5 + 2 * k])]
+    put("ids", b)
+    b = bytearray(d)
+    b[o + 3] = b[o]
+    put("ids", b)
+    b = bytearray(d)
+    for c, v in enumerate((82, 71, 66, 75)):
+        b[o + 3 * c] = v
+    put("ids", b)
+    for v in (d[o + 1] if d[o + 10] != d[o + 1] else 0x11, 0x00, 0x33):
+        b = bytearray(d)
+        b[o + 10] = v
+        put("samp", b)
+    for _ in range(8):
+        b = bytearray(d)
+        for _ in range(rng.randint(1, 4)):
+            b[rng.randrange(start, end)] = rng.randrange(256)
+        put("ent", b)
+    for _ in range(4):
+        put("cut", d[: rng.randrange(start, end)])
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--seed", type=int, default=1)
@@ -588,7 +673,9 @@ def main():
     for path, stem, fn in ((("corpus", "primary", "testimgari.jpg"), "testimgari", arith_mutants),
                            (("corpus", "synthetic-m5", "a-full-s2x2-prog.jpg"), "a-full-s2x2-prog", arith_prog_mutants),
                            (("corpus", "primary", "testorig12.jpg"), "testorig12", twelve_mutants),
-                           (("corpus", "synthetic", "p12-prog-420.jpg"), "p12-prog-420", twelve_prog_mutants)):
+                           (("corpus", "synthetic", "p12-prog-420.jpg"), "p12-prog-420", twelve_prog_mutants),
+                           (("corpus", "synthetic", "cmyk-pillow-q75-420.jpg"), "cmyk-pillow-q75-420", four_mutants),
+                           (("corpus", "synthetic", "ycck-tj-q85-420.jpg"), "ycck-tj-q85-420", four_mutants)):
         counts = {}
         for kind, b in fn(open(os.path.join(ROOT, *path), "rb").read(), rng):
             counts[kind] = counts.get(kind, 0) + 1
