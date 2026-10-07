@@ -1,0 +1,202 @@
+# The bit reader over entropy-coded data (T.81 F.2.2.5; libjpeg's
+# jpeg_fill_bit_buffer in jdhuff.c).
+#
+# Fields: data is the whole input; pos the offset of the next unread byte;
+# buf the bits read but not yet consumed, right-aligned, nbits of them (0 to
+# 32: a fill stops once more than 24 bits are held, as libjpeg's MIN_GET_BITS
+# 25 on a 32-bit buffer); marker is 0, or the byte xx of an FF xx marker the
+# reader has run into; exhausted is the hard end-of-data flag.
+#
+# Stuffing: FF 00 is one FF data byte, and so is a run of FFs ending in 00.
+# A run of FFs ending in any other byte is a marker: it is recorded, and pos
+# stays at the run's first FF, so the marker (fill bytes and all) is left in
+# the data for the scan layer, whose markers.next-marker skips fill itself.
+# FFs at the very end of the data are not a marker either; the scan layer
+# finds TRUNCATED there.
+#
+# The exhausted flag is set by bits.ensure when a request cannot be met
+# because a marker or the end of the data is in the way. The reader then pads
+# with zero bits as libjpeg does (buf shifted left to make 25 bits), so the
+# bits handed out from there on are zeros and the flag says so: it never
+# hands out made-up bits without saying so. The flag is sticky until a
+# restart (bits.restart). Callers ask for 0 to 16 bits at a time: a Huffman
+# code is at most 16 bits, extra bits at most 15.
+
+struct bitreader  data: bytes  pos: i32  buf: i32  nbits: i32  marker: i32  exhausted: i32
+
+declare bits.open ( bytes i32 -- bitreader )
+test bits.open : fx.tiny hex 0 bits.open bitreader.exhausted -> 0
+test bits.open : fx.tiny hex 156 bits.open bitreader.pos -> 156
+
+declare bits.fill ( bitreader -- )
+test bits.fill : "3F" hex 0 bits.open dup bits.fill bitreader.nbits -> 8
+test bits.fill : "3F" hex 0 bits.open dup bits.fill bitreader.buf -> 0x3F
+test bits.fill : "01020304" hex 0 bits.open dup bits.fill bitreader.nbits -> 32
+test bits.fill : "01020304" hex 0 bits.open dup bits.fill bitreader.buf -> 0x01020304
+test bits.fill : "0102030405" hex 0 bits.open dup bits.fill bitreader.pos -> 4
+test bits.fill : "FF00" hex 0 bits.open dup bits.fill bitreader.buf -> 0xFF
+test bits.fill : "FF00" hex 0 bits.open dup bits.fill bitreader.pos -> 2
+test bits.fill : "FFFF00" hex 0 bits.open dup bits.fill bitreader.buf -> 0xFF
+test bits.fill : "FFFF00" hex 0 bits.open dup bits.fill bitreader.pos -> 3
+test bits.fill : "12FFD9" hex 0 bits.open dup bits.fill bitreader.marker -> 0xD9
+test bits.fill : "12FFD9" hex 0 bits.open dup bits.fill bitreader.pos -> 1
+test bits.fill : "12FFD9" hex 0 bits.open dup bits.fill bitreader.nbits -> 8
+test bits.fill : "12FFFFD9" hex 0 bits.open dup bits.fill bitreader.pos -> 1
+test bits.fill : "12FFFFD9" hex 0 bits.open dup bits.fill bitreader.marker -> 0xD9
+test bits.fill : "12FF" hex 0 bits.open dup bits.fill bitreader.pos -> 1
+test bits.fill : "12FF" hex 0 bits.open dup bits.fill bitreader.marker -> 0
+test bits.fill : "12" hex 0 bits.open dup bits.fill bitreader.nbits -> 8
+test bits.fill : "12" hex 0 bits.open dup bits.fill bitreader.pos -> 1
+test bits.fill : "" hex 0 bits.open dup bits.fill bitreader.nbits -> 0
+test bits.fill : "12FFD9" hex 0 bits.open dup bits.fill dup bits.fill bitreader.nbits -> 8
+test bits.fill : fx.tiny hex 156 bits.open dup bits.fill bitreader.buf -> 0x3F
+test bits.fill : fx.tiny hex 156 bits.open dup bits.fill bitreader.marker -> 0xD9
+test bits.fill : fx.tiny hex 156 bits.open dup bits.fill bitreader.pos -> 157
+
+: bits.open ( bytes i32 -- bitreader )  0 0 0 0 bitreader.new ;
+
+# Each pass either stops or advances pos, so the loop is bounded by the
+# input length. Every bytes.at index has been compared with the length.
+: bits.fill ( bitreader -- )
+  :> r
+  r bitreader.data :> d
+  d bytes.len :> len
+  1 :> go!
+  [ go  r bitreader.nbits 24 i32.le_s  i32.and ]
+  [
+    r bitreader.marker  r bitreader.pos len i32.ge_s  i32.or
+    [ 0 go! ]
+    [
+      r bitreader.pos :> p
+      d p bytes.at :> c
+      c 0xFF i32.ne
+      [
+        r  r bitreader.buf 8 i32.shl c i32.or  bitreader.buf!
+        r  r bitreader.nbits 8 i32.add  bitreader.nbits!
+        r  p 1 i32.add  bitreader.pos!
+      ]
+      [
+        p 1 i32.add :> q!
+        [ [ q len i32.lt_s ] [ d q bytes.at 0xFF i32.eq ] and ] [ q 1 i32.add q! ] while
+        q len i32.ge_s
+        [ 0 go! ]
+        [
+          d q bytes.at :> nx
+          nx 0 i32.eq
+          [
+            r  r bitreader.buf 8 i32.shl 0xFF i32.or  bitreader.buf!
+            r  r bitreader.nbits 8 i32.add  bitreader.nbits!
+            r  q 1 i32.add  bitreader.pos!
+          ]
+          [ r nx bitreader.marker!  0 go! ]
+          if
+        ]
+        if
+      ]
+      if
+    ]
+    if
+  ]
+  while ;
+
+declare bits.ensure ( bitreader i32 -- )
+declare bits.peek ( bitreader i32 -- i32 )
+declare bits.skip ( bitreader i32 -- )
+declare bits.get ( bitreader i32 -- i32 )
+test bits.get : "3F" hex 0 bits.open 6 bits.get -> 15
+test bits.get : "3F" hex 0 bits.open dup 6 bits.get drop 2 bits.get -> 3
+test bits.get : "A5C3" hex 0 bits.open 12 bits.get -> 2652
+test bits.get : "A5C3F0" hex 0 bits.open dup 4 bits.skip 16 bits.get -> 23615
+test bits.get : "A5" hex 0 bits.open dup 4 bits.peek drop 4 bits.get -> 10
+test bits.get : "A5" hex 0 bits.open dup 4 bits.skip 4 bits.get -> 5
+test bits.get : "FF00" hex 0 bits.open 8 bits.get -> 255
+test bits.get : "12FFD9" hex 0 bits.open 8 bits.get -> 0x12
+test bits.get : "12FFD9" hex 0 bits.open dup 8 bits.get drop bitreader.exhausted -> 0
+test bits.get : "12FFD9" hex 0 bits.open dup 8 bits.get drop dup 1 bits.get drop bitreader.exhausted -> 1
+test bits.get : "12FFD9" hex 0 bits.open dup 8 bits.get drop 8 bits.get -> 0
+test bits.get : "12FFD9" hex 0 bits.open dup 8 bits.get drop dup 8 bits.get drop bitreader.pos -> 1
+test bits.get : "12FFD9" hex 0 bits.open dup 8 bits.get drop dup 8 bits.get drop bitreader.marker -> 0xD9
+test bits.get : "12" hex 0 bits.open dup 8 bits.get drop dup 1 bits.get drop bitreader.exhausted -> 1
+test bits.get : "12FF" hex 0 bits.open dup 8 bits.get drop dup 1 bits.get drop bitreader.exhausted -> 1
+test bits.get : "12FF" hex 0 bits.open dup 8 bits.get drop dup 1 bits.get drop bitreader.marker -> 0
+test bits.get : "" hex 0 bits.open dup 1 bits.get drop bitreader.exhausted -> 1
+test bits.get : "" hex 0 bits.open 1 bits.get -> 0
+test bits.get : "12" hex 0 bits.open 0 bits.get -> 0
+test bits.get : "12" hex 0 bits.open dup 0 bits.get drop bitreader.exhausted -> 0
+test bits.get : "12" hex 0 bits.open dup 8 bits.get drop dup 1 bits.get drop bitreader.nbits -> 24
+test bits.get : fx.tiny hex 156 bits.open dup 1 bits.get drop dup 1 bits.get drop bitreader.exhausted -> 0
+test bits.get : fx.tiny hex 156 bits.open dup 8 bits.get drop dup 1 bits.get drop bitreader.exhausted -> 1
+
+: bits.ensure ( bitreader i32 -- )
+  :> n :> r
+  r bitreader.nbits n i32.lt_s [ r bits.fill ] when
+  r bitreader.nbits n i32.lt_s
+  [
+    r 1 bitreader.exhausted!
+    r  r bitreader.buf  25 r bitreader.nbits i32.sub  i32.shl  bitreader.buf!
+    r 25 bitreader.nbits!
+  ]
+  when ;
+
+: bits.peek ( bitreader i32 -- i32 )
+  :> n :> r
+  r n bits.ensure
+  r bitreader.buf  r bitreader.nbits n i32.sub  i32.shr_u
+  1 n i32.shl 1 i32.sub  i32.and ;
+
+: bits.skip ( bitreader i32 -- )
+  :> n :> r
+  r n bits.ensure
+  r  r bitreader.nbits n i32.sub  bitreader.nbits! ;
+
+: bits.get ( bitreader i32 -- i32 )
+  :> n :> r
+  r n bits.peek
+  r  r bitreader.nbits n i32.sub  bitreader.nbits! ;
+
+# The end of a restart interval (libjpeg's process_restart): the unread bits
+# are padding and are discarded, the exhausted flag and the marker are
+# cleared, and the marker at pos (after any fill FFs) is consumed and
+# returned; -1, with pos unchanged, when there is no marker there. It never
+# refuses: whether the marker is the expected RSTn or something else (EOI,
+# garbage) is the scan layer's decision (BAD_RESTART, M2). When bits.fill has
+# already met the marker, pos is at its first FF, so the same search finds it.
+declare bits.restart ( bitreader -- i32 )
+test bits.restart : "FFD0A5" hex 0 bits.open bits.restart -> 0xD0
+test bits.restart : "FFD0A5" hex 0 bits.open dup bits.restart drop 4 bits.get -> 10
+test bits.restart : "FFD0A5" hex 0 bits.open dup bits.restart drop bitreader.pos -> 2
+test bits.restart : "12FFD134" hex 0 bits.open dup 8 bits.get drop bits.restart -> 0xD1
+test bits.restart : "12FFD134" hex 0 bits.open dup 8 bits.get drop dup bits.restart drop 8 bits.get -> 0x34
+test bits.restart : "12FFD034" hex 0 bits.open dup 4 bits.get drop dup bits.restart drop 8 bits.get -> 0x34
+test bits.restart : "12FFD034" hex 0 bits.open dup 4 bits.get drop dup bits.restart drop bitreader.marker -> 0
+test bits.restart : "12FFD034" hex 0 bits.open dup 4 bits.get drop dup bits.restart drop bitreader.nbits -> 0
+test bits.restart : "12FFD9" hex 0 bits.open dup 8 bits.get drop dup 8 bits.get drop dup bits.restart drop bitreader.exhausted -> 0
+test bits.restart : "12FFD9" hex 0 bits.open dup 8 bits.get drop bits.restart -> 0xD9
+test bits.restart : "FFFFD7" hex 0 bits.open bits.restart -> 0xD7
+test bits.restart : "FFFFD7" hex 0 bits.open dup bits.restart drop bitreader.pos -> 3
+test bits.restart : "1234" hex 0 bits.open bits.restart -> -1
+test bits.restart : "1234" hex 0 bits.open dup bits.restart drop bitreader.pos -> 0
+test bits.restart : "" hex 0 bits.open bits.restart -> -1
+test bits.restart : "FF" hex 0 bits.open bits.restart -> -1
+test bits.restart : "FF00" hex 0 bits.open bits.restart -> -1
+
+: bits.restart ( bitreader -- i32 )
+  :> r
+  r 0 bitreader.buf!
+  r 0 bitreader.nbits!
+  r 0 bitreader.exhausted!
+  r 0 bitreader.marker!
+  r bitreader.data :> d
+  d bytes.len :> len
+  r bitreader.pos :> p
+  [ p len i32.lt_s ] [ d p bytes.at 0xFF i32.eq ] and
+  [
+    p 1 i32.add :> q!
+    [ [ q len i32.lt_s ] [ d q bytes.at 0xFF i32.eq ] and ] [ q 1 i32.add q! ] while
+    [ q len i32.lt_s ] [ d q bytes.at 0 i32.ne ] and
+    [ r q 1 i32.add bitreader.pos!  d q bytes.at ]
+    [ -1 ]
+    if
+  ]
+  [ -1 ]
+  if ;

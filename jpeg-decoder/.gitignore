@@ -2,3 +2,4 @@
 # the mutants tools/mkfuzz.py writes.
 /oracle/
 /corpus/fuzz/mutants/
+__pycache__/

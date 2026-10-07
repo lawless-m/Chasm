@@ -15,6 +15,9 @@ Kinds, per source (a kind that does not apply to a source is skipped):
 - seglen   6: a random segment's length field set to 0, 1, 2, FFFF or random
 - sofdim   6: width and/or height set to 0, 1, 16385, 65535 or 16384 x 16384
 - dht      2: a DHT over-subscribed (first count 3), all 16 counts FF
+- dhtsym   1: the first DC table's first symbol set to 16
+- dhtfull  1: the first DHT rebuilt as one full table (two 1-bit codes, the
+             second all ones)
 - nf       2: the component count set to 0 and 5, length left as is
 - samp     2: a sampling byte set to 00 and 55
 - dupid    1: two component ids made equal (3-component files)
@@ -126,6 +129,13 @@ def mutants(d, rng):
         b = bytearray(d)
         b[dht[1] + 5 : dht[1] + 21] = b"\xff" * 16
         put("dht", b)
+        if d[dht[1] + 4] >> 4 == 0:
+            b = bytearray(d)
+            b[dht[1] + 21] = 0x10
+            put("dhtsym", b)
+        o = dht[1]
+        full = d[o + 4 : o + 5] + bytes([2] + [0] * 15) + d[o + 21 : o + 23]
+        put("dhtfull", d[: o + 2] + (21).to_bytes(2, "big") + full + d[o + 2 + dht[2] :])
     for s in (dqt, dht, sof):
         if s:
             put("dropseg", d[: s[1]] + d[s[1] + 2 + s[2] :])

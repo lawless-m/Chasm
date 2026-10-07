@@ -36,6 +36,10 @@ Each entry says how things stand now and what the decoder does about it.
 - A stack assertion asserts the whole stack, so `n array.new ( array i32 )`
   only works with nothing else on the stack: bind the array to a local first.
 
+- An `array` of a struct type starts with unset elements and there is no test
+  for one, so code that fills some slots keeps a parallel `array i32` of
+  flags (`huffman.scan-tables`).
+
 ## Tooling
 
 - `wack test` exits 0 even with pending tests, so gates grep the summary line

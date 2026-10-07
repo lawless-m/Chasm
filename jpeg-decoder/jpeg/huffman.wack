@@ -1,0 +1,289 @@
+# Huffman tables (T.81 Annex C, F.2.2.3; libjpeg's jpeg_make_d_derived_tbl
+# in jdhuff.c).
+#
+# A table is built from a DHT that markers.dht has located (jpeg.huff-at:
+# the offset of its 16 counts; the symbols follow). Layout:
+#
+# - lookup, 256 entries indexed by the next 8 bits: (code length << 8) |
+#   symbol for a code of at most 8 bits, else 9 << 8 = 2304, too long. The
+#   lookahead is 8 bits, as libjpeg's HUFF_LOOKAHEAD.
+# - maxcode and valoffset, 18 entries indexed by code length 1 to 16:
+#   maxcode[l] is the largest code of length l, or -1 when there is none,
+#   with the sentinel maxcode[17] = 0xFFFFF; a code of length l is the symbol
+#   symbols[code + valoffset[l]].
+# - symbols, 256 entries, the first nsymbols used.
+#
+# Refused as libjpeg refuses them (BAD_TABLE): more than 256 symbols; a table
+# containing an all-ones code, so one whose Kraft sum is exactly 1, which
+# markers.dht accepted; a DC symbol over 15. Tables are built once per table
+# the scan references (huffman.scan-tables).
+
+struct hufftable  lookup: array i32  maxcode: array i32  valoffset: array i32  symbols: array i32  nsymbols: i32
+
+# The input, the offset of the 16 counts, and is-dc.
+declare huffman.build ( bytes i32 i32 -- hufftable )
+
+: huffman.build ( bytes i32 i32 -- hufftable )
+  :> isdc :> at :> d
+  0 :> total!
+  16 [ :> i  total  d at i i32.add markers.u8  i32.add total! ] times
+  total 256 i32.gt_s [ BAD_TABLE "Huffman symbol count" total refusal-n trap ] when
+  256 array.new ( array i32 ) :> look
+  18 array.new ( array i32 ) :> maxc
+  18 array.new ( array i32 ) :> valo
+  256 array.new ( array i32 ) :> syms
+  total [ :> k  syms k  d at 16 i32.add k i32.add markers.u8  array.at! ] times
+  # Figure C.2, with libjpeg's check that no code is all ones; codes of one
+  # length are consecutive, so only the first and last are needed.
+  0 :> code!
+  0 :> p!
+  16
+  [
+    :> j
+    j 1 i32.add :> l
+    d at j i32.add markers.u8 :> n
+    n
+    [ valo l  p code i32.sub  array.at!  maxc l  code n i32.add 1 i32.sub  array.at! ]
+    [ maxc l -1 array.at! ]
+    if
+    p n i32.add p!
+    code n i32.add code!
+    code 1 l i32.shl i32.ge_s
+    [ BAD_TABLE "Huffman table with an all-ones code, length" l refusal-n trap ]
+    when
+    code 1 i32.shl code!
+  ]
+  times
+  maxc 17 0xFFFFF array.at!
+  # The 8-bit lookahead: every byte value that starts with a short code.
+  256 [ :> v  look v 2304 array.at! ] times
+  0 :> code8!
+  0 :> p8!
+  8
+  [
+    :> m
+    m 1 i32.add :> ll
+    8 ll i32.sub :> sh
+    d at m i32.add markers.u8
+    [
+      :> z
+      ll 8 i32.shl  syms p8 array.at  i32.or :> entry
+      1 sh i32.shl [ :> w  look  code8 sh i32.shl w i32.add  entry  array.at! ] times
+      code8 1 i32.add code8!
+      p8 1 i32.add p8!
+    ]
+    times
+    code8 1 i32.shl code8!
+  ]
+  times
+  isdc
+  [
+    total
+    [
+      :> y
+      syms y array.at 15 i32.gt_s
+      [ BAD_TABLE "Huffman DC symbol over 15" syms y array.at refusal-n trap ]
+      when
+    ]
+    times
+  ]
+  when
+  look maxc valo syms total hufftable.new ;
+
+# The K.3 luminance tables, and the fixture JPEG's one-code tables.
+: fx.dht-lum-dc ( -- str )  "00010501010101010100000000000000" "000102030405060708090a0b" str.concat ;
+: fx.dht-lum-ac ( -- str )
+  "0002010303020403050504040000017d"
+  "01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9fa"
+  str.concat ;
+: fx.dc-lum ( -- hufftable )  fx.dht-lum-dc hex 0 1 huffman.build ;
+: fx.ac-lum ( -- hufftable )  fx.dht-lum-ac hex 0 0 huffman.build ;
+: fx.tiny-dc ( -- hufftable )  fx.tiny hex 107 1 huffman.build ;
+: fx.tiny-ac ( -- hufftable )  fx.tiny hex 129 0 huffman.build ;
+
+test huffman.build : fx.dc-lum hufftable.nsymbols -> 12
+test huffman.build : fx.dc-lum hufftable.lookup 0 array.at -> 512
+test huffman.build : fx.dc-lum hufftable.lookup 64 array.at -> 769
+test huffman.build : fx.dc-lum hufftable.lookup 224 array.at -> 1030
+test huffman.build : fx.dc-lum hufftable.lookup 254 array.at -> 2058
+test huffman.build : fx.dc-lum hufftable.lookup 255 array.at -> 2304
+test huffman.build : fx.dc-lum hufftable.maxcode 1 array.at -> -1
+test huffman.build : fx.dc-lum hufftable.maxcode 2 array.at -> 0
+test huffman.build : fx.dc-lum hufftable.maxcode 3 array.at -> 6
+test huffman.build : fx.dc-lum hufftable.maxcode 9 array.at -> 510
+test huffman.build : fx.dc-lum hufftable.maxcode 10 array.at -> -1
+test huffman.build : fx.dc-lum hufftable.maxcode 17 array.at -> 1048575
+test huffman.build : fx.dc-lum hufftable.valoffset 2 array.at -> 0
+test huffman.build : fx.dc-lum hufftable.valoffset 3 array.at -> -1
+test huffman.build : fx.dc-lum hufftable.valoffset 4 array.at -> -8
+test huffman.build : fx.dc-lum hufftable.valoffset 9 array.at -> -499
+test huffman.build : fx.dc-lum hufftable.symbols 11 array.at -> 11
+test huffman.build : fx.ac-lum hufftable.nsymbols -> 162
+test huffman.build : fx.ac-lum hufftable.lookup 0 array.at -> 513
+test huffman.build : fx.ac-lum hufftable.lookup 0xA0 array.at -> 1024
+test huffman.build : fx.ac-lum hufftable.lookup 0xFF array.at -> 2304
+test huffman.build : fx.ac-lum hufftable.maxcode 13 array.at -> -1
+test huffman.build : fx.ac-lum hufftable.maxcode 16 array.at -> 65534
+test huffman.build : fx.ac-lum hufftable.valoffset 16 array.at -> -65373
+test huffman.build : fx.tiny-dc hufftable.nsymbols -> 1
+test huffman.build : fx.tiny-dc hufftable.lookup 0 array.at -> 256
+test huffman.build : fx.tiny-dc hufftable.lookup 127 array.at -> 256
+test huffman.build : fx.tiny-dc hufftable.lookup 128 array.at -> 2304
+test huffman.build : fx.tiny-dc hufftable.maxcode 1 array.at -> 0
+test huffman.build : fx.tiny-dc hufftable.maxcode 2 array.at -> -1
+test huffman.build : fx.tiny-dc hufftable.valoffset 1 array.at -> 0
+test huffman.build : fx.tiny-ac hufftable.nsymbols -> 1
+test huffman.build : "02" "00" 15 fx.rep str.concat "0001" str.concat hex 0 1 huffman.build -> trap
+test huffman.build : "010102" "00" 13 fx.rep str.concat "00010203" str.concat hex 0 1 huffman.build -> trap
+test huffman.build : "01" "00" 15 fx.rep str.concat "10" str.concat hex 0 1 huffman.build -> trap
+test huffman.build : "01" "00" 15 fx.rep str.concat "10" str.concat hex 0 0 huffman.build hufftable.nsymbols -> 1
+test huffman.build : "FF02" "00" 14 fx.rep str.concat hex 0 0 huffman.build -> trap
+test huffman.build : "0101" "00" 14 fx.rep str.concat "0001" str.concat hex 0 1 huffman.build hufftable.maxcode 2 array.at -> 2
+test huffman.build : "" hex 0 1 huffman.build -> trap
+
+# One symbol, as libjpeg's HUFF_DECODE. The lookahead is taken only when 8
+# real bits are held: the last code of a scan may be shorter than 8 bits and
+# must not raise the exhausted flag by peeking past it. With fewer bits the
+# code is read bit by bit from length 1. Made-up bits past a marker or the
+# end are always flagged by the reader (bitreader.exhausted), never silent.
+declare huffman.decode ( bitreader hufftable -- i32 )
+
+# Figure F.16 from code length l: the bit-by-bit walk up the maxcode table.
+# A code longer than 16 bits is BAD_ENTROPY_DATA (strict; libjpeg warns and
+# uses 0).
+declare huffman.decode-slow ( bitreader hufftable i32 -- i32 )
+
+test huffman.decode : "00" hex 0 bits.open fx.dc-lum huffman.decode -> 0
+test huffman.decode : "40" hex 0 bits.open fx.dc-lum huffman.decode -> 1
+test huffman.decode : "A0" hex 0 bits.open fx.dc-lum huffman.decode -> 4
+test huffman.decode : "A0" hex 0 bits.open dup fx.dc-lum huffman.decode drop bitreader.nbits -> 5
+test huffman.decode : "FF007F" hex 0 bits.open fx.dc-lum huffman.decode -> 11
+test huffman.decode : "FF007F" hex 0 bits.open dup fx.dc-lum huffman.decode drop bitreader.nbits -> 7
+test huffman.decode : "FF00FF00FF00" hex 0 bits.open fx.dc-lum huffman.decode -> trap
+test huffman.decode : "" hex 0 bits.open fx.dc-lum huffman.decode -> 0
+test huffman.decode : "" hex 0 bits.open dup fx.dc-lum huffman.decode drop bitreader.exhausted -> 1
+test huffman.decode : "00" hex 0 bits.open fx.ac-lum huffman.decode -> 1
+test huffman.decode : "40" hex 0 bits.open fx.ac-lum huffman.decode -> 2
+test huffman.decode : "A0" hex 0 bits.open fx.ac-lum huffman.decode -> 0
+test huffman.decode : "FF0020" hex 0 bits.open fx.ac-lum huffman.decode -> 240
+test huffman.decode : "FF00FE" hex 0 bits.open fx.ac-lum huffman.decode -> 250
+test huffman.decode : "FF00FE" hex 0 bits.open dup fx.ac-lum huffman.decode drop bitreader.nbits -> 0
+test huffman.decode : "FF00FF00FF00" hex 0 bits.open fx.ac-lum huffman.decode -> trap
+test huffman.decode : fx.tiny hex 156 bits.open fx.tiny-dc huffman.decode -> 0
+test huffman.decode : fx.tiny hex 156 bits.open dup fx.tiny-dc huffman.decode drop fx.tiny-ac huffman.decode -> 0
+test huffman.decode : fx.tiny hex 156 bits.open dup fx.tiny-dc huffman.decode drop dup fx.tiny-ac huffman.decode drop bitreader.exhausted -> 0
+test huffman.decode : fx.tiny hex 156 bits.open dup fx.tiny-dc huffman.decode drop dup fx.tiny-ac huffman.decode drop bitreader.marker -> 0xD9
+
+: huffman.decode-slow ( bitreader hufftable i32 -- i32 )
+  :> l0 :> t :> r
+  r l0 bits.get :> code!
+  l0 :> l!
+  [ code  t hufftable.maxcode l array.at  i32.gt_s ]
+  [ code 1 i32.shl  r 1 bits.get  i32.or code!  l 1 i32.add l! ]
+  while
+  l 16 i32.gt_s [ BAD_ENTROPY_DATA "invalid Huffman code" refusal trap ] when
+  code  t hufftable.valoffset l array.at  i32.add :> idx
+  idx 0 i32.lt_s  idx t hufftable.nsymbols i32.ge_s  i32.or
+  [ BAD_ENTROPY_DATA "Huffman code outside its table" refusal trap ]
+  when
+  t hufftable.symbols idx array.at ;
+
+: huffman.decode ( bitreader hufftable -- i32 )
+  :> t :> r
+  r bitreader.nbits 8 i32.lt_s [ r bits.fill ] when
+  r bitreader.nbits 8 i32.ge_s
+  [
+    t hufftable.lookup  r 8 bits.peek  array.at :> e
+    e 8 i32.shr_u :> nb
+    nb 8 i32.le_s [ r nb bits.skip  e 255 i32.and ] [ r t 9 huffman.decode-slow ] if
+  ]
+  [ r t 1 huffman.decode-slow ]
+  if ;
+
+# EXTEND (F.2.2.1, libjpeg's HUFF_EXTEND): v, the s extra bits as an
+# unsigned number, and the magnitude category s (1 to 16; DC categories
+# reach 15 for 12-bit, AC sizes 15), to the signed value. s = 0 is never
+# passed: callers skip the read when the category is 0.
+declare huffman.extend ( i32 i32 -- i32 )
+test huffman.extend : 0 1 huffman.extend -> -1
+test huffman.extend : 1 1 huffman.extend -> 1
+test huffman.extend : 0 2 huffman.extend -> -3
+test huffman.extend : 1 2 huffman.extend -> -2
+test huffman.extend : 2 2 huffman.extend -> 2
+test huffman.extend : 3 2 huffman.extend -> 3
+test huffman.extend : 0 11 huffman.extend -> -2047
+test huffman.extend : 1023 11 huffman.extend -> -1024
+test huffman.extend : 1024 11 huffman.extend -> 1024
+test huffman.extend : 2047 11 huffman.extend -> 2047
+test huffman.extend : 0 15 huffman.extend -> -32767
+test huffman.extend : 16383 15 huffman.extend -> -16384
+test huffman.extend : 16384 15 huffman.extend -> 16384
+test huffman.extend : 32767 15 huffman.extend -> 32767
+
+# The s extra bits after a DC category or an AC size, extended; 0 without
+# touching the reader when s is 0. What the scan layer (M2) calls.
+declare huffman.receive-extend ( bitreader i32 -- i32 )
+test huffman.receive-extend : "3F" hex 0 bits.open 6 huffman.receive-extend -> -48
+test huffman.receive-extend : "FF00" hex 0 bits.open 8 huffman.receive-extend -> 255
+test huffman.receive-extend : "00" hex 0 bits.open 3 huffman.receive-extend -> -7
+test huffman.receive-extend : "80" hex 0 bits.open 1 huffman.receive-extend -> 1
+test huffman.receive-extend : "00" hex 0 bits.open 1 huffman.receive-extend -> -1
+test huffman.receive-extend : "" hex 0 bits.open 0 huffman.receive-extend -> 0
+test huffman.receive-extend : "" hex 0 bits.open dup 0 huffman.receive-extend drop bitreader.exhausted -> 0
+test huffman.receive-extend : "" hex 0 bits.open dup 3 huffman.receive-extend drop bitreader.exhausted -> 1
+test huffman.receive-extend : "AC" hex 0 bits.open dup fx.dc-lum huffman.decode huffman.receive-extend -> -9
+test huffman.receive-extend : "BC" hex 0 bits.open dup fx.dc-lum huffman.decode huffman.receive-extend -> 14
+
+: huffman.extend ( i32 i32 -- i32 )
+  :> s :> v
+  v  1 s 1 i32.sub i32.shl  i32.lt_s
+  [ v  1 s i32.shl 1 i32.sub  i32.sub ]
+  [ v ]
+  if ;
+
+: huffman.receive-extend ( bitreader i32 -- i32 )
+  :> s :> r
+  s [ r s bits.get s huffman.extend ] [ 0 ] if ;
+
+# The Huffman tables the current scan references, built once each, as
+# libjpeg's start_pass_huff_decoder: an 8-entry array indexed tc*4+th. A
+# component's DC table is referenced when Ss = 0 and Ah = 0, its AC table
+# when Se > 0 (the rules markers.sos checked for MISSING_TABLE). Slots the
+# scan does not reference stay unset, and reading a field of an unset
+# element traps, so M2 must read only referenced slots. Arithmetic frames
+# build nothing.
+declare huffman.scan-tables ( jpeg -- array hufftable )
+test huffman.scan-tables : fx.ready dup 150 6 markers.sos huffman.scan-tables array.len -> 8
+test huffman.scan-tables : fx.ready dup 150 6 markers.sos huffman.scan-tables 0 array.at hufftable.nsymbols -> 1
+test huffman.scan-tables : fx.ready dup 150 6 markers.sos huffman.scan-tables 4 array.at hufftable.nsymbols -> 1
+test huffman.scan-tables : fx.ready huffman.scan-tables -> trap
+test huffman.scan-tables : fx.tiny hex markers.open huffman.scan-tables -> trap
+test huffman.scan-tables : fx.tiny hex markers.open dup 24 65 markers.dqt dup 0xC9 93 9 markers.sof dup 150 6 markers.sos huffman.scan-tables array.len -> 8
+test huffman.scan-tables : fx.soi fx.app0 str.concat fx.dqt str.concat fx.sof str.concat "ffc40015 00 02000000000000000000000000000000 0001" str.concat fx.dht-ac str.concat fx.sos str.concat fx.tail str.concat hex markers.open dup markers.walk huffman.scan-tables -> trap
+test huffman.scan-tables : fx.soi fx.app0 str.concat fx.dqt str.concat fx.sof str.concat "ffc40014 00 01000000000000000000000000000000 10" str.concat fx.dht-ac str.concat fx.sos str.concat fx.tail str.concat hex markers.open dup markers.walk huffman.scan-tables -> trap
+
+: huffman.scan-tables ( jpeg -- array hufftable )
+  :> j
+  j jpeg.frame none: [ NO_FRAME "scan tables before SOF" refusal trap ] some: [ ] match :> f
+  j jpeg.scan none: [ NO_FRAME "scan tables before SOS" refusal trap ] some: [ ] match :> sc
+  8 array.new ( array hufftable ) :> tabs
+  8 array.new ( array i32 ) :> built
+  f frame.kind :> kind
+  kind 0xC0 i32.eq  kind 0xC1 i32.eq  i32.or  kind 0xC2 i32.eq  i32.or
+  [
+    sc scan.ncomp
+    [
+      :> k
+      sc scan.td k array.at :> td
+      4 sc scan.ta k array.at i32.add :> ai
+      sc scan.ss 0 i32.eq  sc scan.ah 0 i32.eq  i32.and  built td array.at i32.eqz  i32.and
+      [ tabs td  j jpeg.data  j jpeg.huff-at td array.at  1 huffman.build  array.at!  built td 1 array.at! ]
+      when
+      sc scan.se 0 i32.gt_s  built ai array.at i32.eqz  i32.and
+      [ tabs ai  j jpeg.data  j jpeg.huff-at ai array.at  0 huffman.build  array.at!  built ai 1 array.at! ]
+      when
+    ]
+    times
+  ]
+  when
+  tabs ;

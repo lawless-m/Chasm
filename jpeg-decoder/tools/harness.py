@@ -37,6 +37,8 @@ FILES = [
     "jpeg/source.wack",
     "jpeg/frame.wack",
     "jpeg/markers.wack",
+    "jpeg/bits.wack",
+    "jpeg/huffman.wack",
     "main.wack",
 ]
 REFUSED = re.compile(r"REFUSED ([A-Z_]+):")
