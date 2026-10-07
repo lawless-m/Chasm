@@ -8,7 +8,8 @@ Each entry says how things stand now and what the decoder does about it.
 - `bytes` has no big-endian or 16-bit read: only `bytes.at`, `bytes.u32-at`
   and `bytes.u64-at`, all little-endian. Every 16-bit JPEG field (segment
   lengths, dimensions, 16-bit quantisation entries) is built from two
-  `bytes.at`.
+  `bytes.at`, and so is every coefficient of the whole-image store
+  (`coeffs.get`, `coeffs.set`), with `i32.extend16_s` for the sign.
 - There is no `bytes` literal, so tests build buffers from hex strings with a
   helper (`hex` in `jpeg/fixtures.wack`).
 
@@ -59,26 +60,38 @@ Each entry says how things stand now and what the decoder does about it.
 ## Speed
 
 Measured with the release compiler (`../target/release/wack run`, wasmtime,
-bounds checks on), median of three runs, on baseline 4:2:0 files made by
-tiling `primary/testorig.jpg` and compressing with the oracle's cjpeg
-(`tmp/m2-timing/big3.jpg`, 2000x1500, 3 megapixels; `big12.jpg`,
-4000x3000, 12 megapixels). Every output is byte-exact against djpeg in the
-same mode (`-dct int -pnm` for fancy, `-dct int -nosmooth -pnm` for plain).
+bounds checks on), median of three runs, all on the same day, on files made
+with the oracle's cjpeg from a tiling of `primary/testorig.jpg`:
+`tmp/m2-timing/big12.jpg` (4000x3000, 12 megapixels, baseline 4:2:0),
+`tmp/m4-timing/big12p.jpg` and `big3p.jpg` (12 and 3 megapixels,
+progressive with libjpeg's standard ten scans) and `big12s3.jpg` (12
+megapixels, three one-component sequential scans). Every output is
+byte-exact against djpeg in the same mode (`-dct int -pnm` for fancy,
+`-dct int -nosmooth -pnm` for plain).
 
 | File | Mode | `wack run` | `wack run --opt` | Decode rate | Oracle |
 |---|---|---|---|---|---|
-| big3, 3 MP | fancy (default) | 0.42 s | 0.37 s | 10.6 megapixels/s | 0.02 s |
-| big3, 3 MP | plain (`nosmooth`) | 0.37 s | 0.35 s | 12.8 megapixels/s | 0.02 s |
-| big12, 12 MP | fancy (default) | 1.21 s | 0.94 s | 11.2 megapixels/s | 0.08 s |
-| big12, 12 MP | plain (`nosmooth`) | 1.14 s | 0.85 s | 12.0 megapixels/s | 0.06 s |
+| big12, baseline | fancy (default) | 0.87 s | 0.79 s | 16.4 megapixels/s | 0.08 s |
+| big12, baseline | plain (`nosmooth`) | 0.88 s | 0.70 s | 16.2 megapixels/s | 0.06 s |
+| big12p, progressive | fancy (default) | 1.36 s | 0.99 s | 9.8 megapixels/s | 0.13 s |
+| big12p, progressive | plain (`nosmooth`) | 1.34 s | 1.02 s | 10.0 megapixels/s | 0.12 s |
+| big3p, progressive | fancy (default) | 0.37 s | 0.40 s | 13.1 megapixels/s | 0.04 s |
+| big3p, progressive | plain (`nosmooth`) | 0.36 s | 0.43 s | 13.7 megapixels/s | 0.03 s |
+| big12s3, three scans | fancy (default) | 1.06 s | 0.88 s | 13.0 megapixels/s | 0.08 s |
+| big12s3, three scans | plain (`nosmooth`) | 1.07 s | 0.87 s | 12.9 megapixels/s | 0.07 s |
 
 - Compiling the program is 0.14 s of every run (a file that stops at
   `NOT_YET` takes that long), well inside the harness's 20 s timeout.
 - The oracle is libjpeg-turbo 3.2.0 in plain C without SIMD; the decoder
-  runs about 15 times slower than it.
-- Where the time of a 12 MP plain run goes, measured by removing one stage
-  at a time in scratch copies: IDCT 0.31 s, colour conversion 0.27 s,
-  entropy decoding and the scan loop 0.21 s, compile 0.14 s, upsampling
-  0.12 s, and the row writes 0.11 s (one `host.write` per output row, 3000
-  for big12). The fancy filters cost 0.07 s more than replication on big12.
-  No stage dominates.
+  runs 10 to 13 times slower than it.
+- The store path costs 0.19 s on 12 megapixels for the same entropy work
+  (big12s3 against big12): every coefficient goes into the store and back
+  out through two `bytes.at` or two `bytes.at!` (there is no 16-bit
+  accessor), and the IDCT runs in a second pass. Ten progressive scans cost
+  another 0.30 s (big12p against big12s3), mostly entropy decoding of the
+  refinement scans.
+- In a baseline decode the stages take, measured by removing one at a time
+  in scratch copies: IDCT 27% of the run, colour conversion 23%, entropy
+  decoding and the scan loop 18%, compile 12%, upsampling 10% and the row
+  writes 10% (one `host.write` per output row). The fancy filters cost
+  about 6% over replication. No stage dominates.

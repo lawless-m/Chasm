@@ -8,7 +8,9 @@
 # read, and qt-set, a flag per table; huff-at, indexed tc*4+th, the offset in
 # the input of a Huffman table's 16 counts, -1 while undefined (M1 builds the
 # code tables from there); the restart interval; and what APP0 (JFIF) and
-# APP14 (Adobe, with its transform) said; and the scan, once a SOS is parsed.
+# APP14 (Adobe, with its transform) said; the scan, once a SOS is parsed;
+# scans, the SOS headers parsed so far; and eoi, set once the EOI marker has
+# been stepped over.
 #
 # Invariants: pos only moves forward, and every malformed input is refused at
 # the point it is first visible, before any bytes.at could trap.
@@ -24,6 +26,7 @@ struct jpeg
   data: bytes  pos: i32  frame: option frame
   qt: array i32  qt-set: array i32  huff-at: array i32
   restart: i32  jfif: i32  adobe: i32  transform: i32  scan: option scan
+  scans: i32  eoi: i32
 
 declare markers.open ( bytes -- jpeg )
 test markers.open : "FFD8" hex markers.open jpeg.pos -> 0
@@ -67,7 +70,7 @@ test markers.segment : "FFD8 00" hex markers.open dup 2 jpeg.pos! markers.segmen
   4 array.new ( array i32 ) :> qs
   8 array.new ( array i32 ) :> ha
   8 [ :> i  ha i -1 array.at! ] times
-  d 0 nf qt qs ha 0 0 0 0 ns jpeg.new ;
+  d 0 nf qt qs ha 0 0 0 0 ns 0 0 jpeg.new ;
 
 : markers.u8 ( bytes i32 -- i32 )
   :> off :> d
@@ -416,6 +419,9 @@ test markers.sos : fx.tiny hex markers.open dup 0xC0 93 9 markers.sof dup 106 18
     when
   ]
   times
+  j jpeg.scans 1 i32.add :> nscans
+  nscans MAX_SCANS i32.gt_s [ LIMIT_SCANS "scan count over MAX_SCANS" nscans refusal-n trap ] when
+  j nscans jpeg.scans!
   j  ns sc td ta ss se ah al start len i32.add scan.new option.some  jpeg.scan! ;
 
 declare markers.has-scan? ( jpeg -- i32 )
@@ -426,10 +432,17 @@ declare markers.has-scan? ( jpeg -- i32 )
 # (arithmetic conditioning) is skipped by length here; M5 parses it.
 declare markers.step ( jpeg -- )
 
-# SOI, then one step at a time until a scan header is parsed. Every step
+# SOI, then one step at a time until a scan header is parsed (an EOI before
+# the first scan is refused). Every step
 # moves pos forward by at least 2 bytes, so the loop is bounded by the
 # input length.
 declare markers.walk ( jpeg -- )
+
+# From jpeg.pos, which the caller sets to the FF of the marker that ended a
+# scan's entropy data: steps through tables and other segments to the next
+# SOS (1, its header parsed into jpeg.scan) or to the EOI (0, jpeg.eoi set).
+# Every step moves pos forward, so the loop is bounded by the input length.
+declare markers.next-scan ( jpeg -- i32 )
 test markers.walk : fx.tiny hex markers.open dup markers.walk markers.scan-data -> 156
 test markers.walk : fx.tiny hex markers.open dup markers.walk markers.frame-width -> 1
 test markers.walk : fx.tiny hex markers.open dup markers.walk jpeg.jfif -> 1
@@ -453,7 +466,13 @@ test markers.walk : fx.head fx.sof str.concat fx.sos str.concat fx.tail str.conc
   j markers.next-marker :> m
   0 :> done!
   m 0xD8 i32.eq [ NOT_JPEG "second SOI" refusal trap ] when
-  m 0xD9 i32.eq [ NO_FRAME "EOI with no scan" refusal trap ] when
+  m 0xD9 i32.eq
+  [
+    j jpeg.scans i32.eqz [ NO_FRAME "EOI with no scan" refusal trap ] when
+    j 1 jpeg.eoi!
+    1 done!
+  ]
+  when
   m 0xD0 i32.ge_u  m 0xD7 i32.le_u  i32.and
   [ BAD_RESTART "RST marker outside entropy data" m refusal-n trap ]
   when
@@ -478,6 +497,13 @@ test markers.walk : fx.head fx.sof str.concat fx.sos str.concat fx.tail str.conc
   m 0xDA i32.eq [ j j markers.segment markers.sos  1 done! ] when
   done i32.eqz [ UNSUPPORTED_SOF "unexpected marker" m refusal-n trap ] when ;
 
+: markers.next-scan ( jpeg -- i32 )
+  :> j
+  option.none ( option scan ) :> none
+  j none jpeg.scan!
+  [ j markers.has-scan? j jpeg.eoi i32.or i32.eqz ] [ j markers.step ] while
+  j markers.has-scan? ;
+
 : markers.walk ( jpeg -- )
   :> j
   j markers.soi
@@ -486,3 +512,33 @@ test markers.walk : fx.head fx.sof str.concat fx.sos str.concat fx.tail str.conc
 # The FRAME line main prints, once the walk has found the frame.
 : markers.frame-line ( jpeg -- str )  jpeg.frame none: [ "FRAME none" ] some: [ frame.describe ] match ;
 test markers.frame-line : fx.ready markers.frame-line -> "FRAME 1 1 1 192"
+
+# n copies of the fixture's SOS header parsed in turn.
+: fx.sos-times ( i32 -- jpeg )
+  :> n
+  fx.ready :> j
+  n [ drop j 150 6 markers.sos ] times
+  j ;
+test markers.sos : 256 fx.sos-times jpeg.scans -> 256
+test markers.sos : 1 fx.sos-times jpeg.scans -> 1
+test markers.sos : 257 fx.sos-times -> trap
+
+# Two scans of the fixture: the second SOS's FF at 157, its data at 167, the
+# EOI at 168.
+: fx.two-scans ( -- str )
+  fx.head fx.sos str.concat "3F" str.concat "FFDA0008010100003F00" str.concat "3F" str.concat "FFD9" str.concat ;
+: fx.between ( str -- jpeg )
+  :> mid
+  fx.head fx.sos str.concat "3F" str.concat mid str.concat "FFDA0008010100003F00" str.concat "3FFFD9" str.concat
+  hex markers.open dup markers.walk ;
+test fx.two-scans : fx.two-scans hex bytes.len -> 170
+test markers.next-scan : fx.two-scans hex markers.open dup markers.walk dup 157 jpeg.pos! markers.next-scan -> 1
+test markers.next-scan : fx.two-scans hex markers.open dup markers.walk dup 157 jpeg.pos! dup markers.next-scan drop markers.scan-data -> 167
+test markers.next-scan : fx.two-scans hex markers.open dup markers.walk dup 157 jpeg.pos! dup markers.next-scan drop jpeg.scans -> 2
+test markers.next-scan : fx.two-scans hex markers.open dup markers.walk dup 168 jpeg.pos! markers.next-scan -> 0
+test markers.next-scan : fx.two-scans hex markers.open dup markers.walk dup 168 jpeg.pos! dup markers.next-scan drop jpeg.eoi -> 1
+test markers.next-scan : fx.two-scans hex markers.open dup markers.walk dup 168 jpeg.pos! dup markers.next-scan drop markers.has-scan? -> 0
+test markers.next-scan : fx.dht-dc fx.between dup 157 jpeg.pos! dup markers.next-scan drop markers.scan-data -> 189
+test markers.next-scan : fx.sof "FFD9" str.concat fx.between dup 157 jpeg.pos! markers.next-scan -> trap
+test markers.next-scan : "FFD8" fx.between dup 157 jpeg.pos! markers.next-scan -> trap
+test markers.next-scan : "FFD0" fx.between dup 157 jpeg.pos! markers.next-scan -> trap

@@ -3,10 +3,10 @@
 # rows.unsupported says what M2 cannot decode yet; its reasons are the words
 # main prints after `NOT_YET `, which later milestones remove one by one.
 
-# "" when M2 decodes the file, else the reason: progressive, arithmetic,
-# 12-bit, 4-component or multi-scan (the first scan does not cover every
-# component), checked in that order. A 2-component frame passes here and is
-# refused BAD_COMPONENT by colour.space in rows.setup.
+# "" when the decoder handles the file, else the reason: arithmetic (SOF9
+# and SOF10), 12-bit or 4-component, checked in that order. A 2-component
+# frame passes here and is refused BAD_COMPONENT by colour.space in
+# rows.setup.
 declare rows.unsupported ( jpeg -- str )
 
 : rows.unsupported ( jpeg -- str )
@@ -14,25 +14,16 @@ declare rows.unsupported ( jpeg -- str )
   j jpeg.frame none: [ NO_FRAME "decode before SOF" refusal trap ] some: [ ] match :> f
   j jpeg.scan none: [ NO_FRAME "decode before SOS" refusal trap ] some: [ ] match :> sc
   f frame.kind :> kind
-  kind 0xC2 i32.eq  kind 0xCA i32.eq  i32.or
-  [ "progressive" ]
+  kind 0xC9 i32.eq  kind 0xCA i32.eq  i32.or
+  [ "arithmetic" ]
   [
-    kind 0xC9 i32.eq
-    [ "arithmetic" ]
-    [
-      f frame.precision 8 i32.ne
-      [ "12-bit" ]
-      [
-        f frame.ncomp 4 i32.eq
-        [ "4-component" ]
-        [ sc scan.ncomp f frame.ncomp i32.ne [ "multi-scan" ] [ "" ] if ]
-        if
-      ]
-      if
-    ]
+    f frame.precision 8 i32.ne
+    [ "12-bit" ]
+    [ f frame.ncomp 4 i32.eq [ "4-component" ] [ "" ] if ]
     if
   ]
-  if ;
+  if
+  sc drop ;
 
 # Test fixtures: the 1x1 greyscale fixture with frame and scan parsed; a
 # jpeg with an n-component frame and an m-component scan; the fixture with
@@ -61,12 +52,12 @@ declare rows.unsupported ( jpeg -- str )
 
 test rows.unsupported : fx.tiny-jpeg rows.unsupported -> ""
 test rows.unsupported : 0xC1 fx.jpeg-kind rows.unsupported -> ""
-test rows.unsupported : 0xC2 fx.jpeg-kind rows.unsupported -> "progressive"
-test rows.unsupported : 0xCA fx.jpeg-kind rows.unsupported -> "progressive"
+test rows.unsupported : 0xC2 fx.jpeg-kind rows.unsupported -> ""
+test rows.unsupported : 0xCA fx.jpeg-kind rows.unsupported -> "arithmetic"
 test rows.unsupported : 0xC9 fx.jpeg-kind rows.unsupported -> "arithmetic"
 test rows.unsupported : 12 fx.jpeg-precision rows.unsupported -> "12-bit"
 test rows.unsupported : 3 3 fx.jpeg-scan rows.unsupported -> ""
-test rows.unsupported : 3 1 fx.jpeg-scan rows.unsupported -> "multi-scan"
+test rows.unsupported : 3 1 fx.jpeg-scan rows.unsupported -> ""
 test rows.unsupported : 4 4 fx.jpeg-scan rows.unsupported -> "4-component"
 test rows.unsupported : 4 1 fx.jpeg-scan rows.unsupported -> "4-component"
 test rows.unsupported : 2 2 fx.jpeg-scan rows.unsupported -> ""
@@ -78,6 +69,7 @@ struct decoder
   planes: array plane  ups: bytes  out: bytes  coef: array i32  quants: array i32
   width: i32  height: i32  ncomp: i32  mw: i32  mh: i32  hmax: i32  vmax: i32  interleaved: i32
   scn: scan  fancy: i32  methods: array i32
+  j: jpeg  store: coeffs  prog: progress  sm: smoother  latched: array i32  multi: i32  smooth: i32
 
 # The jpeg (frame and scan parsed, rows.unsupported "") and the scan's
 # tables. This is the only allocation point of the decode: one plane per
@@ -91,7 +83,14 @@ struct decoder
 # default) or plain replication (0, djpeg -nosmooth) (M3); methods holds
 # each component's upsampler, libjpeg's choice: in fancy mode h2v1 and h2v2
 # are fancy only when the downsampled width exceeds 2, h1v2 always, and
-# everything else is replication.
+# everything else is replication. A progressive frame, or one whose first
+# scan carries fewer components than the frame (libjpeg's
+# has_multiple_scans), is decoded through the whole-image store (multi): the
+# store, the progression state, the smoother and a latched flag per
+# component (quant tables are latched at a component's first scan) are
+# allocated here too; frame.need counts the store for every frame and its
+# 8 MiB fixed term covers the Huffman tables rebuilt for each scan. smooth
+# is set by the scan loop once every scan is in.
 declare rows.setup ( jpeg array hufftable i32 -- decoder )
 
 : rows.setup ( jpeg array hufftable i32 -- decoder )
@@ -141,8 +140,13 @@ declare rows.setup ( jpeg array hufftable i32 -- decoder )
   idct.make :> t
   interleaved [ mw mh i32.mul ] [ f 0 frame.comp-blocks-wide  f 0 frame.comp-blocks-high  i32.mul ] if :> total
   j jpeg.data  scn scan.data-at  tabs  t idct.natural  ncomp  j jpeg.restart  total  scan.open :> sc
+  f frame.progressive?  scn scan.ncomp ncomp i32.lt_s  i32.or :> multi
+  f multi coeffs.make :> store
+  ncomp prog.make :> prog
+  store prog quants prog.smoother :> sm
+  ncomp array.new ( array i32 ) :> latched
   f sc tabs t colour.make space planes ups out coef quants width height ncomp mw mh hmax vmax interleaved
-  scn fancy methods decoder.new ;
+  scn fancy methods j store prog sm latched multi 0 decoder.new ;
 
 : fx.dec ( -- decoder )  fx.tiny-jpeg dup huffman.scan-tables 1 rows.setup ;
 
@@ -168,6 +172,30 @@ test rows.setup : fx.dec decoder.quants 63 array.at -> 99
 test rows.setup : fx.dec decoder.sc scanner.total -> 1
 test rows.setup : fx.dec decoder.sc scanner.br bitreader.pos -> 156
 
+# Each component of the scan not yet latched gets its quant table from the
+# jpeg as it stands now, in natural order (libjpeg's latch_quant_tables): a
+# DQT between scans changes nothing for components already seen.
+declare rows.latch ( decoder scan -- )
+
+: rows.latch ( decoder scan -- )
+  :> scn :> d
+  d decoder.idct idct.natural :> nat
+  d decoder.j jpeg.qt :> qt
+  d decoder.quants :> qs
+  scn scan.ncomp
+  [
+    :> k
+    scn scan.comps k array.at :> ci
+    d decoder.latched ci array.at i32.eqz
+    [
+      d decoder.f frame.comps ci array.at component.tq 64 i32.mul :> qb
+      64 [ :> z  qs  ci 64 i32.mul nat z array.at i32.add  qt qb z i32.add array.at  array.at! ] times
+      d decoder.latched ci 1 array.at!
+    ]
+    when
+  ]
+  times ;
+
 # The whole image, one output row at a time to the sink (out: width x ncomp
 # bytes, reused, so the sink consumes it before returning). The sink is the
 # row interface a future encoder consumes too.
@@ -182,6 +210,22 @@ test rows.setup : fx.dec decoder.sc scanner.br bitreader.pos -> 156
 # first sample row of the next MCU row, so emission trails decoding by one
 # MCU row, and the ring holds rows my-1, my and my+1 when row my is emitted.
 declare rows.decode ( decoder [ bytes -- ] -- )
+
+# A file decoded through the store (decoder.multi): every scan in turn into
+# the store, then the output pass. Each scan has its tables built anew and
+# its progression checked, latches the quant tables of its new components,
+# and is followed by the markers up to the next SOS or the EOI (libjpeg
+# consumes all input before output, jdapistd.c). Every scan moves pos
+# forward and MAX_SCANS caps their count, so the loop ends. A missing EOI
+# after a complete last scan at the end of the data is allowed.
+declare rows.multi ( decoder [ bytes -- ] -- )
+
+# The output pass from the store (libjpeg's decompress_data and
+# decompress_smooth_data): per MCU row, every component's real blocks, which
+# are width_in_blocks columns by block_rows rows (v, or what is left of the
+# component's height in the last MCU row), smoothed when decoder.smooth,
+# IDCTed into the plane ring, then emitted as the streaming path does.
+declare rows.output ( decoder [ bytes -- ] -- )
 
 # MCU row i of the planes, upsampled, converted and handed to the sink. A
 # fancy component takes its context rows from the ring (the previous and
@@ -305,8 +349,13 @@ declare rows.single ( decoder [ bytes -- ] -- )
 
 : rows.decode ( decoder [ bytes -- ] -- )
   :> sink :> d
-  d decoder.interleaved [ d sink rows.interleaved ] [ d sink rows.single ] if
-  d decoder.sc scan.finish ;
+  d decoder.multi
+  [ d sink rows.multi ]
+  [
+    d decoder.interleaved [ d sink rows.interleaved ] [ d sink rows.single ] if
+    d decoder.sc scan.finish
+  ]
+  if ;
 
 # Test fixtures: a sink that collects every row into one buffer, and a
 # whole-image decode through it.
@@ -425,3 +474,309 @@ test rows.decode : fx.ycc5x5 hex markers.open dup markers.walk fx.decode-all fx.
 test rows.decode : fx.ycc5x5 hex markers.open dup markers.walk fx.decode-plain fx.ycc5x5-plain hex eq -> 1
 test rows.decode : fx.ycc5x5 hex markers.open dup markers.walk fx.decode-all bytes.len -> 75
 test rows.decode : fx.ycc5x5-fancy hex fx.ycc5x5-plain hex eq -> 0
+
+test rows.setup : fx.dec decoder.multi -> 0
+test rows.setup : fx.dec decoder.store coeffs.data bytes.len -> 0
+test rows.setup : fx.dec decoder.smooth -> 0
+test rows.setup : fx.dec decoder.latched array.len -> 1
+test rows.setup : fx.dec decoder.prog progress.bits 0 array.at -> -1
+test rows.setup : 0xC2 fx.jpeg-kind dup huffman.scan-tables 1 rows.setup decoder.multi -> 1
+test rows.setup : 0xC2 fx.jpeg-kind dup huffman.scan-tables 1 rows.setup decoder.store coeffs.data bytes.len -> 128
+
+# Test fixtures: the fixture decoder latched once, with jpeg.qt[0] set to a
+# value before the latch, or after it and latched again.
+: fx.latched ( -- decoder )
+  fx.dec :> d
+  d d decoder.scn rows.latch
+  d ;
+: fx.latch-after ( i32 -- decoder )
+  :> v
+  fx.dec :> d
+  d decoder.j jpeg.qt 0 v array.at!
+  d d decoder.scn rows.latch
+  d ;
+: fx.relatch ( i32 -- decoder )
+  :> v
+  fx.latched :> d
+  d decoder.j jpeg.qt 0 v array.at!
+  d d decoder.scn rows.latch
+  d ;
+test rows.latch : fx.latched decoder.quants 0 array.at -> 16
+test rows.latch : fx.latched decoder.quants 63 array.at -> 99
+test rows.latch : fx.latched decoder.latched 0 array.at -> 1
+test rows.latch : 5 fx.latch-after decoder.quants 0 array.at -> 5
+test rows.latch : 5 fx.relatch decoder.quants 0 array.at -> 16
+
+# One block of a scan into the store: decoder, scanner, scan, k (the
+# component's index within the scan) and the block's coefficient index. A
+# sequential frame decodes the whole block (scan.block) and stores it, zeros
+# included, as libjpeg's pre-zeroed arrays hold; a progressive frame picks
+# DC first, DC refine, AC first or AC refine by Ss and Ah.
+declare rows.block-store ( decoder scanner scan i32 i32 -- )
+
+# One scan into the store (libjpeg's consume_data and per_scan_setup): an
+# interleaved scan walks the MCUs, each component's v rows of h blocks into
+# the padded arrays, so the padding blocks are decoded too; a
+# single-component scan walks that component's own unpadded block grid, one
+# block per MCU, leaving the padding zero. scan.end-mcu follows every MCU.
+# The caller opens the scanner with the scan's tables and MCU count.
+declare rows.scan-store ( decoder scanner scan -- )
+
+: rows.block-store ( decoder scanner scan i32 i32 -- )
+  :> off :> k :> scn :> sc :> d
+  d decoder.store :> st
+  scn scan.comps k array.at :> ci
+  scn scan.td k array.at :> td
+  scn scan.ta k array.at :> ta
+  scn scan.ss :> ss
+  scn scan.ah :> ah
+  scn scan.al :> al
+  d decoder.f frame.progressive?
+  [
+    ss 0 i32.eq
+    [ ah [ sc st al off prog.dc-refine ] [ sc st ci td al off prog.dc-first ] if ]
+    [ ah [ sc st ta ss scn scan.se al off prog.ac-refine ] [ sc st ta ss scn scan.se al off prog.ac-first ] if ]
+    if
+  ]
+  [
+    d decoder.coef :> coef
+    sc ci td ta coef scan.block
+    st off coef coeffs.put-block
+  ]
+  if ;
+
+: rows.scan-store ( decoder scanner scan -- )
+  :> scn :> sc :> d
+  d decoder.store :> st
+  d decoder.f :> f
+  scn scan.ncomp 1 i32.gt_s
+  [
+    d decoder.mh
+    [
+      :> my
+      d decoder.mw
+      [
+        :> mx
+        scn scan.ncomp
+        [
+          :> k
+          scn scan.comps k array.at :> ci
+          f frame.comps ci array.at :> c
+          c component.v
+          [
+            :> by
+            c component.h
+            [
+              :> bx
+              d sc scn k  st ci  mx c component.h i32.mul bx i32.add  my c component.v i32.mul by i32.add  coeffs.block  rows.block-store
+            ]
+            times
+          ]
+          times
+        ]
+        times
+        sc scan.end-mcu
+      ]
+      times
+    ]
+    times
+  ]
+  [
+    scn scan.comps 0 array.at :> ci1
+    f ci1 frame.comp-blocks-wide :> bw
+    f ci1 frame.comp-blocks-high :> bh
+    bh
+    [
+      :> by1
+      bw
+      [
+        :> bx1
+        d sc scn 0  st ci1 bx1 by1 coeffs.block  rows.block-store
+        sc scan.end-mcu
+      ]
+      times
+    ]
+    times
+  ]
+  if ;
+
+# Test fixtures: a decoder given a store even for a single-scan file; the
+# first block's pixels after storing the scan and an IDCT of the block.
+: fx.dec-store ( jpeg -- decoder )
+  :> j
+  j  j huffman.scan-tables  1 rows.setup :> d
+  d  d decoder.f 1 coeffs.make  decoder.store!
+  d ;
+: fx.stored-pixels ( jpeg -- bytes )
+  fx.dec-store :> d
+  d d decoder.sc d decoder.scn rows.scan-store
+  d decoder.store 0 d decoder.coef coeffs.get-block
+  64 bytes.new :> px
+  d decoder.idct d decoder.coef d decoder.quants 0 px 0 8 idct.block
+  px ;
+: fx.ycc1-stored ( -- decoder )
+  fx.ycc1 hex markers.open dup markers.walk fx.dec-store :> d
+  d d decoder.sc d decoder.scn rows.scan-store
+  d ;
+
+test rows.scan-store : fx.grey2 hex markers.open dup markers.walk fx.stored-pixels 0 bytes.at -> 1
+test rows.scan-store : fx.grey2 hex markers.open dup markers.walk fx.stored-pixels 1 bytes.at -> 82
+test rows.scan-store : fx.grey2 hex markers.open dup markers.walk fx.stored-pixels 8 bytes.at -> 165
+test rows.scan-store : fx.grey2 hex markers.open dup markers.walk fx.stored-pixels 9 bytes.at -> 246
+test rows.scan-store : fx.tiny-jpeg fx.stored-pixels 0 bytes.at -> 128
+test rows.scan-store : fx.grey2 0 336 str.slice hex markers.open dup markers.walk fx.stored-pixels -> trap
+test rows.scan-store : fx.ycc1-stored decoder.sc scanner.mcu -> 1
+test rows.scan-store : fx.grey2 hex markers.open dup markers.walk fx.dec-store decoder.store coeffs.data bytes.len -> 128
+
+: rows.multi ( decoder [ bytes -- ] -- )
+  :> sink :> d
+  d decoder.j :> j
+  d decoder.sc :> sc
+  d decoder.f :> f
+  f frame.progressive? :> prog
+  d decoder.scn :> cur!
+  d decoder.tabs :> ctabs!
+  1 :> go!
+  [ go ]
+  [
+    d decoder.prog cur prog prog.check
+    d cur rows.latch
+    cur scan.comps 0 array.at :> c0
+    cur scan.ncomp 1 i32.gt_s
+    [ d decoder.mw d decoder.mh i32.mul ]
+    [ f c0 frame.comp-blocks-wide  f c0 frame.comp-blocks-high  i32.mul ]
+    if :> total
+    sc  j jpeg.data  cur scan.data-at  ctabs  j jpeg.restart  total  scan.reopen
+    d sc cur rows.scan-store
+    sc scan.end :> m
+    m -1 i32.eq  m 0xD9 i32.eq  i32.or
+    [ 0 go! ]
+    [
+      j  sc scanner.br bitreader.pos 2 i32.sub  jpeg.pos!
+      j markers.next-scan
+      [
+        j jpeg.scan none: [ NO_FRAME "scan lost after SOS" refusal trap ] some: [ ] match cur!
+        j huffman.scan-tables ctabs!
+      ]
+      [ 0 go! ]
+      if
+    ]
+    if
+  ]
+  while
+  d  prog d decoder.sm prog.smooth? i32.and  decoder.smooth!
+  d sink rows.output ;
+
+: rows.output ( decoder [ bytes -- ] -- )
+  :> sink :> d
+  d decoder.store :> st
+  d decoder.coef :> coef
+  d decoder.quants :> qs
+  d decoder.idct :> t
+  d decoder.sm :> sm
+  d decoder.f :> f
+  d decoder.mh :> mh
+  d decoder.smooth :> smooth
+  mh
+  [
+    :> my
+    d decoder.ncomp
+    [
+      :> ci
+      f frame.comps ci array.at component.v :> v
+      f ci frame.comp-blocks-wide :> bw
+      f ci frame.comp-blocks-high :> bh
+      my mh 1 i32.sub i32.lt_s [ v ] [ bh v i32.rem_u :> left  left [ left ] [ v ] if ] if :> brows
+      d decoder.planes ci array.at :> p
+      p plane.stride :> stride
+      p my plane.slot :> slot
+      brows
+      [
+        :> br
+        my v i32.mul br i32.add :> row
+        bw
+        [
+          :> bx
+          st ci bx row coeffs.block :> off
+          st off coef coeffs.get-block
+          smooth [ sm ci bw bx row  my brows i32.mul br i32.add  brows mh i32.mul  coef prog.smooth ] when
+          t coef qs ci 64 i32.mul  p plane.data  slot br 8 i32.mul stride i32.mul i32.add bx 8 i32.mul i32.add  stride idct.block
+        ]
+        times
+      ]
+      times
+    ]
+    times
+    d sink my rows.mcu-done
+  ]
+  times ;
+
+# Progressive and multi-scan fixtures, made with the oracle's cjpeg.
+# 2x2 grey 10 80 160 240, -grayscale -progressive -quality 50: SOF2, six
+# scans, complete; the oracle gives 1 82 165 246.
+: fx.grey2p ( -- str )
+  "FFD8FFE000104A46494600010100000100010000FFDB004300100B0C0E0C0A100E0D0E1211101318281A181616183123251D283A333D3C3933383740485C4E40445745373850"
+  "6D51575F626768673E4D71797064785C656763FFC2000B080002000201011100FFC40014000100000000000000000000000000000005FFDA000801010000000153FFC4001610" str.concat
+  "01010100000000000000000000000000020312FFDA00080101000105023319FFC4001810000203000000000000000000000000000001022291FFDA0008010100063F02548E1F" str.concat
+  "FFC40017100003010000000000000000000000000000014161FFDA0008010100013F21CF8A0FFFDA0008010100000010FF00FFC4001610000300000000000000000000000000" str.concat
+  "000071F1FFDA0008010100013F1084E91FFFD9" str.concat ;
+# 1x1 red, -sample 2x2 -progressive -quality 50: ten scans; the oracle
+# gives 254 0 2.
+: fx.red1p ( -- str )
+  "FFD8FFE000104A46494600010100000100010000FFDB004300100B0C0E0C0A100E0D0E1211101318281A181616183123251D283A333D3C3933383740485C4E40445745373850"
+  "6D51575F626768673E4D71797064785C656763FFDB0043011112121815182F1A1A2F634238426363636363636363636363636363636363636363636363636363636363636363" str.concat
+  "636363636363636363636363636363636363FFC20011080001000103012200021101031101FFC4001500010100000000000000000000000000000004FFC40015010101000000" str.concat
+  "00000000000000000000000405FFDA000C030100021003100000018816F7FFC40014100100000000000000000000000000000000FFDA00080101000105027FFFC40014110100" str.concat
+  "000000000000000000000000000000FFDA0008010301013F017FFFC40014110100000000000000000000000000000000FFDA0008010201013F017FFFC4001410010000000000" str.concat
+  "0000000000000000000000FFDA0008010100063F027FFFC40014100100000000000000000000000000000000FFDA0008010100013F217FFFDA000C0301000200030000001003" str.concat
+  "FFC40014110100000000000000000000000000000000FFDA0008010301013F107FFFC40014110100000000000000000000000000000000FFDA0008010201013F107FFFC40014" str.concat
+  "100100000000000000000000000000000000FFDA0008010100013F107FFFD9" str.concat ;
+# 1x1 red, -sample 2x2 -optimize -quality 50 with three one-component
+# sequential scans: SOF0; the oracle gives 254 0 2.
+: fx.red1s ( -- str )
+  "FFD8FFE000104A46494600010100000100010000FFDB004300100B0C0E0C0A100E0D0E1211101318281A181616183123251D283A333D3C3933383740485C4E40445745373850"
+  "6D51575F626768673E4D71797064785C656763FFDB0043011112121815182F1A1A2F634238426363636363636363636363636363636363636363636363636363636363636363" str.concat
+  "636363636363636363636363636363636363FFC00011080001000103012200021101031101FFC40014000100000000000000000000000000000005FFC4001410010000000000" str.concat
+  "0000000000000000000000FFDA0008010100003F0015FFC40014010100000000000000000000000000000005FFC40014110100000000000000000000000000000000FFDA0008" str.concat
+  "010211003F002DFFC40014010100000000000000000000000000000006FFC40014110100000000000000000000000000000000FFDA0008010311003F0078FFD9" str.concat ;
+# 16x8 grey, each row eight 10s then eight 200s, -grayscale -quality 50
+# with a single DC scan: djpeg smooths it, DC interpolation included.
+: fx.grey16x8dc ( -- str )
+  "FFD8FFE000104A46494600010100000100010000FFDB004300100B0C0E0C0A100E0D0E1211101318281A181616183123251D283A333D3C3933383740485C4E40445745373850"
+  "6D51575F626768673E4D71797064785C656763FFC2000B080008001001011100FFC4001500010100000000000000000000000000000607FFDA0008010100000000095FFFD9" str.concat ;
+: fx.grey16x8dc-out ( -- str )  "00000004162F495B7789A3BCCEDAE2E6" 8 fx.rep ;
+
+test rows.decode : fx.grey2p hex markers.open dup markers.walk fx.decode-all bytes.len -> 4
+test rows.decode : fx.grey2p hex markers.open dup markers.walk fx.decode-all 0 bytes.at -> 1
+test rows.decode : fx.grey2p hex markers.open dup markers.walk fx.decode-all 1 bytes.at -> 82
+test rows.decode : fx.grey2p hex markers.open dup markers.walk fx.decode-all 2 bytes.at -> 165
+test rows.decode : fx.grey2p hex markers.open dup markers.walk fx.decode-all 3 bytes.at -> 246
+test rows.decode : fx.red1p hex markers.open dup markers.walk fx.decode-all bytes.len -> 3
+test rows.decode : fx.red1p hex markers.open dup markers.walk fx.decode-all 0 bytes.at -> 254
+test rows.decode : fx.red1p hex markers.open dup markers.walk fx.decode-all 1 bytes.at -> 0
+test rows.decode : fx.red1p hex markers.open dup markers.walk fx.decode-all 2 bytes.at -> 2
+test rows.decode : fx.red1s hex markers.open dup markers.walk fx.decode-all bytes.len -> 3
+test rows.decode : fx.red1s hex markers.open dup markers.walk fx.decode-all 0 bytes.at -> 254
+test rows.decode : fx.red1s hex markers.open dup markers.walk fx.decode-all 1 bytes.at -> 0
+test rows.decode : fx.red1s hex markers.open dup markers.walk fx.decode-all 2 bytes.at -> 2
+test rows.decode : fx.grey16x8dc hex markers.open dup markers.walk fx.decode-all fx.grey16x8dc-out hex eq -> 1
+test rows.decode : fx.grey2p hex markers.open dup markers.walk fx.decode-plain bytes.len -> 4
+test rows.decode : fx.grey2p hex markers.open dup markers.walk fx.decode-plain 0 bytes.at -> 1
+test rows.decode : fx.grey2p hex markers.open dup markers.walk fx.decode-plain 1 bytes.at -> 82
+test rows.decode : fx.grey2p hex markers.open dup markers.walk fx.decode-plain 2 bytes.at -> 165
+test rows.decode : fx.grey2p hex markers.open dup markers.walk fx.decode-plain 3 bytes.at -> 246
+test rows.decode : fx.red1p hex markers.open dup markers.walk fx.decode-plain bytes.len -> 3
+test rows.decode : fx.red1p hex markers.open dup markers.walk fx.decode-plain 0 bytes.at -> 254
+test rows.decode : fx.red1p hex markers.open dup markers.walk fx.decode-plain 1 bytes.at -> 0
+test rows.decode : fx.red1p hex markers.open dup markers.walk fx.decode-plain 2 bytes.at -> 2
+test rows.decode : fx.red1s hex markers.open dup markers.walk fx.decode-plain bytes.len -> 3
+test rows.decode : fx.red1s hex markers.open dup markers.walk fx.decode-plain 0 bytes.at -> 254
+test rows.decode : fx.red1s hex markers.open dup markers.walk fx.decode-plain 1 bytes.at -> 0
+test rows.decode : fx.red1s hex markers.open dup markers.walk fx.decode-plain 2 bytes.at -> 2
+test rows.decode : fx.grey16x8dc hex markers.open dup markers.walk fx.decode-plain fx.grey16x8dc-out hex eq -> 1
+test rows.decode : fx.grey16x8dc hex markers.open dup markers.walk fx.decode-all bytes.len -> 128
+test rows.decode : fx.grey16x8dc hex markers.open dup markers.walk fx.decode-all 3 bytes.at -> 4
+test rows.decode : fx.grey16x8dc hex markers.open dup markers.walk fx.decode-all 7 bytes.at -> 91
+test rows.decode : fx.grey2p 0 fx.grey2p str.len 20 i32.sub str.slice "FFD9" str.concat hex markers.open dup markers.walk fx.decode-all -> trap
+test rows.decode : fx.grey2p 0 fx.grey2p str.len 4 i32.sub str.slice hex markers.open dup markers.walk fx.decode-all bytes.len -> 4
+test rows.decode : fx.grey2p 0 fx.grey2p str.len 4 i32.sub str.slice hex markers.open dup markers.walk fx.decode-all 0 bytes.at -> 1

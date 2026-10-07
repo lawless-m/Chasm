@@ -5,7 +5,9 @@
 # read), the natural-order table, one DC predictor per frame component, and
 # the restart and MCU counters: restart is the DRI interval in MCUs (0 for
 # none), togo the MCUs left in the current interval, next-rst the expected
-# RSTn number, mcu the MCUs completed and total the MCUs in the scan.
+# RSTn number, mcu the MCUs completed, total the MCUs in the scan, and
+# eobrun the EOB run of a progressive AC scan (libjpeg's EOBRUN). One
+# scanner serves every scan of a file: scan.reopen points it at the next.
 #
 # scan.block decodes one block into a 64-entry coefficient block in natural
 # order. The caller checks `scanner.br bitreader.exhausted` after each MCU
@@ -13,7 +15,7 @@
 
 struct scanner
   br: bitreader  tabs: array hufftable  natural: array i32  pred: array i32
-  restart: i32  togo: i32  next-rst: i32  mcu: i32  total: i32
+  restart: i32  togo: i32  next-rst: i32  mcu: i32  total: i32  eobrun: i32
 
 # Data, offset of the first entropy byte, tables, natural order, frame
 # component count, restart interval, total MCUs.
@@ -29,7 +31,7 @@ declare scan.block ( scanner i32 i32 i32 array i32 -- )
 : scan.open ( bytes i32 array hufftable array i32 i32 i32 i32 -- scanner )
   :> total :> restart :> ncomp :> natural :> tabs :> at :> d
   ncomp array.new ( array i32 ) :> pred
-  d at bits.open tabs natural pred restart restart 0 0 total scanner.new ;
+  d at bits.open tabs natural pred restart restart 0 0 total 0 scanner.new ;
 
 : scan.block ( scanner i32 i32 i32 array i32 -- )
   :> coef :> ta :> td :> ci :> sc
@@ -68,10 +70,22 @@ declare scan.block ( scanner i32 i32 i32 array i32 -- )
 # which in a non-interleaved scan are single blocks.
 declare scan.end-mcu ( scanner -- )
 
-# Once, after the last MCU. Whole bytes left in the reader are data that
-# should not be there (libjpeg warns: extraneous bytes before marker), and
-# so is anything but EOI where the scan stops; a missing EOI at the very end
-# of the data is allowed (SECURITY.md). Bytes after the EOI are never read.
+# Data, the offset of the scan's first entropy byte, its tables, restart
+# interval and MCU count: the scanner set up for that scan, the predictors
+# zeroed in place, so one scanner (and one predictor array) serves every
+# scan of a file without allocating.
+declare scan.reopen ( scanner bytes i32 array hufftable i32 i32 -- )
+
+# Once, after the last MCU of a scan. Whole bytes left in the reader are
+# data that should not be there (libjpeg warns: extraneous bytes before
+# marker), and so are bytes that are not a marker. The result is the marker
+# byte that ends the data, with bitreader.pos just after it, or -1 at the
+# very end of the data (a missing EOI after a complete last scan is allowed,
+# SECURITY.md). The marker's kind is the caller's decision.
+declare scan.end ( scanner -- i32 )
+
+# scan.end for a file with one scan: anything but EOI after it is refused.
+# Bytes after the EOI are never read.
 declare scan.finish ( scanner -- )
 
 : scan.end-mcu ( scanner -- )
@@ -95,26 +109,42 @@ declare scan.finish ( scanner -- )
       sc  sc scanner.restart  scanner.togo!
       sc scanner.pred :> pr
       pr array.len [ :> i  pr i 0 array.at! ] times
+      sc 0 scanner.eobrun!
     ]
     when
   ]
   when ;
 
-: scan.finish ( scanner -- )
+: scan.reopen ( scanner bytes i32 array hufftable i32 i32 -- )
+  :> total :> restart :> tabs :> at :> d :> sc
+  sc  d at bits.open  scanner.br!
+  sc tabs scanner.tabs!
+  sc restart scanner.restart!
+  sc restart scanner.togo!
+  sc 0 scanner.next-rst!
+  sc 0 scanner.mcu!
+  sc total scanner.total!
+  sc 0 scanner.eobrun!
+  sc scanner.pred :> pr
+  pr array.len [ :> i  pr i 0 array.at! ] times ;
+
+: scan.end ( scanner -- i32 )
   :> sc
   sc scanner.br :> br
   br bitreader.nbits 8 i32.ge_s
   [ BAD_ENTROPY_DATA "extraneous bytes after the last MCU" refusal trap ]
   when
   br bits.restart :> m
-  m -1 i32.eq
-  [
-    br bitreader.pos br bitreader.data bytes.len i32.lt_s
-    [ BAD_ENTROPY_DATA "extraneous bytes after the scan at offset" br bitreader.pos refusal-n trap ]
-    when
-  ]
-  [ m 0xD9 i32.ne [ BAD_ENTROPY_DATA "marker after the scan is not EOI" m refusal-n trap ] when ]
-  if ;
+  m -1 i32.eq  br bitreader.pos br bitreader.data bytes.len i32.lt_s  i32.and
+  [ BAD_ENTROPY_DATA "extraneous bytes after the scan at offset" br bitreader.pos refusal-n trap ]
+  when
+  m ;
+
+: scan.finish ( scanner -- )
+  scan.end :> m
+  m -1 i32.ne  m 0xD9 i32.ne  i32.and
+  [ BAD_ENTROPY_DATA "marker after the scan is not EOI" m refusal-n trap ]
+  when ;
 
 # Test fixtures.
 : fx.lum-tabs ( -- array hufftable )
@@ -190,3 +220,24 @@ test scan.finish : "71AF00FFD9" fx.lum-tabs 0 1 fx.scanner dup 1 fx.run-mcus sca
 test scan.finish : "71AF00" fx.lum-tabs 0 1 fx.scanner dup 1 fx.run-mcus scan.finish -> trap
 test scan.finish : "71AFFFD0" fx.lum-tabs 0 1 fx.scanner dup 1 fx.run-mcus scan.finish -> trap
 test scan.finish : "71AFFFD071AFFFD171AFFFD271AFFFD371AFFFD471AFFFD571AFFFD671AFFFD72BFFD9" fx.lum-tabs 1 9 fx.scanner dup 9 fx.run-mcus scan.finish 1 -> 1
+
+test scan.end-mcu : "71AFFFD02BFFD9" fx.lum-tabs 1 2 fx.scanner dup 5 scanner.eobrun! dup fx.block drop dup scan.end-mcu scanner.eobrun -> 0
+test scan.end-mcu : "71A2BF" fx.lum-tabs 0 2 fx.scanner dup 5 scanner.eobrun! dup fx.block drop dup scan.end-mcu scanner.eobrun -> 5
+
+# A scanner reopened on new data with the K.3 tables.
+: fx.reopen ( scanner str i32 i32 -- scanner )
+  :> total :> restart :> h :> sc
+  sc  h hex 0 fx.lum-tabs restart total scan.reopen
+  sc ;
+test scan.reopen : "71AF" fx.lum-tabs 0 1 fx.scanner "6D7F" 0 1 fx.reopen fx.block 0 array.at -> -2
+test scan.reopen : "71AF" fx.lum-tabs 0 1 fx.scanner dup fx.block drop "71AF" 0 1 fx.reopen fx.block 0 array.at -> 2
+test scan.reopen : "71AF" fx.lum-tabs 0 1 fx.scanner "71AF" 3 9 fx.reopen scanner.togo -> 3
+test scan.reopen : "71AF" fx.lum-tabs 0 1 fx.scanner dup fx.block drop "71AF" 3 9 fx.reopen scanner.mcu -> 0
+test scan.reopen : "71AF" fx.lum-tabs 0 1 fx.scanner dup 7 scanner.eobrun! "71AF" 0 1 fx.reopen scanner.eobrun -> 0
+test scan.end : "71AFFFD9" fx.lum-tabs 0 1 fx.scanner dup 1 fx.run-mcus scan.end -> 0xD9
+test scan.end : "71AFFFC4" fx.lum-tabs 0 1 fx.scanner dup 1 fx.run-mcus scan.end -> 0xC4
+test scan.end : "71AFFFC4" fx.lum-tabs 0 1 fx.scanner dup 1 fx.run-mcus dup scan.end drop scanner.br bitreader.pos -> 4
+test scan.end : "71AFFFFFDB" fx.lum-tabs 0 1 fx.scanner dup 1 fx.run-mcus scan.end -> 0xDB
+test scan.end : "71AF" fx.lum-tabs 0 1 fx.scanner dup 1 fx.run-mcus scan.end -> -1
+test scan.end : "71AF00" fx.lum-tabs 0 1 fx.scanner dup 1 fx.run-mcus scan.end -> trap
+test scan.end : "71AFFFD0" fx.lum-tabs 0 1 fx.scanner dup 1 fx.run-mcus scan.end -> 0xD0

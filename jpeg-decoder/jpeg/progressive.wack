@@ -1,0 +1,676 @@
+# Progressive decoding (libjpeg's jdphuff.c): the progression state and its
+# checks here; the four entropy routines and block smoothing follow.
+#
+# The progression state is libjpeg's coef_bits: per frame component and
+# zigzag coefficient, -1 until the coefficient is first scanned, then the Al
+# of the latest scan that carried it. prog.check runs before any entropy
+# decoding of a scan. Where libjpeg warns (JWRN_BOGUS_PROGRESSION) strict
+# mode refuses BAD_PROGRESSION. libjpeg's prev_coef_bits serves output from
+# a scan that ended early, which strict mode refuses, so it is not kept.
+
+struct progress  bits: array i32  ncomp: i32
+
+# Frame component count: every entry -1.
+declare prog.make ( i32 -- progress )
+
+# The scan and a flag, 1 for a progressive frame, 0 for sequential.
+# Progressive, as start_pass_phuff_decoder: an AC scan before the component's
+# DC scan, or an Ah that is not the coefficient's latest Al (0 if unsent), is
+# refused. Sequential: a component in a second scan is refused (stricter than
+# libjpeg, which merges silently; its own encoder refuses such a script,
+# jcmaster.c validate_script), and a scanned component is marked Al 0. A
+# component never scanned is not an error: its coefficients stay zero.
+declare prog.check ( progress scan i32 -- )
+
+: prog.make ( i32 -- progress )
+  :> n
+  n 64 i32.mul array.new ( array i32 ) :> b
+  n 64 i32.mul [ :> i  b i -1 array.at! ] times
+  b n progress.new ;
+
+: prog.check ( progress scan i32 -- )
+  :> prog :> sc :> p
+  p progress.bits :> b
+  sc scan.ss :> ss
+  sc scan.se :> se
+  sc scan.ah :> ah
+  sc scan.al :> al
+  sc scan.ncomp
+  [
+    :> k
+    sc scan.comps k array.at :> ci
+    ci 64 i32.mul :> at
+    prog
+    [
+      ss 0 i32.gt_s  b at array.at 0 i32.lt_s  i32.and
+      [ BAD_PROGRESSION "AC scan before the DC scan of component" ci refusal-n trap ]
+      when
+      se ss i32.sub 1 i32.add
+      [
+        :> j
+        ss j i32.add :> coefi
+        b at coefi i32.add array.at :> was
+        was 0 i32.lt_s [ 0 ] [ was ] if :> expected
+        ah expected i32.ne
+        [ BAD_PROGRESSION "inconsistent successive approximation, coefficient" coefi refusal-n trap ]
+        when
+        b at coefi i32.add al array.at!
+      ]
+      times
+    ]
+    [
+      b at array.at 0 i32.ge_s
+      [ BAD_PROGRESSION "component scanned twice" ci refusal-n trap ]
+      when
+      64 [ :> q  b at q i32.add 0 array.at! ] times
+    ]
+    if
+  ]
+  times ;
+
+# Test fixtures: a scan of n components c0, c0+1, ... with the given
+# spectral selection and successive approximation; one such scan checked
+# against a progress, which is returned; libjpeg's standard script.
+: fx.scan-of ( i32 i32 i32 i32 i32 i32 -- scan )
+  :> al :> ah :> se :> ss :> n :> c0
+  n array.new ( array i32 ) :> cs
+  n array.new ( array i32 ) :> td
+  n array.new ( array i32 ) :> ta
+  n [ :> i  cs i c0 i i32.add array.at! ] times
+  n cs td ta ss se ah al 0 scan.new ;
+: fx.pc ( progress i32 i32 i32 i32 i32 i32 i32 -- progress )
+  :> flag :> al :> ah :> se :> ss :> n :> c0 :> p
+  p  c0 n ss se ah al fx.scan-of  flag prog.check
+  p ;
+: fx.std3 ( -- progress )
+  3 prog.make
+  0 3 0 0 0 1 1 fx.pc  0 1 1 5 0 2 1 fx.pc  2 1 1 63 0 1 1 fx.pc ;
+: fx.std ( -- progress )
+  fx.std3
+  1 1 1 63 0 1 1 fx.pc  0 1 6 63 0 2 1 fx.pc  0 1 1 63 2 1 1 fx.pc
+  0 3 0 0 1 0 1 fx.pc  2 1 1 63 1 0 1 fx.pc  1 1 1 63 1 0 1 fx.pc
+  0 1 1 63 1 0 1 fx.pc ;
+
+test prog.make : 3 prog.make progress.bits array.len -> 192
+test prog.make : 3 prog.make progress.bits 100 array.at -> -1
+test prog.check : fx.std progress.bits 0 array.at -> 0
+test prog.check : fx.std progress.bits 1 array.at -> 0
+test prog.check : fx.std progress.bits 63 array.at -> 0
+test prog.check : fx.std progress.bits 64 array.at -> 0
+test prog.check : fx.std progress.bits 191 array.at -> 0
+test prog.check : fx.std3 progress.bits 1 array.at -> 2
+test prog.check : fx.std3 progress.bits 6 array.at -> -1
+test prog.check : fx.std3 progress.bits 129 array.at -> 1
+test prog.check : 3 prog.make 0 1 1 5 0 2 1 fx.pc -> trap
+test prog.check : 3 prog.make 0 3 0 0 0 1 1 fx.pc 0 1 1 63 2 1 1 fx.pc -> trap
+test prog.check : 3 prog.make 0 3 0 0 0 2 1 fx.pc 0 3 0 0 1 0 1 fx.pc -> trap
+test prog.check : 3 prog.make 0 3 0 0 0 1 1 fx.pc 0 3 0 0 1 0 1 fx.pc 0 3 0 0 1 0 1 fx.pc -> trap
+test prog.check : 3 prog.make 0 3 0 0 1 0 1 fx.pc -> trap
+test prog.check : 3 prog.make 0 3 0 0 0 0 1 fx.pc 0 3 0 0 0 0 1 fx.pc progress.bits 0 array.at -> 0
+test prog.check : 3 prog.make 0 1 0 63 0 0 0 fx.pc 1 1 0 63 0 0 0 fx.pc 2 1 0 63 0 0 0 fx.pc progress.bits 0 array.at -> 0
+test prog.check : 3 prog.make 0 1 0 63 0 0 0 fx.pc 1 1 0 63 0 0 0 fx.pc 2 1 0 63 0 0 0 fx.pc progress.bits 64 array.at -> 0
+test prog.check : 3 prog.make 0 1 0 63 0 0 0 fx.pc 1 1 0 63 0 0 0 fx.pc 2 1 0 63 0 0 0 fx.pc progress.bits 128 array.at -> 0
+test prog.check : 3 prog.make 0 1 0 63 0 0 0 fx.pc 1 1 0 63 0 0 0 fx.pc 2 1 0 63 0 0 0 fx.pc progress.bits 191 array.at -> 0
+test prog.check : 3 prog.make 0 2 0 63 0 0 0 fx.pc 2 1 0 63 0 0 0 fx.pc progress.bits 128 array.at -> 0
+test prog.check : 3 prog.make 0 1 0 63 0 0 0 fx.pc 0 1 0 63 0 0 0 fx.pc -> trap
+test prog.check : 3 prog.make 0 2 0 63 0 0 0 fx.pc 1 1 0 63 0 0 0 fx.pc -> trap
+
+# libjpeg's decode_mcu_DC_first for one block: scanner, store, ci (the
+# predictor), td (the DC table slot), Al and the block's coefficient index.
+# The difference is decoded and extended as in a sequential scan, added to
+# the predictor (an int that wraps), and stored shifted left by Al, as
+# (JCOEF)(s << Al), overwriting block[0].
+declare prog.dc-first ( scanner coeffs i32 i32 i32 i32 -- )
+
+# libjpeg's decode_mcu_DC_refine: scanner, store, Al, the block's index.
+# One bit; when set, block[0] |= 1 << Al.
+declare prog.dc-refine ( scanner coeffs i32 i32 -- )
+
+: prog.dc-first ( scanner coeffs i32 i32 i32 i32 -- )
+  :> off :> al :> td :> ci :> store :> sc
+  sc scanner.br :> br
+  br  sc scanner.tabs td array.at  huffman.decode :> s0
+  s0 [ br s0 huffman.receive-extend ] [ 0 ] if  sc scanner.pred ci array.at  i32.add :> dc
+  sc scanner.pred ci dc array.at!
+  store off  dc al i32.shl  coeffs.set ;
+
+: prog.dc-refine ( scanner coeffs i32 i32 -- )
+  :> off :> al :> store :> sc
+  sc scanner.br 1 bits.get
+  [ store off  store off coeffs.get  1 al i32.shl  i32.or  coeffs.set ]
+  when ;
+
+# Test fixtures: a two-block 16x8 store; DC first over n blocks with the K.3
+# tables, returning the store or the scanner; DC refine over n blocks whose
+# DC was preset, returning the store or the scanner.
+: fx.store2 ( -- coeffs )  8 16 8 1 1 0 fx.one 1 coeffs.make ;
+: fx.dcf-run ( str i32 i32 i32 -- scanner coeffs )
+  :> pre :> n :> al :> h
+  h fx.lum-tabs 0 n fx.scanner :> sc
+  sc scanner.pred 0 pre array.at!
+  fx.store2 :> st
+  n [ :> b  sc st 0 0 al b 64 i32.mul prog.dc-first ] times
+  sc st ;
+: fx.dcf ( str i32 i32 -- coeffs )  0 fx.dcf-run nip ;
+: fx.dcf-sc ( str i32 i32 -- scanner )  0 fx.dcf-run drop ;
+: fx.dcr-run ( str i32 i32 i32 -- scanner coeffs )
+  :> n :> pre :> al :> h
+  h fx.lum-tabs 0 n fx.scanner :> sc
+  fx.store2 :> st
+  st 0 pre coeffs.set
+  st 64 pre coeffs.set
+  n [ :> b  sc st al b 64 i32.mul prog.dc-refine ] times
+  sc st ;
+: fx.dcr ( str i32 i32 i32 -- coeffs )  fx.dcr-run nip ;
+
+test prog.dc-first : "71AF" 0 1 fx.dcf 0 coeffs.get -> 2
+test prog.dc-first : "71AF" 1 1 fx.dcf 0 coeffs.get -> 4
+test prog.dc-first : "71AF" 3 1 fx.dcf 0 coeffs.get -> 16
+test prog.dc-first : "6D7F" 1 1 fx.dcf 0 coeffs.get -> -4
+test prog.dc-first : "7171" 0 2 fx.dcf 64 coeffs.get -> 2
+test prog.dc-first : "7171" 1 2 fx.dcf 0 coeffs.get -> 4
+test prog.dc-first : "7171" 1 2 fx.dcf 64 coeffs.get -> 4
+test prog.dc-first : "71AF" 0 1 fx.dcf-sc scanner.pred 0 array.at -> 2
+test prog.dc-first : "" 0 1 fx.dcf 0 coeffs.get -> 0
+test prog.dc-first : "" 0 1 fx.dcf-sc scanner.br bitreader.exhausted -> 1
+test prog.dc-first : "71AF" 0 1 40000 fx.dcf-run nip 0 coeffs.get -> -25534
+test prog.dc-refine : "80" 0 4 1 fx.dcr 0 coeffs.get -> 5
+test prog.dc-refine : "00" 0 4 1 fx.dcr 0 coeffs.get -> 4
+test prog.dc-refine : "80" 1 4 1 fx.dcr 0 coeffs.get -> 6
+test prog.dc-refine : "C0" 0 4 2 fx.dcr 64 coeffs.get -> 5
+test prog.dc-refine : "80" 0 5 1 fx.dcr 0 coeffs.get -> 5
+test prog.dc-refine : "" 0 4 1 fx.dcr 0 coeffs.get -> 4
+test prog.dc-refine : "" 0 4 1 fx.dcr-run drop scanner.br bitreader.exhausted -> 1
+
+# libjpeg's decode_mcu_AC_first for one block: scanner, store, ta (the AC
+# table is slot 4 + ta), Ss, Se, Al and the block's coefficient index. A
+# pending EOB run skips the block; otherwise coefficients Ss..Se are decoded
+# with ZRL and EOBn (a run of 2^r blocks plus r extra bits, this block
+# included), each stored as (JCOEF)(value << Al) at its natural position.
+# A nonzero coefficient whose run carries it past Se is BAD_ENTROPY_DATA
+# (strict; libjpeg writes through its safety entries); a ZRL past Se, or an
+# EOB run left over at the end of a scan, is not an error.
+declare prog.ac-first ( scanner coeffs i32 i32 i32 i32 i32 -- )
+
+: prog.ac-first ( scanner coeffs i32 i32 i32 i32 i32 -- )
+  :> off :> al :> se :> ss :> ta :> store :> sc
+  sc scanner.eobrun :> run
+  run 0 i32.gt_s
+  [ sc run 1 i32.sub scanner.eobrun! ]
+  [
+    sc scanner.br :> br
+    sc scanner.tabs 4 ta i32.add array.at :> tab
+    sc scanner.natural :> nat
+    ss :> k!
+    [ k se i32.le_s ]
+    [
+      br tab huffman.decode :> rs
+      rs 4 i32.shr_u :> r
+      rs 15 i32.and :> sz
+      sz
+      [
+        k r i32.add k!
+        k se i32.gt_s [ BAD_ENTROPY_DATA "coefficient run past the end of the band" refusal trap ] when
+        store  off nat k array.at i32.add  br sz huffman.receive-extend al i32.shl  coeffs.set
+        k 1 i32.add k!
+      ]
+      [
+        r 15 i32.eq
+        [ k 16 i32.add k! ]
+        [
+          1 r i32.shl  r [ br r bits.get ] [ 0 ] if  i32.add 1 i32.sub :> eob
+          sc eob scanner.eobrun!
+          se 1 i32.add k!
+        ]
+        if
+      ]
+      if
+    ]
+    while
+  ]
+  if ;
+
+# Test fixtures: an AC table of three 2-bit codes and one 3-bit code (00 is
+# 0x01, 01 is EOB, 10 is EOB2, 110 is ZRL); tables with it in slot 4; one
+# AC first block decoded into a fresh two-block store at offset 0.
+: fx.ac-eob ( -- hufftable )  "000301" "00" 13 fx.rep str.concat "010020F0" str.concat hex 0 0 huffman.build ;
+: fx.eob-tabs ( -- array hufftable )
+  8 array.new ( array hufftable ) :> t
+  t 0 fx.dc-lum array.at!
+  t 4 fx.ac-eob array.at!
+  t ;
+: fx.acf ( str array hufftable i32 i32 i32 i32 -- scanner coeffs )
+  :> al :> se :> ss :> pre :> tabs :> h
+  h tabs 0 2 fx.scanner :> sc
+  sc pre scanner.eobrun!
+  fx.store2 :> st
+  sc st 0 ss se al 0 prog.ac-first
+  sc st ;
+
+test fx.ac-eob : fx.ac-eob hufftable.nsymbols -> 4
+test fx.ac-eob : "00" hex 0 bits.open fx.ac-eob huffman.decode -> 1
+test fx.ac-eob : "40" hex 0 bits.open fx.ac-eob huffman.decode -> 0
+test fx.ac-eob : "80" hex 0 bits.open fx.ac-eob huffman.decode -> 32
+test fx.ac-eob : "C0" hex 0 bits.open fx.ac-eob huffman.decode -> 240
+test prog.ac-first : "2F" fx.eob-tabs 0 1 63 0 fx.acf nip 1 coeffs.get -> 1
+test prog.ac-first : "2F" fx.eob-tabs 0 1 63 0 fx.acf drop scanner.eobrun -> 0
+test prog.ac-first : "2F" fx.eob-tabs 0 1 63 0 fx.acf drop scanner.br bitreader.nbits -> 3
+test prog.ac-first : "2F" fx.eob-tabs 0 1 63 1 fx.acf nip 1 coeffs.get -> 2
+test prog.ac-first : "0F" fx.eob-tabs 0 1 63 1 fx.acf nip 1 coeffs.get -> -2
+test prog.ac-first : "BF" fx.eob-tabs 0 1 63 0 fx.acf drop scanner.eobrun -> 6
+test prog.ac-first : "BF" fx.eob-tabs 0 1 63 0 fx.acf nip 1 coeffs.get -> 0
+test prog.ac-first : "BF" fx.eob-tabs 0 1 63 0 fx.acf drop scanner.br bitreader.nbits -> 4
+test prog.ac-first : "C5" fx.eob-tabs 0 1 63 0 fx.acf nip 19 coeffs.get -> 1
+test prog.ac-first : "C5" fx.eob-tabs 0 1 63 0 fx.acf drop scanner.eobrun -> 0
+test prog.ac-first : "C5" fx.eob-tabs 0 1 63 0 fx.acf drop scanner.br bitreader.nbits -> 0
+test prog.ac-first : "FF00" fx.eob-tabs 3 1 63 0 fx.acf drop scanner.eobrun -> 2
+test prog.ac-first : "FF00" fx.eob-tabs 3 1 63 0 fx.acf drop scanner.br bitreader.nbits -> 0
+test prog.ac-first : "2F" fx.eob-tabs 0 1 1 0 fx.acf nip 1 coeffs.get -> 1
+test prog.ac-first : "2F" fx.eob-tabs 0 1 1 0 fx.acf drop scanner.br bitreader.nbits -> 5
+test prog.ac-first : "C500" fx.lum-tabs 0 1 63 0 fx.acf nip 8 coeffs.get -> -1
+test prog.ac-first : "C500" fx.lum-tabs 0 1 63 0 fx.acf drop scanner.eobrun -> 0
+test prog.ac-first : "C500" fx.lum-tabs 0 1 63 0 fx.acf drop scanner.br bitreader.nbits -> 7
+test prog.ac-first : "C500" fx.lum-tabs 0 1 1 0 fx.acf -> trap
+test prog.ac-first : "2F" fx.eob-tabs 0 1 63 0 fx.acf nip 64 coeffs.get -> 0
+
+# A correction bit for the coefficient at an index, if it is nonzero:
+# reader, store, index, p1 = 1 << Al, m1 = -1 << Al. A 1 adds p1 (or m1 for
+# a negative coefficient) unless that bit is already set. libjpeg's
+# decode_mcu_AC_refine does this in two places; both use this word.
+declare prog.correct ( bitreader coeffs i32 i32 i32 -- )
+
+# libjpeg's decode_mcu_AC_refine for one block (G.1.2.3): scanner, store,
+# ta, Ss, Se, Al and the block's index. Each symbol places one new +-1 << Al
+# coefficient after skipping r zero coefficients, sending a correction bit
+# for every nonzero coefficient passed on the way; an EOB run sends
+# correction bits for the nonzero coefficients left in the band. Strict: a
+# new coefficient of size other than 1 (libjpeg warns JWRN_HUFF_BAD_CODE),
+# or one placed past Se, is BAD_ENTROPY_DATA. libjpeg's newnz_pos undo list
+# serves input suspension only and is not needed.
+declare prog.ac-refine ( scanner coeffs i32 i32 i32 i32 i32 -- )
+
+: prog.correct ( bitreader coeffs i32 i32 i32 -- )
+  :> m1 :> p1 :> idx :> store :> br
+  store idx coeffs.get :> v
+  v
+  [
+    br 1 bits.get  v p1 i32.and i32.eqz  i32.and
+    [ store idx  v  v 0 i32.ge_s [ p1 ] [ m1 ] if  i32.add  coeffs.set ]
+    when
+  ]
+  when ;
+
+: prog.ac-refine ( scanner coeffs i32 i32 i32 i32 i32 -- )
+  :> off :> al :> se :> ss :> ta :> store :> sc
+  sc scanner.br :> br
+  sc scanner.natural :> nat
+  1 al i32.shl :> p1
+  -1 al i32.shl :> m1
+  ss :> k!
+  sc scanner.eobrun i32.eqz
+  [
+    sc scanner.tabs 4 ta i32.add array.at :> tab
+    1 :> go!
+    [ go  k se i32.le_s  i32.and ]
+    [
+      br tab huffman.decode :> rs
+      rs 4 i32.shr_u :> r!
+      rs 15 i32.and :> sz
+      0 :> s!
+      sz
+      [
+        sz 1 i32.ne [ BAD_ENTROPY_DATA "refinement coefficient size not 1" sz refusal-n trap ] when
+        br 1 bits.get [ p1 ] [ m1 ] if s!
+      ]
+      [
+        r 15 i32.ne
+        [
+          sc  1 r i32.shl  r [ br r bits.get ] [ 0 ] if  i32.add  scanner.eobrun!
+          0 go!
+        ]
+        when
+      ]
+      if
+      go
+      [
+        1 :> more!
+        [ more ]
+        [
+          off nat k array.at i32.add :> idx
+          store idx coeffs.get
+          [ br store idx p1 m1 prog.correct ]
+          [ r 1 i32.sub r!  r 0 i32.lt_s [ 0 more! ] when ]
+          if
+          more [ k 1 i32.add k!  k se i32.gt_s [ 0 more! ] when ] when
+        ]
+        while
+        s
+        [
+          k se i32.gt_s [ BAD_ENTROPY_DATA "coefficient run past the end of the band" refusal trap ] when
+          store  off nat k array.at i32.add  s coeffs.set
+        ]
+        when
+        k 1 i32.add k!
+      ]
+      when
+    ]
+    while
+  ]
+  when
+  sc scanner.eobrun 0 i32.gt_s
+  [
+    se k i32.sub 1 i32.add 0 imax
+    [ :> j  br store  off nat k j i32.add array.at i32.add  p1 m1 prog.correct ]
+    times
+    sc  sc scanner.eobrun 1 i32.sub  scanner.eobrun!
+  ]
+  when ;
+
+# Test fixture: hex data, tables, eobrun preset, presets for store indexes
+# 1 and 8, Al and Se: one AC refinement block (ta 0, Ss 1) at offset 0 of a
+# fresh two-block store.
+: fx.acr ( str array hufftable i32 i32 i32 i32 i32 -- scanner coeffs )
+  :> se :> al :> p8 :> p1 :> pre :> tabs :> h
+  h tabs 0 2 fx.scanner :> sc
+  sc pre scanner.eobrun!
+  fx.store2 :> st
+  st 1 p1 coeffs.set
+  st 8 p8 coeffs.set
+  sc st 0 1 se al 0 prog.ac-refine
+  sc st ;
+
+test prog.ac-refine : "33" fx.eob-tabs 0 2 -2 0 63 fx.acr nip 1 coeffs.get -> 3
+test prog.ac-refine : "33" fx.eob-tabs 0 2 -2 0 63 fx.acr nip 8 coeffs.get -> -2
+test prog.ac-refine : "33" fx.eob-tabs 0 2 -2 0 63 fx.acr nip 16 coeffs.get -> 1
+test prog.ac-refine : "33" fx.eob-tabs 0 2 -2 0 63 fx.acr drop scanner.eobrun -> 0
+test prog.ac-refine : "33" fx.eob-tabs 0 2 -2 0 63 fx.acr drop scanner.br bitreader.nbits -> 1
+test prog.ac-refine : "7F" fx.eob-tabs 0 2 -2 0 63 fx.acr nip 1 coeffs.get -> 3
+test prog.ac-refine : "7F" fx.eob-tabs 0 2 -2 0 63 fx.acr nip 8 coeffs.get -> -3
+test prog.ac-refine : "7F" fx.eob-tabs 0 2 -2 0 63 fx.acr nip 16 coeffs.get -> 0
+test prog.ac-refine : "7F" fx.eob-tabs 0 2 -2 0 63 fx.acr drop scanner.eobrun -> 0
+test prog.ac-refine : "7F" fx.eob-tabs 0 2 -2 0 63 fx.acr drop scanner.br bitreader.nbits -> 4
+test prog.ac-refine : "7F" fx.eob-tabs 0 3 0 0 63 fx.acr nip 1 coeffs.get -> 3
+test prog.ac-refine : "7F" fx.eob-tabs 0 3 0 0 63 fx.acr drop scanner.br bitreader.nbits -> 5
+test prog.ac-refine : "85" fx.eob-tabs 0 2 -2 0 63 fx.acr nip 1 coeffs.get -> 2
+test prog.ac-refine : "85" fx.eob-tabs 0 2 -2 0 63 fx.acr nip 8 coeffs.get -> -3
+test prog.ac-refine : "85" fx.eob-tabs 0 2 -2 0 63 fx.acr drop scanner.eobrun -> 3
+test prog.ac-refine : "85" fx.eob-tabs 0 2 -2 0 63 fx.acr drop scanner.br bitreader.nbits -> 2
+test prog.ac-refine : "FF00" fx.eob-tabs 3 2 0 0 63 fx.acr nip 1 coeffs.get -> 3
+test prog.ac-refine : "FF00" fx.eob-tabs 3 2 0 0 63 fx.acr drop scanner.eobrun -> 2
+test prog.ac-refine : "FF00" fx.eob-tabs 3 2 0 0 63 fx.acr drop scanner.br bitreader.nbits -> 7
+test prog.ac-refine : "17" fx.eob-tabs 0 2 0 1 63 fx.acr nip 1 coeffs.get -> 2
+test prog.ac-refine : "17" fx.eob-tabs 0 2 0 1 63 fx.acr nip 8 coeffs.get -> -2
+test prog.ac-refine : "17" fx.eob-tabs 0 2 0 1 63 fx.acr drop scanner.eobrun -> 0
+test prog.ac-refine : "17" fx.eob-tabs 0 2 0 1 63 fx.acr drop scanner.br bitreader.nbits -> 2
+test prog.ac-refine : "C500" fx.lum-tabs 0 0 0 0 63 fx.acr nip 8 coeffs.get -> -1
+test prog.ac-refine : "C500" fx.lum-tabs 0 0 0 0 63 fx.acr drop scanner.eobrun -> 0
+test prog.ac-refine : "C500" fx.lum-tabs 0 0 0 0 63 fx.acr drop scanner.br bitreader.nbits -> 7
+test prog.ac-refine : "C500" fx.lum-tabs 0 0 0 0 1 fx.acr -> trap
+test prog.ac-refine : "40" fx.lum-tabs 0 0 0 0 63 fx.acr -> trap
+test prog.ac-refine : "33" fx.eob-tabs 0 2 -2 0 63 fx.acr nip 64 coeffs.get -> 0
+
+# Block smoothing (libjpeg-turbo 3.2.0's smoothing_ok and
+# decompress_smooth_data in jdcoefct.c). djpeg applies it by default to a
+# progressive file whose coefficients are not all known when output is
+# produced; no flag turns it off. All scans are consumed before output and
+# strict mode refuses a scan that ends early, so only the final coef_bits
+# are used (libjpeg's last_good_iMCU_row case never arises).
+
+struct smoother  store: coeffs  prog: progress  quants: array i32  dcs: array i32
+
+# The store, the progression state and the latched quantisation tables
+# (natural order, component ci at ci*64): the 25-entry DC workspace is
+# allocated once here.
+declare prog.smoother ( coeffs progress array i32 -- smoother )
+
+# smoothing_ok: every component's table is nonzero at natural positions 0 1
+# 8 16 9 2 3 10 17 24 and its DC has been scanned, and some coefficient 1..9
+# (zigzag) of some component is not known exactly (coef_bits not 0).
+declare prog.smooth? ( smoother -- i32 )
+
+# One block: smoother, ci, bw (width_in_blocks), bx, row (the absolute block
+# row in the padded grid), ibr and ibrs (libjpeg's image_block_row and
+# image_block_rows, which use the reduced block_rows of the last iMCU row),
+# and the 64-entry block, modified in place. The 25 DCs are rows row-2 to
+# row+2 by columns bx-2 to bx+2; libjpeg's sliding registers with their
+# first- and last-column cases equal clamping the column to 0..bw-1, and its
+# rows are chosen by ibr as the C does. Each still-zero coefficient among the
+# first nine AC ones whose Al is not 0 gets an estimate, clamped to
+# (1 << Al) - 1 when Al > 0; with no AC data at all (change_dc) four more
+# and the DC itself are estimated too. num is a JLONG (i64).
+declare prog.smooth ( smoother i32 i32 i32 i32 i32 i32 array i32 -- )
+
+# One estimate: Q00, the kernel sum, Qk and Al (0 for no clamp): the
+# (JCOEF) prediction.
+declare prog.pred ( i64 i32 i64 i32 -- i32 )
+
+: prog.smoother ( coeffs progress array i32 -- smoother )
+  :> qs :> p :> st
+  25 array.new ( array i32 ) :> d
+  st p qs d smoother.new ;
+
+: prog.smooth? ( smoother -- i32 )
+  :> sm
+  sm smoother.prog :> p
+  p progress.bits :> b
+  sm smoother.quants :> qs
+  "000108100902030A1118" hex :> pos
+  1 :> ok!
+  0 :> useful!
+  p progress.ncomp
+  [
+    :> ci
+    ci 64 i32.mul :> qb
+    10 [ :> qz  qs  qb  pos qz bytes.at  i32.add  array.at i32.eqz [ 0 ok! ] when ] times
+    b qb array.at 0 i32.lt_s [ 0 ok! ] when
+    9 [ :> z  b qb z i32.add 1 i32.add array.at [ 1 useful! ] when ] times
+  ]
+  times
+  ok useful i32.and ;
+
+: prog.pred ( i64 i32 i64 i32 -- i32 )
+  :> al :> q :> sum :> q00
+  q00 sum i64 i64.mul :> num
+  q 7 i64 i64.shl :> half
+  q 8 i64 i64.shl :> den
+  num 0 i64 i64.ge_s
+  [
+    half num i64.add den i64.div_s i32.wrap_i64 :> pp
+    al 0 i32.gt_s  pp 1 al i32.shl i32.ge_s  i32.and [ 1 al i32.shl 1 i32.sub ] [ pp ] if
+  ]
+  [
+    half num i64.sub den i64.div_s i32.wrap_i64 :> pn
+    al 0 i32.gt_s  pn 1 al i32.shl i32.ge_s  i32.and [ 1 al i32.shl 1 i32.sub ] [ pn ] if
+    0 swap i32.sub
+  ]
+  if
+  i32.extend16_s ;
+
+: prog.smooth ( smoother i32 i32 i32 i32 i32 i32 array i32 -- )
+  :> blk :> ibrs :> ibr :> row :> bx :> bw :> ci :> sm
+  sm smoother.store :> st
+  sm smoother.prog progress.bits :> pb
+  sm smoother.quants :> qs
+  sm smoother.dcs :> dcs
+  ci 64 i32.mul :> cb
+  ibr 0 i32.gt_s [ row 1 i32.sub ] [ row ] if :> prev
+  ibr 1 i32.gt_s [ row 2 i32.sub ] [ prev ] if :> pprev
+  ibr ibrs 1 i32.sub i32.lt_s [ row 1 i32.add ] [ row ] if :> next
+  ibr ibrs 2 i32.sub i32.lt_s [ row 2 i32.add ] [ next ] if :> nnext
+  5
+  [
+    :> rr
+    rr 0 i32.eq [ pprev ] [ rr 1 i32.eq [ prev ] [ rr 2 i32.eq [ row ] [ rr 3 i32.eq [ next ] [ nnext ] if ] if ] if ] if :> r
+    5
+    [
+      :> cc
+      bx cc i32.add 2 i32.sub 0 imax :> c0
+      c0 bw 1 i32.sub i32.gt_s [ bw 1 i32.sub ] [ c0 ] if :> col
+      dcs  rr 5 i32.mul cc i32.add  st  st ci col r coeffs.block  coeffs.get  array.at!
+    ]
+    times
+  ]
+  times
+  dcs 0 array.at :> d01
+  dcs 1 array.at :> d02
+  dcs 2 array.at :> d03
+  dcs 3 array.at :> d04
+  dcs 4 array.at :> d05
+  dcs 5 array.at :> d06
+  dcs 6 array.at :> d07
+  dcs 7 array.at :> d08
+  dcs 8 array.at :> d09
+  dcs 9 array.at :> d10
+  dcs 10 array.at :> d11
+  dcs 11 array.at :> d12
+  dcs 12 array.at :> d13
+  dcs 13 array.at :> d14
+  dcs 14 array.at :> d15
+  dcs 15 array.at :> d16
+  dcs 16 array.at :> d17
+  dcs 17 array.at :> d18
+  dcs 18 array.at :> d19
+  dcs 19 array.at :> d20
+  dcs 20 array.at :> d21
+  dcs 21 array.at :> d22
+  dcs 22 array.at :> d23
+  dcs 23 array.at :> d24
+  dcs 24 array.at :> d25
+  1 :> cd!
+  9 [ :> z  pb cb z i32.add 1 i32.add array.at -1 i32.ne [ 0 cd! ] when ] times
+  qs cb array.at i64 :> q00
+  pb cb 1 i32.add array.at :> a1
+  a1 0 i32.ne  blk 1 array.at i32.eqz  i32.and
+  [ blk 1  q00  cd [ d01 -1 i32.mul d02 -1 i32.mul i32.add d04 i32.add d05 i32.add d06 -3 i32.mul i32.add d07 13 i32.mul i32.add d09 -13 i32.mul i32.add d10 3 i32.mul i32.add d11 -3 i32.mul i32.add d12 38 i32.mul i32.add d14 -38 i32.mul i32.add d15 3 i32.mul i32.add d16 -3 i32.mul i32.add d17 13 i32.mul i32.add d19 -13 i32.mul i32.add d20 3 i32.mul i32.add d21 -1 i32.mul i32.add d22 -1 i32.mul i32.add d24 i32.add d25 i32.add ] [ d11 -7 i32.mul d12 50 i32.mul i32.add d14 -50 i32.mul i32.add d15 7 i32.mul i32.add ] if  qs cb 1 i32.add array.at i64  a1  prog.pred  array.at! ]
+  when
+  pb cb 2 i32.add array.at :> a8
+  a8 0 i32.ne  blk 8 array.at i32.eqz  i32.and
+  [ blk 8  q00  cd [ d01 -1 i32.mul d02 -3 i32.mul i32.add d03 -3 i32.mul i32.add d04 -3 i32.mul i32.add d05 -1 i32.mul i32.add d06 -1 i32.mul i32.add d07 13 i32.mul i32.add d08 38 i32.mul i32.add d09 13 i32.mul i32.add d10 -1 i32.mul i32.add d16 i32.add d17 -13 i32.mul i32.add d18 -38 i32.mul i32.add d19 -13 i32.mul i32.add d20 i32.add d21 i32.add d22 3 i32.mul i32.add d23 3 i32.mul i32.add d24 3 i32.mul i32.add d25 i32.add ] [ d03 -7 i32.mul d08 50 i32.mul i32.add d18 -50 i32.mul i32.add d23 7 i32.mul i32.add ] if  qs cb 8 i32.add array.at i64  a8  prog.pred  array.at! ]
+  when
+  pb cb 3 i32.add array.at :> a16
+  a16 0 i32.ne  blk 16 array.at i32.eqz  i32.and
+  [ blk 16  q00  cd [ d03 d07 2 i32.mul i32.add d08 7 i32.mul i32.add d09 2 i32.mul i32.add d12 -5 i32.mul i32.add d13 -14 i32.mul i32.add d14 -5 i32.mul i32.add d17 2 i32.mul i32.add d18 7 i32.mul i32.add d19 2 i32.mul i32.add d23 i32.add ] [ d03 -1 i32.mul d08 13 i32.mul i32.add d13 -24 i32.mul i32.add d18 13 i32.mul i32.add d23 -1 i32.mul i32.add ] if  qs cb 16 i32.add array.at i64  a16  prog.pred  array.at! ]
+  when
+  pb cb 4 i32.add array.at :> a9
+  a9 0 i32.ne  blk 9 array.at i32.eqz  i32.and
+  [ blk 9  q00  cd [ d01 -1 i32.mul d05 i32.add d07 9 i32.mul i32.add d09 -9 i32.mul i32.add d17 -9 i32.mul i32.add d19 9 i32.mul i32.add d21 i32.add d25 -1 i32.mul i32.add ] [ d10 d16 i32.add d17 -10 i32.mul i32.add d19 10 i32.mul i32.add d02 -1 i32.mul i32.add d20 -1 i32.mul i32.add d22 i32.add d24 -1 i32.mul i32.add d04 i32.add d06 -1 i32.mul i32.add d07 10 i32.mul i32.add d09 -10 i32.mul i32.add ] if  qs cb 9 i32.add array.at i64  a9  prog.pred  array.at! ]
+  when
+  pb cb 5 i32.add array.at :> a2
+  a2 0 i32.ne  blk 2 array.at i32.eqz  i32.and
+  [ blk 2  q00  cd [ d07 2 i32.mul d08 -5 i32.mul i32.add d09 2 i32.mul i32.add d11 i32.add d12 7 i32.mul i32.add d13 -14 i32.mul i32.add d14 7 i32.mul i32.add d15 i32.add d17 2 i32.mul i32.add d18 -5 i32.mul i32.add d19 2 i32.mul i32.add ] [ d11 -1 i32.mul d12 13 i32.mul i32.add d13 -24 i32.mul i32.add d14 13 i32.mul i32.add d15 -1 i32.mul i32.add ] if  qs cb 2 i32.add array.at i64  a2  prog.pred  array.at! ]
+  when
+  cd
+  [
+    pb cb 6 i32.add array.at :> a3
+    a3 0 i32.ne  blk 3 array.at i32.eqz  i32.and
+    [ blk 3  q00  d07 d09 -1 i32.mul i32.add d12 2 i32.mul i32.add d14 -2 i32.mul i32.add d17 i32.add d19 -1 i32.mul i32.add  qs cb 3 i32.add array.at i64  a3  prog.pred  array.at! ]
+    when
+    pb cb 7 i32.add array.at :> a10
+    a10 0 i32.ne  blk 10 array.at i32.eqz  i32.and
+    [ blk 10  q00  d07 d08 -3 i32.mul i32.add d09 i32.add d17 -1 i32.mul i32.add d18 3 i32.mul i32.add d19 -1 i32.mul i32.add  qs cb 10 i32.add array.at i64  a10  prog.pred  array.at! ]
+    when
+    pb cb 8 i32.add array.at :> a17
+    a17 0 i32.ne  blk 17 array.at i32.eqz  i32.and
+    [ blk 17  q00  d07 d09 -1 i32.mul i32.add d12 -3 i32.mul i32.add d14 3 i32.mul i32.add d17 i32.add d19 -1 i32.mul i32.add  qs cb 17 i32.add array.at i64  a17  prog.pred  array.at! ]
+    when
+    pb cb 9 i32.add array.at :> a24
+    a24 0 i32.ne  blk 24 array.at i32.eqz  i32.and
+    [ blk 24  q00  d07 d08 2 i32.mul i32.add d09 i32.add d17 -1 i32.mul i32.add d18 -2 i32.mul i32.add d19 -1 i32.mul i32.add  qs cb 24 i32.add array.at i64  a24  prog.pred  array.at! ]
+    when
+    blk 0  q00  d01 -2 i32.mul d02 -6 i32.mul i32.add d03 -8 i32.mul i32.add d04 -6 i32.mul i32.add d05 -2 i32.mul i32.add d06 -6 i32.mul i32.add d07 6 i32.mul i32.add d08 42 i32.mul i32.add d09 6 i32.mul i32.add d10 -6 i32.mul i32.add d11 -8 i32.mul i32.add d12 42 i32.mul i32.add d13 152 i32.mul i32.add d14 42 i32.mul i32.add d15 -8 i32.mul i32.add d16 -6 i32.mul i32.add d17 6 i32.mul i32.add d18 42 i32.mul i32.add d19 6 i32.mul i32.add d20 -6 i32.mul i32.add d21 -2 i32.mul i32.add d22 -6 i32.mul i32.add d23 -8 i32.mul i32.add d24 -6 i32.mul i32.add d25 -2 i32.mul i32.add  q00  0  prog.pred  array.at!
+  ]
+  when ;
+
+# Test fixtures: a progress for one component with coef_bits[0] = 0 and 1..9
+# from a hex list of bytes (FF for -1); a 3x1-block store with three DCs;
+# one smoothed block of it; a 1x5-block store with DCs 0 0 100 0 0 down the
+# column, smoothed at block row r.
+: fx.bits ( str -- progress )
+  :> h
+  1 prog.make :> p
+  p progress.bits 0 0 array.at!
+  h hex :> b
+  9 [ :> i  p progress.bits i 1 i32.add  b i bytes.at i32.extend8_s  array.at! ] times
+  p ;
+: fx.dc-only ( -- progress )  "FFFFFFFFFFFFFFFFFF" fx.bits ;
+: fx.sm-row ( progress array i32 i32 i32 i32 i32 i32 -- array i32 )
+  :> pre :> bx :> c2 :> c1 :> c0 :> qs :> p
+  8 24 8 1 1 0 fx.one 1 coeffs.make :> st
+  st 0 c0 coeffs.set
+  st 64 c1 coeffs.set
+  st 128 c2 coeffs.set
+  64 array.new ( array i32 ) :> blk
+  st bx 64 i32.mul blk coeffs.get-block
+  blk 1 pre array.at!
+  st p qs prog.smoother 0 3 bx 0 0 1 blk prog.smooth
+  blk ;
+: fx.sm-a ( i32 -- array i32 )  :> bx  fx.dc-only fx.ones 10 20 40 bx 0 fx.sm-row ;
+: fx.sm-b ( i32 -- array i32 )  :> bx  fx.dc-only fx.ready 0 idct.quant -40 100 30 bx 0 fx.sm-row ;
+: fx.sm-c ( i32 -- array i32 )  :> pre  "0101010101FFFFFFFF" fx.bits fx.ones 0 200 0 1 pre fx.sm-row ;
+: fx.sm-d ( i32 -- array i32 )
+  :> r
+  8 8 40 1 1 0 fx.one 1 coeffs.make :> st
+  st  st 0 0 2 coeffs.block  100 coeffs.set
+  64 array.new ( array i32 ) :> blk
+  st  st 0 0 r coeffs.block  blk coeffs.get-block
+  st fx.dc-only fx.ones prog.smoother 0 1 0 r r 5 blk prog.smooth
+  blk ;
+: fx.sm? ( progress array i32 -- i32 )
+  :> qs :> p
+  fx.grey 1 coeffs.make p qs prog.smoother prog.smooth? ;
+
+test prog.smooth : 0 fx.sm-a 0 array.at -> 9
+test prog.smooth : 0 fx.sm-a 1 array.at -> -1
+test prog.smooth : 0 fx.sm-a 2 array.at -> 1
+test prog.smooth : 1 fx.sm-a 0 array.at -> 21
+test prog.smooth : 1 fx.sm-a 1 array.at -> -6
+test prog.smooth : 1 fx.sm-a 2 array.at -> 0
+test prog.smooth : 2 fx.sm-a 0 array.at -> 40
+test prog.smooth : 2 fx.sm-a 1 array.at -> -4
+test prog.smooth : 2 fx.sm-a 2 array.at -> -1
+test prog.smooth : 0 fx.sm-b 0 array.at -> -24
+test prog.smooth : 0 fx.sm-b 1 array.at -> -45
+test prog.smooth : 0 fx.sm-b 2 array.at -> 10
+test prog.smooth : 0 fx.sm-b 3 array.at -> -2
+test prog.smooth : 0 fx.sm-b 16 array.at -> -1
+test prog.smooth : 0 fx.sm-b 17 array.at -> 1
+test prog.smooth : 1 fx.sm-b 0 array.at -> 85
+test prog.smooth : 1 fx.sm-b 1 array.at -> -20
+test prog.smooth : 1 fx.sm-b 2 array.at -> -16
+test prog.smooth : 1 fx.sm-b 3 array.at -> -1
+test prog.smooth : 1 fx.sm-b 16 array.at -> 1
+test prog.smooth : 2 fx.sm-b 0 array.at -> 48
+test prog.smooth : 2 fx.sm-b 1 array.at -> 29
+test prog.smooth : 2 fx.sm-b 2 array.at -> 4
+test prog.smooth : 2 fx.sm-b 3 array.at -> 1
+test prog.smooth : 0 fx.sm-c 0 array.at -> 200
+test prog.smooth : 0 fx.sm-c 2 array.at -> -1
+test prog.smooth : 0 fx.sm-c 1 array.at -> 0
+test prog.smooth : 5 fx.sm-c 1 array.at -> 5
+test prog.smooth : 5 fx.sm-c 2 array.at -> -1
+test prog.smooth : 0 fx.sm-d 0 array.at -> -9
+test prog.smooth : 0 fx.sm-d 8 array.at -> 4
+test prog.smooth : 1 fx.sm-d 0 array.at -> 16
+test prog.smooth : 1 fx.sm-d 8 array.at -> -24
+test prog.smooth : 1 fx.sm-d 16 array.at -> 4
+test prog.smooth : 1 fx.sm-d 24 array.at -> -2
+test prog.smooth : 2 fx.sm-d 0 array.at -> 86
+test prog.smooth : 2 fx.sm-d 2 array.at -> 1
+test prog.smooth : 2 fx.sm-d 16 array.at -> -9
+test prog.smooth : 2 fx.sm-d 1 array.at -> 0
+test prog.smooth : 3 fx.sm-d 0 array.at -> 16
+test prog.smooth : 3 fx.sm-d 8 array.at -> 24
+test prog.smooth : 3 fx.sm-d 16 array.at -> 4
+test prog.smooth : 3 fx.sm-d 24 array.at -> 2
+test prog.smooth : 4 fx.sm-d 0 array.at -> -9
+test prog.smooth : 4 fx.sm-d 8 array.at -> -4
+test prog.smooth? : fx.dc-only fx.ones fx.sm? -> 1
+test prog.smooth? : fx.dc-only dup progress.bits 0 -1 array.at! fx.ones fx.sm? -> 0
+test prog.smooth? : "000000000000000000" fx.bits fx.ones fx.sm? -> 0
+test prog.smooth? : "000000000100000000" fx.bits fx.ones fx.sm? -> 1
+test prog.smooth? : fx.dc-only fx.ones dup 1 0 array.at! fx.sm? -> 0
+: fx.ones128 ( -- array i32 )
+  128 array.new ( array i32 ) :> a
+  128 [ :> i  a i 1 array.at! ] times
+  a ;
+test prog.smooth? : 2 prog.make dup progress.bits 0 0 array.at! fx.ones128 fx.sm? -> 0

@@ -34,8 +34,32 @@ Kinds, per source (a kind that does not apply to a source is skipped):
 - preeoi   2: 1 to 3 non-FF bytes inserted before the final EOI
 - posteoi  1: 16 random bytes after the final EOI (allowed: still decodes)
 
-The harness expects every fuzz file to be refused with a code or to reach
-not-yet, never to trap or hang.
+Then corpus/wild/mozilla/jpg-progressive.jpg (32x32 4:2:0, libjpeg's
+standard ten scans, a DHT before most of them) is the progressive source,
+with stem jpg-progressive. Its kinds come after the primary loop and draw
+from the same rng, so every earlier mutant is unchanged:
+
+- pahal    6: a scan's Ah/Al byte edited (Ah = Al, a skipped level, Al 14,
+             a refinement with Ah 0)
+- pssse    6: Ss/Se edits (Ss > Se, Se 64, a DC band, an AC scan with three
+             components, overlapping and incomplete bands)
+- pdrop    4: scans 2, 4, 7, 10 deleted
+- pdup     3: scans 1, 3, 10 duplicated in place
+- pswap    3: scans (1,2), (2,3), (5,6) exchanged
+- pent     8: 1 to 4 random bytes inside a later scan's data
+- pcut     6: the file cut inside a later scan's data
+- ptail    1: everything after scan 5 removed and an EOI appended (an
+             incomplete, legal progressive file, which libjpeg smooths)
+- pdht     2: the DHT before scan 3, then the one before scan 6, deleted
+- pdqt     1: a DQT between scans (quant tables are latched, so the image
+             is unchanged)
+- pdri     2: a DRI (interval 1, then 7) before scan 2, no RST markers
+- pnoeoi   1: the final EOI removed
+- pseq     2: the SOF2 marker changed to C0, then C1
+
+The harness expects every fuzz file to be refused with a code, to reach
+not-yet, or to decode byte-exact against the oracle; never to trap, hang or
+mismatch.
 """
 
 import argparse
@@ -174,6 +198,89 @@ def mutants(d, rng):
     return out
 
 
+def scans(d):
+    """(SOS offset, header length, data start, data end) for every scan: the
+    data ends at the first FF followed by neither 00 nor RSTn."""
+    out = []
+    i = 2
+    while i + 4 <= len(d) and d[i] == 0xFF:
+        m = d[i + 1]
+        if m == 0xD9:
+            break
+        n = int.from_bytes(d[i + 2 : i + 4], "big")
+        if m != 0xDA:
+            i += 2 + n
+            continue
+        j = i + 2 + n
+        while j + 1 < len(d) and not (d[j] == 0xFF and d[j + 1] != 0 and not 0xD0 <= d[j + 1] <= 0xD7):
+            j += 1
+        out.append((i, n, i + 2 + n, j))
+        i = j
+    return out
+
+
+def progressive_mutants(d, rng):
+    sc = scans(d)
+    assert len(sc) == 10
+    out = []
+
+    def put(kind, b):
+        out.append((kind, bytes(b)))
+
+    def at(k):
+        return sc[k - 1]
+
+    def edit(k, field, v):
+        b = bytearray(d)
+        s0, n, start, _ = at(k)
+        b[start + field] = v
+        return b
+
+    for k, v in ((2, 0x22), (6, 0x10), (6, 0x32), (7, 0x00), (1, 0x0E), (10, 0x21)):
+        put("pahal", edit(k, -1, v))
+    for k, field, v in ((2, -2, 0), (2, -2, 64), (2, -3, 0), (1, -2, 5), (5, -3, 2), (3, -2, 10)):
+        put("pssse", edit(k, field, v))
+    for k in (2, 4, 7, 10):
+        s0, _, _, end = at(k)
+        put("pdrop", d[:s0] + d[end:])
+    for k in (1, 3, 10):
+        s0, _, _, end = at(k)
+        put("pdup", d[:end] + d[s0:end] + d[end:])
+    for a, b in ((1, 2), (2, 3), (5, 6)):
+        a0, _, _, a1 = at(a)
+        b0, _, _, b1 = at(b)
+        put("pswap", d[:a0] + d[b0:b1] + d[a1:b0] + d[a0:a1] + d[b1:])
+    for _ in range(8):
+        b = bytearray(d)
+        _, _, start, end = at(rng.randint(2, 10))
+        for _ in range(rng.randint(1, 4)):
+            b[rng.randrange(start, end)] = rng.randrange(256)
+        put("pent", b)
+    for _ in range(6):
+        _, _, start, end = at(rng.randint(2, 10))
+        put("pcut", d[: rng.randrange(start, end)])
+    put("ptail", d[: at(5)[3]] + b"\xff\xd9")
+    for k in (3, 6):
+        s0 = at(k)[0]
+        prev_end = at(k - 1)[3]
+        assert d[prev_end + 1] == 0xC4
+        n = int.from_bytes(d[prev_end + 2 : prev_end + 4], "big")
+        assert prev_end + 2 + n == s0
+        put("pdht", d[:prev_end] + d[s0:])
+    dqt = b"\xff\xdb\x00\x43\x00" + b"\x01" * 64
+    put("pdqt", d[: at(4)[3]] + dqt + d[at(4)[3] :])
+    for v in (1, 7):
+        s0 = at(2)[0]
+        put("pdri", d[:s0] + b"\xff\xdd\x00\x04" + v.to_bytes(2, "big") + d[s0:])
+    put("pnoeoi", d[:-2])
+    sof = d.index(b"\xff\xc2")
+    for m in (0xC0, 0xC1):
+        b = bytearray(d)
+        b[sof + 1] = m
+        put("pseq", b)
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--seed", type=int, default=1)
@@ -193,6 +300,13 @@ def main():
             with open(os.path.join(outdir, f"{stem}-{kind}-{counts[kind]}.jpg"), "wb") as fh:
                 fh.write(b)
             total += 1
+    src = os.path.join(ROOT, "corpus", "wild", "mozilla", "jpg-progressive.jpg")
+    counts = {}
+    for kind, b in progressive_mutants(open(src, "rb").read(), rng):
+        counts[kind] = counts.get(kind, 0) + 1
+        with open(os.path.join(outdir, f"jpg-progressive-{kind}-{counts[kind]}.jpg"), "wb") as fh:
+            fh.write(b)
+        total += 1
     print(f"mkfuzz: {total} mutants in {os.path.relpath(outdir, ROOT)}")
 
 

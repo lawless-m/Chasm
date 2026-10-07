@@ -1,0 +1,114 @@
+# The whole-image coefficient store (libjpeg's virtual block arrays,
+# jdcoefct.c), for progressive and multi-scan files.
+#
+# Components follow one another; component ci occupies mcus-wide x h by
+# mcus-high x v blocks (libjpeg's arrays, rounded up to whole MCUs), from
+# coefficient index base[ci], row by row of bwp[ci] blocks; a block's 64
+# coefficients follow in natural (row-major) order. Each coefficient is 2
+# bytes, little-endian, a 16-bit JCOEF; the store starts zeroed, as libjpeg's
+# pre-zeroed arrays. frame.need counts exactly data's size. Every index
+# derives from header geometry, never from the data, so an out-of-range
+# index is a decoder bug and traps in bytes.at.
+
+struct coeffs  data: bytes  base: array i32  bwp: array i32  ncomp: i32
+
+# The frame and a flag: 1 allocates the store, 0 leaves it empty (a
+# single-scan file streams and needs none, but the decoder holds a coeffs).
+declare coeffs.make ( frame i32 -- coeffs )
+# Coefficient index i: its signed 16-bit value.
+declare coeffs.get ( coeffs i32 -- i32 )
+# Index, value: the low 16 bits are stored, as libjpeg's (JCOEF) cast.
+declare coeffs.set ( coeffs i32 i32 -- )
+# ci, block column, absolute block row in the padded grid: the index of the
+# block's first coefficient.
+declare coeffs.block ( coeffs i32 i32 i32 -- i32 )
+# The 64 coefficients at an index into a 64-entry array, and back.
+declare coeffs.get-block ( coeffs i32 array i32 -- )
+declare coeffs.put-block ( coeffs i32 array i32 -- )
+
+: coeffs.make ( frame i32 -- coeffs )
+  :> alloc :> f
+  f frame.ncomp :> n
+  n array.new ( array i32 ) :> base
+  n array.new ( array i32 ) :> bwp
+  f frame.mcus-wide :> mw
+  f frame.mcus-high :> mh
+  0 :> at!
+  n
+  [
+    :> ci
+    f frame.comps ci array.at :> c
+    mw c component.h i32.mul :> w
+    base ci at array.at!
+    bwp ci w array.at!
+    at  w mh i32.mul c component.v i32.mul 64 i32.mul  i32.add at!
+  ]
+  times
+  alloc [ f frame.blocks-padded 128 i64 i64.mul i32.wrap_i64 ] [ 0 ] if bytes.new :> d
+  d base bwp n coeffs.new ;
+
+: coeffs.get ( coeffs i32 -- i32 )
+  :> i :> s
+  s coeffs.data :> d
+  d i 2 i32.mul bytes.at  d i 2 i32.mul 1 i32.add bytes.at 8 i32.shl  i32.or i32.extend16_s ;
+
+: coeffs.set ( coeffs i32 i32 -- )
+  :> v :> i :> s
+  s coeffs.data :> d
+  d i 2 i32.mul  v 255 i32.and  bytes.at!
+  d i 2 i32.mul 1 i32.add  v 8 i32.shr_s 255 i32.and  bytes.at! ;
+
+: coeffs.block ( coeffs i32 i32 i32 -- i32 )
+  :> by :> bx :> ci :> s
+  s coeffs.base ci array.at  by s coeffs.bwp ci array.at i32.mul bx i32.add 64 i32.mul  i32.add ;
+
+: coeffs.get-block ( coeffs i32 array i32 -- )
+  :> blk :> off :> s
+  64 [ :> k  blk k  s off k i32.add coeffs.get  array.at! ] times ;
+
+: coeffs.put-block ( coeffs i32 array i32 -- )
+  :> blk :> off :> s
+  64 [ :> k  s off k i32.add  blk k array.at  coeffs.set ] times ;
+
+# Test fixtures: a value through set and get at index 5 of a one-block
+# store; a ramp block put into and read back from a two-block store.
+: fx.rt ( i32 -- i32 )
+  :> v
+  fx.grey 1 coeffs.make :> s
+  s 5 v coeffs.set
+  s 5 coeffs.get ;
+: fx.ramp-store ( -- coeffs )
+  8 16 8 1 1 0 fx.one 1 coeffs.make :> s
+  64 array.new ( array i32 ) :> a
+  64 [ :> k  a k k 32 i32.sub array.at! ] times
+  s 0 a coeffs.put-block
+  s ;
+: fx.ramp-back ( -- array i32 )
+  fx.ramp-store :> s
+  64 array.new ( array i32 ) :> b
+  s 0 b coeffs.get-block
+  b ;
+
+test coeffs.make : 17 17 fx.ycc420 1 coeffs.make coeffs.data bytes.len -> 3072
+test coeffs.make : 17 17 fx.ycc420 1 coeffs.make coeffs.base 0 array.at -> 0
+test coeffs.make : 17 17 fx.ycc420 1 coeffs.make coeffs.base 1 array.at -> 1024
+test coeffs.make : 17 17 fx.ycc420 1 coeffs.make coeffs.base 2 array.at -> 1280
+test coeffs.make : 17 17 fx.ycc420 1 coeffs.make coeffs.bwp 0 array.at -> 4
+test coeffs.make : 17 17 fx.ycc420 1 coeffs.make coeffs.bwp 1 array.at -> 2
+test coeffs.make : 17 17 fx.ycc420 0 coeffs.make coeffs.data bytes.len -> 0
+test coeffs.make : fx.grey 1 coeffs.make coeffs.data bytes.len -> 128
+test coeffs.block : 17 17 fx.ycc420 1 coeffs.make 1 1 1 coeffs.block -> 1216
+test coeffs.block : 17 17 fx.ycc420 1 coeffs.make 0 3 2 coeffs.block -> 704
+test coeffs.block : 17 17 fx.ycc420 1 coeffs.make 2 0 0 coeffs.block -> 1280
+test coeffs.block : 17 17 fx.ycc420 1 coeffs.make 0 0 0 coeffs.block -> 0
+test coeffs.set : -1 fx.rt -> -1
+test coeffs.set : 32767 fx.rt -> 32767
+test coeffs.set : -32768 fx.rt -> -32768
+test coeffs.set : 32768 fx.rt -> -32768
+test coeffs.set : 65535 fx.rt -> -1
+test coeffs.set : 70000 fx.rt -> 4464
+test coeffs.set : 0 fx.rt -> 0
+test coeffs.set : fx.grey 1 coeffs.make 64 1 coeffs.set -> trap
+test coeffs.get-block : fx.ramp-back 0 array.at -> -32
+test coeffs.get-block : fx.ramp-back 63 array.at -> 31
+test coeffs.put-block : fx.ramp-store 1 coeffs.get -> -31
