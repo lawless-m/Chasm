@@ -41,10 +41,10 @@ with the .txt note corpus/regressions/README.md describes, without an
 `expect:` line until it is fixed. An input already saved is counted again
 but not rewritten.
 
-Limits, passed to harness.run: --cpu 30 s per decode, 1.6x the worst legal
-80-megapixel decode (tmp/m8/budget-notes.txt); --memory 1128000000,
-MEM_BUDGET plus 128 MB of host headroom; --timeout 60, twice the CPU
-budget, so CPU exhaustion is classified cpu, not hang. At the cap 40
+Limits, passed to harness.run: --cpu 90 s per decode, about 1.6x the
+worst legal decode (a dense 80-megapixel arithmetic frame at the input
+limit, tmp/m8/budget-notes.txt); --memory 1128000000, MEM_BUDGET plus
+128 MB of host headroom; --timeout 180, twice the CPU budget, so CPU exhaustion is classified cpu, not hang. At the cap 40
 workers could commit about 45 GB of RAM together, which this 62 GB machine
 holds. Outputs go to --work (default /dev/shm/wack-mutate/<pid>, a tmpfs,
 because an 80-megapixel decode writes a 240 MB PPM and the oracle another)
@@ -368,7 +368,7 @@ def main():
     ap.add_argument("--work")
     ap.add_argument("--cpu", type=int, default=harness.CPU)
     ap.add_argument("--memory", type=int, default=harness.MEMORY)
-    ap.add_argument("--timeout", type=float, default=60)
+    ap.add_argument("--timeout", type=float, default=180)
     a = ap.parse_args()
     if a.minutes is None and a.iterations is None:
         sys.exit("mutate: give --minutes or --iterations")

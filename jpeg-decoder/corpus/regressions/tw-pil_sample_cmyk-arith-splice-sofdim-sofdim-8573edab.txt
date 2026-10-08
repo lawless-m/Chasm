@@ -1,0 +1,7 @@
+class: cpu
+source: corpus/synthetic-m7/tw-pil_sample_cmyk-arith.jpg
+mutations: splice at 6435 with corpus/synthetic-m2/full-s2x2-r7B.jpg from 5251; sofdim C9 height 16384 width 16385; sofdim C9 width 4882
+mode: fancy
+stderr: CPU budget exhausted
+found: 2026-10-08 tools/mutate.py --seed 20261012 worker 14 case 767088
+expect: refused BAD_RESTART

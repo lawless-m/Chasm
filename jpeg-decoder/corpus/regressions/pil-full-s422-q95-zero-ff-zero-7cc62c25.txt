@@ -1,0 +1,8 @@
+class: mismatch
+source: corpus/synthetic-m7/pil-full-s422-q95.jpg
+mutations: zero 4 at 16280; ff 3 at 4524; zero 21 at 4422
+mode: fancy
+stderr: 
+diff: byte 22092 row 32 col 95 comp 0
+found: 2026-10-08 tools/mutate.py --seed 20261008 worker 21 case 1084417
+expect: refused BAD_ENTROPY_DATA

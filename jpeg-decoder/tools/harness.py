@@ -40,17 +40,20 @@ exit status:
 Limits, through util-linux prlimit (setrlimit in a preexec_fn is unsafe in
 this threaded program):
 
-- --cpu SECONDS (default 30; 0 disables): RLIMIT_CPU. Any file over it is
-  unbounded or amplified work. The worst legal decode within the limits, a
-  12-bit 4-component 4:4:4 arithmetic file with an 80-megapixel header and
-  a few KB of data (both decoders feed zeros past the end), is about 18 s
-  on this 40-core machine; every corpus file takes under a second.
+- --cpu SECONDS (default 90; 0 disables): RLIMIT_CPU. Any file over it is
+  unbounded or amplified work. The worst legal decode within the limits is
+  an 80-megapixel 4:4:4 arithmetic frame carrying MAX_INPUT_BYTES of dense
+  data (quality-100 noise, cut just under 64 MB; the decoder feeds zeros
+  for the rest of the frame): 52.6 s of CPU for 8-bit CMYK (djpeg 30.4 s),
+  46.8 s for 12-bit RGB, an estimated 55 s for 12-bit CMYK
+  (tmp/m8/dense.py, tmp/m8/budget-notes.txt). 90 s is about 1.6 times
+  that; every corpus file decodes in under a second.
 - --memory BYTES (default 1128000000; 0 disables): RLIMIT_DATA, which
   counts committed private writable memory: the wasm linear memory, the GC
   heap and the host's allocations. It is MEM_BUDGET (1 GB) plus 128 MB of
   host headroom; RLIMIT_AS is unusable, because wasmtime reserves about
   8 GB of address space per run.
-- --timeout SECONDS (default 60): the wall-clock last resort for I/O
+- --timeout SECONDS (default 180): the wall-clock last resort for I/O
   stalls. It exceeds the CPU budget so that CPU exhaustion classifies as
   cpu, not hang.
 
@@ -93,7 +96,7 @@ REFUSED = re.compile(r"REFUSED ([A-Z_]+):")
 BAD = {"trap", "hang", "cpu", "memory", "odd", "mismatch"}
 OUT = os.path.join(ROOT, "..", "tmp", "harness", "out")
 PRLIMIT = "/usr/bin/prlimit"
-CPU = 30
+CPU = 90
 MEMORY = 1128000000
 DJPEG = os.path.join(ROOT, "oracle", "libjpeg-turbo-3.2.0", "bin", "djpeg")
 
@@ -230,7 +233,7 @@ def run(wack, timeout, path, nosmooth=False, cpu=CPU, memory=MEMORY, out=OUT):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--wack", default=os.path.join(ROOT, "..", "target", "release", "wack"))
-    ap.add_argument("--timeout", type=float, default=60)
+    ap.add_argument("--timeout", type=float, default=180)
     ap.add_argument("--cpu", type=int, default=CPU)
     ap.add_argument("--memory", type=int, default=MEMORY)
     ap.add_argument("--out", default=OUT)

@@ -7,7 +7,11 @@
 # 25 on a 32-bit buffer); marker is 0, or the byte xx of an FF xx marker the
 # reader has run into; exhausted is the hard end-of-data flag.
 #
-# Stuffing: FF 00 is one FF data byte, and so is a run of FFs ending in 00.
+# Stuffing: FF 00 is one FF data byte. A run of two or more FFs ending in 00
+# is BAD_ENTROPY_DATA: T.81 allows fill bytes only before a marker, and
+# libjpeg-turbo has no single answer for it (its fast Huffman path reads the
+# second FF as a marker and its slow path as fill, and which path runs
+# depends on where its 4096-byte input buffer falls).
 # A run of FFs ending in any other byte is a marker: it is recorded, and pos
 # stays at the run's first FF, so the marker (fill bytes and all) is left in
 # the data for the scan layer, whose markers.next-marker skips fill itself.
@@ -36,8 +40,8 @@ test bits.fill : "01020304" hex 0 bits.open dup bits.fill bitreader.buf -> 0x010
 test bits.fill : "0102030405" hex 0 bits.open dup bits.fill bitreader.pos -> 4
 test bits.fill : "FF00" hex 0 bits.open dup bits.fill bitreader.buf -> 0xFF
 test bits.fill : "FF00" hex 0 bits.open dup bits.fill bitreader.pos -> 2
-test bits.fill : "FFFF00" hex 0 bits.open dup bits.fill bitreader.buf -> 0xFF
-test bits.fill : "FFFF00" hex 0 bits.open dup bits.fill bitreader.pos -> 3
+test bits.fill : "FFFF00" hex 0 bits.open bits.fill -> trap
+test bits.fill : "12FFFFFF00" hex 0 bits.open bits.fill -> trap
 test bits.fill : "12FFD9" hex 0 bits.open dup bits.fill bitreader.marker -> 0xD9
 test bits.fill : "12FFD9" hex 0 bits.open dup bits.fill bitreader.pos -> 1
 test bits.fill : "12FFD9" hex 0 bits.open dup bits.fill bitreader.nbits -> 8
@@ -84,6 +88,9 @@ test bits.fill : fx.tiny hex 156 bits.open dup bits.fill bitreader.pos -> 157
           d q bytes.at :> nx
           nx 0 i32.eq
           [
+            q p 1 i32.add i32.gt_s
+            [ BAD_ENTROPY_DATA "fill bytes before a stuffed zero at offset" p refusal-n trap ]
+            when
             r  r bitreader.buf 8 i32.shl 0xFF i32.or  bitreader.buf!
             r  r bitreader.nbits 8 i32.add  bitreader.nbits!
             r  q 1 i32.add  bitreader.pos!

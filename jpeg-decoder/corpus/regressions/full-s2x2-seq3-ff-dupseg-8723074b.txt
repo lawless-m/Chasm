@@ -1,0 +1,8 @@
+class: mismatch
+source: corpus/synthetic-m6/full-s2x2-seq3.jpg
+mutations: ff 10 at 4540; dupseg E0 at 2
+mode: nosmooth
+stderr: 
+diff: byte 88000 row 64 col 136 comp 0 (high byte)
+found: 2026-10-08 tools/mutate.py --seed 20261008 worker 4 case 845161
+expect: refused BAD_ENTROPY_DATA

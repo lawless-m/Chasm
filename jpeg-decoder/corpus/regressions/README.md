@@ -25,3 +25,10 @@ The gate runs the harness over this directory in both modes
 `--nosmooth`) and requires every file to match its note's `expect:` line,
 0 failing and no not-yet. The harness skips names ending `.md` and `.txt`,
 so this README and the notes are not cases.
+
+A mismatch against djpeg (class `mismatch`, saved by the fuzzer under
+`../tmp/mutate/mismatch/` with a `diff:` line in its note) is fixed in the
+decoder and moved here too. Two such files end in `refused
+BAD_ENTROPY_DATA`: a run of two or more FF fill bytes before a stuffed zero
+in Huffman data, which T.81 does not allow and for which djpeg's output
+depends on where its 4096-byte input buffer falls (`jpeg/bits.wack`).
