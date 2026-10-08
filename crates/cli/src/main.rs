@@ -298,6 +298,21 @@ fn load(
     export: bool,
     wasi: bool,
 ) -> Result<Compilation, Diagnostic> {
+    let sources = read_sources(c)?;
+    Ok(compile(
+        &sources,
+        &Options {
+            prelude: !c.no_prelude,
+            test_exports,
+            export,
+            wasi,
+        },
+    ))
+}
+
+/// The command's files, in order; `E_IO` names the first that cannot be read.
+#[allow(clippy::result_large_err)]
+fn read_sources(c: &Common) -> Result<Vec<Source>, Diagnostic> {
     let mut sources = Vec::new();
     for f in &c.files {
         let name = f.display().to_string();
@@ -315,15 +330,7 @@ fn load(
             }
         }
     }
-    Ok(compile(
-        &sources,
-        &Options {
-            prelude: !c.no_prelude,
-            test_exports,
-            export,
-            wasi,
-        },
-    ))
+    Ok(sources)
 }
 
 fn host_config(h: &HostArgs) -> Result<Config, String> {
@@ -463,13 +470,22 @@ fn exec(cli: Cli) -> (Report, bool) {
                     )
                 }
             };
-            let comp = match load(&common, false, true, false) {
-                Ok(c) => c,
+            let sources = match read_sources(&common) {
+                Ok(s) => s,
                 Err(d) => return (failed("run", vec![d]), json),
             };
-            let Some(wasm) = comp.wasm.as_ref() else {
-                return (failed("run", comp.diagnostics), json);
+            let opts = Options {
+                prelude: !common.no_prelude,
+                test_exports: false,
+                export: true,
+                wasi: false,
             };
+            // Through the compile cache: an unchanged program skips the compile.
+            let comp = match wack_runtime::cache::compile(&sources, &opts, true) {
+                Ok(c) => c,
+                Err(d) => return (failed("run", d), json),
+            };
+            let wasm = &comp.wasm;
             if !comp.has_main {
                 let d = Diagnostic::error(
                     "E_NO_MAIN",
@@ -533,14 +549,26 @@ fn exec(cli: Cli) -> (Report, bool) {
                     )
                 }
             };
-            let comp = match load(&common, true, false, false) {
-                Ok(c) => c,
+            let sources = match read_sources(&common) {
+                Ok(s) => s,
                 Err(d) => return (failed("test", vec![d]), json),
             };
-            if !comp.ok() {
+            let opts = Options {
+                prelude: !common.no_prelude,
+                test_exports: true,
+                export: false,
+                wasi: false,
+            };
+            // Through the compile cache, as `run`; the test records and their
+            // result types come back with the wasm.
+            let comp = match wack_runtime::cache::compile(&sources, &opts, true) {
+                Ok(c) => c,
+                Err(d) => return (failed("test", d), json),
+            };
+            if comp.diagnostics.iter().any(Diagnostic::is_error) {
                 return (failed("test", comp.diagnostics), json);
             }
-            let results = match run_tests(&comp, &cfg, true) {
+            let results = match run_tests(&comp.wasm, &comp.tests, &cfg, true) {
                 Ok(r) => r,
                 Err(m) => {
                     return (

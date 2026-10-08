@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use wack_core::layout as L;
 use wack_core::types::Ty;
-use wack_core::{Compilation, TestInfo, Value};
+use wack_core::{TestInfo, Value};
 use wasmtime::{
     AsContextMut, Caller, Config as WtConfig, Engine, Func, Global, Instance, Linker, Memory,
     Module, Ref, RefType, RootScope, Store, Table, TableType, Val,
@@ -387,24 +387,17 @@ pub fn engine(cache: bool) -> Result<Engine, String> {
         // inliner is part of the cache key, so modules cached without it are
         // compiled afresh.
         .compiler_inlining(wasmtime::Inlining::Yes);
-    if let Some(dir) = cache.then(cache_dir).flatten() {
+    if let Some(dir) = cache.then(crate::cache::cache_dir).flatten() {
         let mut cc = wasmtime::CacheConfig::new();
-        cc.with_directory(dir);
+        // Its own subdirectory: wasmtime's cleanup removes files in its
+        // directory that it did not write, such as the compile cache's.
+        cc.with_directory(dir.join("wasmtime"));
         // A cache that cannot be set up only costs the compile.
         if let Ok(c) = wasmtime::Cache::new(cc) {
             cfg.cache(Some(c));
         }
     }
     Engine::new(&cfg).map_err(|e| e.to_string())
-}
-
-/// `$XDG_CACHE_HOME/wack`, else `$HOME/.cache/wack`.
-fn cache_dir() -> Option<std::path::PathBuf> {
-    let base = match std::env::var_os("XDG_CACHE_HOME").filter(|v| !v.is_empty()) {
-        Some(x) => std::path::PathBuf::from(x),
-        None => std::path::PathBuf::from(std::env::var_os("HOME")?).join(".cache"),
-    };
-    Some(base.join("wack"))
 }
 
 impl Runner {
@@ -667,11 +660,15 @@ pub(crate) fn same(a: &Value, b: &Value) -> bool {
 
 /// Run every test of a compilation built with `test_exports`, each in a
 /// fresh instance with a captured console. With `cache`, see `engine`.
-pub fn run_tests(c: &Compilation, base: &Config, cache: bool) -> Result<Vec<TestResult>, String> {
-    let wasm = c.wasm.as_ref().ok_or("no module: the program has errors")?;
+pub fn run_tests(
+    wasm: &[u8],
+    tests: &[TestInfo],
+    base: &Config,
+    cache: bool,
+) -> Result<Vec<TestResult>, String> {
     let runner = Runner::new(wasm, cache)?;
     let mut out = Vec::new();
-    for t in &c.tests {
+    for t in tests {
         if t.pending {
             out.push(TestResult {
                 test: t.clone(),

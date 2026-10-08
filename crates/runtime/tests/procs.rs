@@ -162,7 +162,7 @@ fn tests_of(src: &str) -> Vec<wack_runtime::native::TestResult> {
         },
     );
     assert!(c.ok(), "{:?}", c.diagnostics);
-    wack_runtime::native::run_tests(&c, &config(), false).unwrap()
+    wack_runtime::native::run_tests(c.wasm.as_ref().unwrap(), &c.tests, &config(), false).unwrap()
 }
 
 #[test]

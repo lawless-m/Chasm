@@ -1,10 +1,11 @@
 //! Checker types, effects and their wasm lowering.
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 use wasm_encoder::{HeapType, RefType, ValType};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Ty {
     I32,
     I64,
@@ -32,7 +33,7 @@ pub enum Ty {
 
 /// A stack effect. `row` is reserved for a "rest of stack" row variable
 /// (M6); v1 always leaves it `None`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Effect {
     pub inputs: Vec<Ty>,
     pub outputs: Vec<Ty>,

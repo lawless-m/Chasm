@@ -226,6 +226,18 @@ declare rows.single ( decoder [ bytes -- ] -- )
   d decoder.width :> width
   d decoder.ups :> ups
   d decoder.out :> out
+  # Plain YCbCr with chroma halved across (h2v1 or h2v2): colour.row-h2 reads
+  # the chroma planes directly, so they are not replicated first.
+  d decoder.wide i32.eqz  d decoder.space 1 i32.eq i32.and  d decoder.ncomp 3 i32.eq i32.and
+  [
+    d decoder.methods :> ms
+    d decoder.planes :> ps
+    ms 0 array.at ms 1 array.at i32.or ms 2 array.at i32.or i32.eqz
+    ps 0 array.at plane.hexp 1 i32.eq i32.and  ps 0 array.at plane.vexp 1 i32.eq i32.and
+    ps 1 array.at plane.hexp 2 i32.eq i32.and  ps 2 array.at plane.hexp 2 i32.eq i32.and
+  ]
+  [ 0 ]
+  if :> merged
   d decoder.ncomp
   [
     :> ci
@@ -233,16 +245,21 @@ declare rows.single ( decoder [ bytes -- ] -- )
     p  p i plane.slot  plane.base!
     d decoder.methods ci array.at :> method
     ci rr i32.mul width i32.mul :> at
-    method i32.eqz
-    [ d decoder.wide [ p d decoder.ups12 at width rr upsample.plain12 ] [ p ups at width rr upsample.plain ] if ]
+    merged ci 0 i32.gt_s i32.and
+    [ ]
     [
-      i 0 i32.gt_s [ p i 1 i32.sub plane.slot ] [ -1 ] if :> prev
-      i 1 i32.add d decoder.mh i32.lt_s [ p i 1 i32.add plane.slot ] [ -1 ] if :> next
-      d decoder.height p plane.vexp ceil-div  i p plane.rows i32.mul  i32.sub :> left-rows
-      left-rows p plane.rows i32.lt_s [ left-rows ] [ p plane.rows ] if :> real
-      d decoder.wide
-      [ p method prev next real d decoder.ups12 at width upsample.fancy12 ]
-      [ p method prev next real ups at width upsample.fancy ]
+      method i32.eqz
+      [ d decoder.wide [ p d decoder.ups12 at width rr upsample.plain12 ] [ p ups at width rr upsample.plain ] if ]
+      [
+        i 0 i32.gt_s [ p i 1 i32.sub plane.slot ] [ -1 ] if :> prev
+        i 1 i32.add d decoder.mh i32.lt_s [ p i 1 i32.add plane.slot ] [ -1 ] if :> next
+        d decoder.height p plane.vexp ceil-div  i p plane.rows i32.mul  i32.sub :> left-rows
+        left-rows p plane.rows i32.lt_s [ left-rows ] [ p plane.rows ] if :> real
+        d decoder.wide
+        [ p method prev next real d decoder.ups12 at width upsample.fancy12 ]
+        [ p method prev next real ups at width upsample.fancy ]
+        if
+      ]
       if
     ]
     if
@@ -254,7 +271,18 @@ declare rows.single ( decoder [ bytes -- ] -- )
     :> r
     d decoder.wide
     [ d decoder.colour d decoder.space d decoder.ups12 rr r out width colour.row12 ]
-    [ d decoder.colour d decoder.space ups rr r out width colour.row ]
+    [
+      merged
+      [
+        d decoder.planes 1 array.at :> pb
+        d decoder.planes 2 array.at :> pc
+        pb plane.base  r pb plane.vexp i32.div_u pb plane.stride i32.mul  i32.add :> cbo
+        pc plane.base  r pc plane.vexp i32.div_u pc plane.stride i32.mul  i32.add :> cro
+        d decoder.colour ups r width i32.mul  pb plane.data cbo  pc plane.data cro  out width colour.row-h2
+      ]
+      [ d decoder.colour d decoder.space ups rr r out width colour.row ]
+      if
+    ]
     if
     out sink call
   ]

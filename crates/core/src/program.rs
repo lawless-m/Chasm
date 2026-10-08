@@ -1,6 +1,6 @@
 //! Whole-program driver: sources in, diagnostics + word database + module out.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{Item, Lit};
@@ -57,7 +57,7 @@ impl Default for Options {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "lowercase")]
 pub enum Value {
     I32(i32),
@@ -144,7 +144,7 @@ pub fn expected_text(expected: &[Value], traps: bool) -> Vec<String> {
     expected.iter().map(|v| v.to_string()).collect()
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestInfo {
     pub index: usize,
     pub word: String,

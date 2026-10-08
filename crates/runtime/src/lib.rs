@@ -8,6 +8,8 @@
 
 use wack_core::layout as L;
 
+#[cfg(feature = "native")]
+pub mod cache;
 pub mod namespace;
 #[cfg(feature = "native")]
 pub mod native;
