@@ -3949,6 +3949,42 @@ impl<'c> Walker<'c> {
             return Ok(Flow::Normal);
         }
         match n {
+            // ( a b cond -- a or b ): wasm's `select`, per value slot, so no
+            // branch; both values are already on the stack.
+            "select" => {
+                let v = self.subst.fresh();
+                self.pop_expect(n, &[v.clone(), v.clone(), Ty::I32], loc)?;
+                let t = self.subst.resolve(&v);
+                if self.emit {
+                    if t.has_var() {
+                        return Err(self.err(
+                            codes::E_AMBIGUOUS_TYPE,
+                            format!(
+                                "the type `{n}` works on is not known here; add a stack assertion"
+                            ),
+                            loc,
+                        ));
+                    }
+                    let vts = self.lower(&t);
+                    let mut ta = TempAlloc::default();
+                    let c = self.temp(&mut ta, ValType::I32);
+                    self.op(I::LocalSet(c));
+                    if let [vt] = vts[..] {
+                        self.op(I::LocalGet(c));
+                        self.op(I::TypedSelect(vt));
+                    } else {
+                        let idx = self.stash(&[t.clone(), t.clone()], Some(&mut ta));
+                        for (j, &vt) in vts.iter().enumerate() {
+                            self.op(I::LocalGet(idx[0][j]));
+                            self.op(I::LocalGet(idx[1][j]));
+                            self.op(I::LocalGet(c));
+                            self.op(I::TypedSelect(vt));
+                        }
+                    }
+                }
+                self.stack.push(v);
+                return Ok(Flow::Normal);
+            }
             "eq" | "hash" => {
                 let op = if n == "eq" { Op::Eq } else { Op::Hash };
                 let v = self.subst.fresh();

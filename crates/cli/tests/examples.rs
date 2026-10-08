@@ -94,7 +94,7 @@ fn dead_lists_words_main_never_reaches() {
         .iter()
         .map(|w| w["word"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["abs", "hypot"]);
+    assert_eq!(names, ["abs", "clamp", "hypot"]);
     let (_, out, _) = wack(&["dead", "examples/hello.wack"]);
     assert_eq!(out, "no dead words\n");
     let (_, out, _) = wack(&["dead", "examples/contract.wack"]);

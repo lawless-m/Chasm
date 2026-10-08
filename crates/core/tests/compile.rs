@@ -1496,3 +1496,41 @@ fn raw_words_need_the_marker() {
     // The prelude's own words and generic instances are trusted.
     ok(": f ( -- i32 ) \"a\" \"b\" str.concat str.len ;\n: g ( -- i32 ) vec.make ( vec i32 ) :> v  v 1 vec.push  v vec.len ;");
 }
+
+fn ops(c: &wack_core::Compilation) -> (usize, usize) {
+    use wasmparser::{Operator, Parser, Payload};
+    let (mut sel, mut ifs) = (0, 0);
+    for p in Parser::new(0).parse_all(c.wasm.as_ref().unwrap()) {
+        if let Payload::CodeSectionEntry(body) = p.unwrap() {
+            let mut r = body.get_operators_reader().unwrap();
+            while !r.eof() {
+                match r.read().unwrap() {
+                    Operator::Select | Operator::TypedSelect { .. } => sel += 1,
+                    Operator::If { .. } => ifs += 1,
+                    _ => {}
+                }
+            }
+        }
+    }
+    (sel, ifs)
+}
+
+#[test]
+fn select_emits_wasm_select_not_a_branch() {
+    let (s1, i1) = ops(&ok(
+        ": pick ( i32 i32 i32 -- i32 )  select ;\n: two ( str str i32 -- str )  select ;\n",
+    ));
+    let (s0, i0) = ops(&ok(": pick ( i32 i32 i32 -- i32 )  [ drop ] [ nip ] if ;\n: two ( str str i32 -- str )  [ drop ] [ nip ] if ;\n"));
+    assert_eq!(
+        s1 - s0,
+        3,
+        "one select for the i32, two for the str's halves"
+    );
+    assert_eq!(i0 - i1, 2, "no branch left");
+}
+
+#[test]
+fn select_wants_two_values_of_one_type() {
+    assert_eq!(err(": f ( -- i32 )  1 \"x\" 0 select ;"), "E_TYPE_MISMATCH");
+    assert_eq!(err(": f ( -- i32 )  1 select ;"), "E_STACK_UNDERFLOW");
+}

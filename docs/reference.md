@@ -393,8 +393,16 @@ two bytes in a string (compare with `str.cp-at`). Any other string is
 | `2dup` | `( a b -- a b a b )` |
 | `2drop` | `( a b -- )` |
 | `drop-all` | `( ... -- )` everything on the stack |
+| `select` | `( a a i32 -- a )` the first if the flag is non-zero, else the second |
 
 `eq` and `hash` also work on any type (section 10d).
+
+`select` chooses without a branch (wasm's `select`): `a b flag select` is
+`flag [ a ] [ b ] if` when `a` and `b` are already values, as they are on
+the stack. Use it where the flag is hard to predict, such as a clamp on
+data near its limits: `0 v  v 0 i32.lt_s select` is the larger of 0 and
+`v`. Where the flag is nearly always the same, a branch is cheaper: the
+processor predicts it, and `select` always pays for both values.
 
 `drop-all` clears the REPL stack. In a word it drops the word's own values,
 its inputs and what it has pushed, never its caller's: the checker knows

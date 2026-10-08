@@ -287,6 +287,7 @@ pub(crate) fn primitive_effect(name: &str) -> Option<String> {
         "when" => "cond [ body ] when",
         "unless" => "cond [ body ] unless",
         "drop-all" => "( ... -- ): drops every value on the stack",
+        "select" => "( T T i32 -- T ): the first value if the flag is non-zero, else the second, without a branch",
         "char" => "\"A\" char: the codepoint of a one-character string literal, as an i32 literal",
         "and" => "[ a ] [ b ] and: b runs only when a is non-zero; leaves 0 or b's flag",
         "or" => "[ a ] [ b ] or: b runs only when a is zero; leaves a's flag or b's",

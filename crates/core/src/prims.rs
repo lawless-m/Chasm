@@ -422,6 +422,7 @@ pub fn names() -> impl Iterator<Item = &'static str> {
         "2dup",
         "2drop",
         "drop-all",
+        "select",
         "str.len",
         "str.addr",
         "str.from-raw",
@@ -611,6 +612,7 @@ pub fn is_builtin(name: &str) -> bool {
                 | "alt"
                 | "char"
                 | "drop-all"
+                | "select"
         )
         || crate::parser::combinator_arity(name).is_some()
 }
