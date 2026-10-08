@@ -133,3 +133,11 @@ variants start from `synthetic/ycck-magick-q90-444.jpg`. The script checks
 every file in both `djpeg -dct int -pnm` and `djpeg -dct int -nosmooth
 -pnm`, exit status 0 and nothing on stderr; rerunning it writes identical
 files.
+
+## regressions/
+
+Every input that ever made the decoder trap, hang, exceed the harness's CPU
+budget or hit its memory cap, saved by `tools/mutate.py` with a `.txt` note
+beside it whose `expect:` line says how the fixed decoder treats it. The
+gate requires every file to match its note in both upsampling modes;
+`regressions/README.md` has the naming and the note format.

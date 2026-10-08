@@ -500,6 +500,26 @@ impl Runner {
         name: &str,
         results: usize,
     ) -> Outcome<(Vec<Val>, Vec<u8>)> {
+        self.call_in(config, export, name, results, true)
+    }
+
+    /// As `call`; the linear memory is copied back only when `want_memory`
+    /// (`run_main` does not need it, and the copy would double its peak).
+    fn call_in(
+        &self,
+        config: Config,
+        export: &str,
+        name: &str,
+        results: usize,
+        want_memory: bool,
+    ) -> Outcome<(Vec<Val>, Vec<u8>)> {
+        let copy = |data: &[u8]| {
+            if want_memory {
+                data.to_vec()
+            } else {
+                Vec::new()
+            }
+        };
         let mut store = Store::new(
             &self.engine,
             State {
@@ -526,7 +546,7 @@ impl Runner {
                     .get_table(&mut store, L::EXPORT_TABLE)
                     .ok_or_else(|| fail("a transformed module exports its table".into()))?;
                 let out = drive(&mut store, run_procs, mem, main, table, name, results, None)?;
-                return Ok((out, mem.data(&store).to_vec()));
+                return Ok((out, copy(mem.data(&store))));
             }
             let f: Func = inst.get_func(&mut store, export).ok_or_else(|| RunError {
                 message: format!("no exported function `{export}`"),
@@ -535,7 +555,7 @@ impl Runner {
             })?;
             let mut out = vec![Val::I32(0); results];
             match f.call(&mut store, &[], &mut out) {
-                Ok(()) => Ok((out, mem.data(&store).to_vec())),
+                Ok(()) => Ok((out, copy(mem.data(&store)))),
                 Err(e) => Err(describe(&e, mem.data(&store))),
             }
         })();
@@ -547,7 +567,7 @@ impl Runner {
 
     /// Run `main`.
     pub fn run_main(&self, config: Config) -> Outcome<()> {
-        let o = self.call(config, "main", "main", 0);
+        let o = self.call_in(config, "main", "main", 0, false);
         Outcome {
             result: o.result.map(|_| ()),
             host: o.host,

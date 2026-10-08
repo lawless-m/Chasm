@@ -2,21 +2,27 @@
 decoded images with the oracle byte for byte.
 
 Usage: python3 tools/harness.py [--wack PATH] [--timeout SECONDS] [--jobs N]
+                                [--cpu SECONDS] [--memory BYTES] [--out DIR]
                                 [--nosmooth]
                                 [--expect any|not-yet|refused:CODE|decoded] PATH...
 
 Each PATH is a file or a directory; directories are walked recursively and
 every regular file is a case, except names ending in .md or .txt.
 
-Protocol: the decoder runs as `wack run <FILES>` from the project root, with
+Protocol: the decoder runs as `prlimit --cpu=S:S+1 --data=BYTES wack run
+<FILES>` from the project root, with
 two lines on stdin, `/file<input>` and `/file<output>`, both absolute, and
 with --nosmooth a third, `nosmooth`, which selects plain upsampling. The
-output for a case is ../tmp/harness/out/<path from the project, '/' as
-'_'>.pnm; a stale one is deleted first. Outcomes are classified by text, not
+output for a case is <out>/<path from the project, '/' as '_'>.pnm (--out,
+default ../tmp/harness/out); a stale one is deleted first. Outcomes are classified by text, not
 exit status:
 
 - hang:     the run exceeded the timeout
 - refused:  stderr contains `REFUSED <CODE>:`
+- cpu:      the decoder was killed by SIGXCPU: it used the CPU budget
+- memory:   stderr says `out of memory` (wasm linear memory or the GC heap)
+            or `memory allocation of` (the host's allocator): the memory
+            cap was hit after the decoder's own budget check passed
 - trap:     otherwise, stderr contains `trap in` or the exit status is
             non-zero (a trap without REFUSED is a decoder bug)
 - not-yet:  exit 0 and the last stdout line starts `NOT_YET` (the rest is
@@ -31,7 +37,25 @@ exit status:
             two-byte samples which byte)
 - odd:      anything else, including an output file without DECODED
 
-The exit status is non-zero if any case is trap, hang, odd or mismatch; with
+Limits, through util-linux prlimit (setrlimit in a preexec_fn is unsafe in
+this threaded program):
+
+- --cpu SECONDS (default 30; 0 disables): RLIMIT_CPU. Any file over it is
+  unbounded or amplified work. The worst legal decode within the limits, a
+  12-bit 4-component 4:4:4 arithmetic file with an 80-megapixel header and
+  a few KB of data (both decoders feed zeros past the end), is about 18 s
+  on this 40-core machine; every corpus file takes under a second.
+- --memory BYTES (default 1128000000; 0 disables): RLIMIT_DATA, which
+  counts committed private writable memory: the wasm linear memory, the GC
+  heap and the host's allocations. It is MEM_BUDGET (1 GB) plus 128 MB of
+  host headroom; RLIMIT_AS is unusable, because wasmtime reserves about
+  8 GB of address space per run.
+- --timeout SECONDS (default 60): the wall-clock last resort for I/O
+  stalls. It exceeds the CPU budget so that CPU exhaustion classifies as
+  cpu, not hang.
+
+The exit status is non-zero if any case is trap, hang, cpu, memory, odd or
+mismatch; with
 `--expect not-yet`, `--expect decoded` or `--expect refused:CODE` also if
 any case is not of that class (and code).
 """
@@ -40,6 +64,7 @@ import argparse
 import concurrent.futures
 import os
 import re
+import signal
 import subprocess
 import sys
 
@@ -65,8 +90,11 @@ FILES = [
     "main.wack",
 ]
 REFUSED = re.compile(r"REFUSED ([A-Z_]+):")
-BAD = {"trap", "hang", "odd", "mismatch"}
+BAD = {"trap", "hang", "cpu", "memory", "odd", "mismatch"}
 OUT = os.path.join(ROOT, "..", "tmp", "harness", "out")
+PRLIMIT = "/usr/bin/prlimit"
+CPU = 30
+MEMORY = 1128000000
 DJPEG = os.path.join(ROOT, "oracle", "libjpeg-turbo-3.2.0", "bin", "djpeg")
 
 
@@ -140,14 +168,29 @@ def compare(ours, theirs):
     return note
 
 
-def run(wack, timeout, path, nosmooth=False):
-    os.makedirs(OUT, exist_ok=True)
-    out = os.path.join(OUT, os.path.relpath(path, ROOT).replace("/", "_") + ".pnm")
+def limits(cpu, memory):
+    """The prlimit wrapper: CPU seconds (SIGXCPU at the soft limit) and
+    RLIMIT_DATA bytes; 0 leaves either out."""
+    if not cpu and not memory:
+        return []
+    if not os.path.isfile(PRLIMIT):
+        sys.exit(f"harness: {PRLIMIT} is missing (util-linux); it applies the CPU budget and memory cap")
+    out = [PRLIMIT]
+    if cpu:
+        out.append(f"--cpu={cpu}:{cpu + 1}")
+    if memory:
+        out.append(f"--data={memory}")
+    return out
+
+
+def run(wack, timeout, path, nosmooth=False, cpu=CPU, memory=MEMORY, out=OUT):
+    os.makedirs(out, exist_ok=True)
+    out = os.path.join(out, os.path.relpath(path, ROOT).replace("/", "_") + ".pnm")
     if os.path.exists(out):
         os.remove(out)
     try:
         r = subprocess.run(
-            [wack, "run", *FILES],
+            [*limits(cpu, memory), wack, "run", *FILES],
             cwd=ROOT,
             input="/file" + path + "\n/file" + out + "\n" + ("nosmooth\n" if nosmooth else ""),
             capture_output=True,
@@ -161,6 +204,10 @@ def run(wack, timeout, path, nosmooth=False):
     m = REFUSED.search(r.stderr)
     if m:
         return "refused", m.group(1), first
+    if r.returncode == -signal.SIGXCPU:
+        return "cpu", "-", first or "CPU budget exhausted"
+    if "out of memory" in r.stderr or "memory allocation of" in r.stderr:
+        return "memory", "-", first
     if "trap in" in r.stderr or r.returncode != 0:
         return "trap", "-", first
     lines = r.stdout.strip().splitlines()
@@ -183,7 +230,10 @@ def run(wack, timeout, path, nosmooth=False):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--wack", default=os.path.join(ROOT, "..", "target", "release", "wack"))
-    ap.add_argument("--timeout", type=float, default=20)
+    ap.add_argument("--timeout", type=float, default=60)
+    ap.add_argument("--cpu", type=int, default=CPU)
+    ap.add_argument("--memory", type=int, default=MEMORY)
+    ap.add_argument("--out", default=OUT)
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--nosmooth", action="store_true")
     ap.add_argument("--expect", default="any")
@@ -195,7 +245,9 @@ def main():
         sys.exit(f"harness: unknown --expect {a.expect}")
     files = cases(a.paths)
     with concurrent.futures.ThreadPoolExecutor(a.jobs) as pool:
-        results = list(pool.map(lambda f: run(a.wack, a.timeout, f, a.nosmooth), files))
+        results = list(pool.map(
+                lambda f: run(a.wack, a.timeout, f, a.nosmooth, a.cpu, a.memory, os.path.abspath(a.out)), files
+            ))
 
     failed = 0
     groups = {}

@@ -76,6 +76,9 @@ Each entry says how things stand now and what the decoder does about it.
   and the harness over the 73 files of `corpus/synthetic-m2` 0.23 s.
   `check` and `build` always compile; there is no native runner for a built
   module without wasmtime.
+- `wack run` does not copy the linear memory when main returns; `wack test`
+  reads it back to render `str` and `bytes` results. A decode's peak RSS is
+  therefore the program's own allocations plus the host's few megabytes.
 
 ## Speed
 
