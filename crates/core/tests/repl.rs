@@ -592,3 +592,55 @@ fn transformed_sessions_validate() {
         ok(&mut s, text);
     }
 }
+
+/// Every operator of a step module's code: (call_indirect count, whether the
+/// i32 constant `marker` appears).
+fn step_calls(step: &Step, marker: i32) -> (usize, bool) {
+    use wasmparser::{Operator, Parser, Payload};
+    let (mut indirect, mut seen) = (0, false);
+    for p in Parser::new(0).parse_all(step.module.as_ref().unwrap()) {
+        if let Payload::CodeSectionEntry(body) = p.unwrap() {
+            let mut r = body.get_operators_reader().unwrap();
+            while !r.eof() {
+                match r.read().unwrap() {
+                    Operator::CallIndirect { .. } => indirect += 1,
+                    Operator::I32Const { value } if value == marker => seen = true,
+                    _ => {}
+                }
+            }
+        }
+    }
+    (indirect, seen)
+}
+
+/// The REPL calls words through the table (`indirect_calls`), so the compiler
+/// never inlines there and a redefinition reaches existing callers. The core
+/// session compiles steps without running them: this checks that `g`'s step
+/// reaches `f` through the table with none of `f`'s code copied in (`f`'s
+/// marker constants), and that the slot is kept across a redefinition; the
+/// check.rs unit test `not_inlined_in_the_repl` covers the emitter's side.
+#[test]
+fn redefinition_reaches_callers_of_small_words() {
+    let mut s = session();
+    let f = ok(&mut s, ": f ( -- i32 ) 4241 ;").installs[0].slot;
+    let g = ok(&mut s, ": g ( -- i32 ) f ;");
+    let (indirect, copied) = step_calls(&g, 4241);
+    assert!(indirect >= 1, "g calls f through the table");
+    assert!(!copied, "f's body is not spliced into g");
+    let step = ok(&mut s, ": f ( -- i32 ) 4242 ;");
+    assert_eq!(
+        step.installs[0].slot, f,
+        "the redefinition keeps f's slot, so g sees it"
+    );
+    let line = ok(&mut s, "g");
+    assert!(
+        !step_calls(&line, 4242).1,
+        "the line calls g, which calls f, through the table"
+    );
+    assert_eq!(ok(&mut s, ")forget g").forgotten, vec!["g".to_string()]);
+    assert_eq!(ok(&mut s, ")forget f").forgotten, vec!["f".to_string()]);
+    ok(&mut s, ": f ( -- i32 ) 4243 ;");
+    let g = ok(&mut s, ": g ( -- i32 ) f ;");
+    let (indirect, copied) = step_calls(&g, 4243);
+    assert!(indirect >= 1 && !copied);
+}

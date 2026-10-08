@@ -116,6 +116,10 @@ pub struct Ctx {
     /// Call words through table 0 (slot = word id) instead of directly,
     /// so a redefinition reaches existing callers (the REPL).
     pub indirect_calls: bool,
+    /// Words defined more than once in the program: the last definition wins
+    /// for every caller, so none of them is inlined (a caller compiled earlier
+    /// would keep an older body).
+    pub redefined: HashSet<String>,
     pub struct_types: StructTypes,
     pub structs: Vec<StructDef>,
     pub struct_by_name: HashMap<String, usize>,
@@ -241,6 +245,7 @@ impl Default for Ctx {
             all_names: Default::default(),
             literal_base: layout::LITERALS_BASE,
             indirect_calls: false,
+            redefined: HashSet::new(),
             struct_types: StructTypes::new(),
             structs: Vec::new(),
             struct_by_name: HashMap::new(),
@@ -1187,6 +1192,10 @@ struct Site {
 /// (`MARK + 1 + 2k`) and unwind save (`MARK + 2 + 2k`).
 const MARK: u32 = 0xF000_0000;
 
+/// The largest callee body, in emitted instructions (`Compiled.code.len()`), that
+/// is inlined at its call sites instead of called.
+pub const INLINE_LIMIT: usize = 256;
+
 /// `[mode] == value`, the unwind mode cell.
 fn mode_is(value: i32) -> [I<'static>; 4] {
     [
@@ -1357,6 +1366,12 @@ impl<'c> Walker<'c> {
     fn word_call(&mut self, id: WordId, e: &Effect) {
         self.callees.push((id, EdgeKind::Call));
         let direct = !self.ctx.indirect_calls;
+        if direct && self.emit && !self.transformed {
+            if let Some(c) = self.inlinable(id) {
+                self.splice(c, e);
+                return;
+            }
+        }
         if direct && !(self.transformed && self.ctx.transforms(&self.ctx.words[id].name)) {
             self.op(I::Call(Word::func_index(id)));
             return;
@@ -1742,6 +1757,73 @@ impl<'c> Walker<'c> {
             return BlockType::Result(r[0]);
         }
         BlockType::FunctionType(self.ctx.intern_type(p, r))
+    }
+
+    /// A callee's body when it may be inlined: compiled already (so neither
+    /// recursive nor forward-declared), defined only once in the program, not
+    /// touched by the process transform, no
+    /// ring submit, indirect call, placeholder or return in it, no call of a word
+    /// still being compiled, and at most `INLINE_LIMIT` instructions.
+    fn inlinable(&self, id: WordId) -> Option<Compiled> {
+        let w = &self.ctx.words[id];
+        if !matches!(w.kind, WordKind::Named | WordKind::Instance) || w.takes_env() {
+            return None;
+        }
+        if self.ctx.transforms(&w.name) {
+            return None;
+        }
+        let template = w
+            .instance_of
+            .as_ref()
+            .map(|(t, _)| &self.ctx.words[*t].name);
+        if self.ctx.redefined.contains(&w.name)
+            || template.is_some_and(|t| self.ctx.redefined.contains(t))
+        {
+            return None;
+        }
+        let body = w.body.as_ref()?;
+        if body.code.len() > INLINE_LIMIT {
+            return None;
+        }
+        let ok = body.code.iter().all(|i| match i {
+            I::Call(f) => {
+                *f != FN_RING
+                    && *f < MARK
+                    && (*f < FIRST_WORD_FN
+                        || self
+                            .ctx
+                            .words
+                            .get((*f - FIRST_WORD_FN) as usize)
+                            .is_none_or(|c| c.body.is_some()))
+            }
+            I::CallIndirect { .. } | I::ReturnCall(_) | I::Return => false,
+            _ => true,
+        });
+        ok.then(|| body.clone())
+    }
+
+    /// Emit a callee's compiled body in place of a call: its arguments into fresh
+    /// locals, its own locals renumbered, the body in a block typed with its
+    /// results.
+    fn splice(&mut self, c: Compiled, e: &Effect) {
+        let params = e.wasm_params(&self.ctx.struct_types);
+        let outs = e.wasm_results(&self.ctx.struct_types);
+        let mut map: Vec<u32> = params.iter().map(|&vt| self.new_local(vt)).collect();
+        map.extend(c.locals.iter().map(|&vt| self.new_local(vt)));
+        for &l in map[..params.len()].iter().rev() {
+            self.op(I::LocalSet(l));
+        }
+        let bt = self.block_type_vt(vec![], outs);
+        self.op(I::Block(bt));
+        for i in c.code {
+            self.op(match i {
+                I::LocalGet(l) => I::LocalGet(map[l as usize]),
+                I::LocalSet(l) => I::LocalSet(map[l as usize]),
+                I::LocalTee(l) => I::LocalTee(map[l as usize]),
+                other => other,
+            });
+        }
+        self.op(I::End);
     }
 
     fn new_local(&mut self, vt: ValType) -> u32 {
@@ -4516,6 +4598,177 @@ mod tests {
         out.compiled.code
     }
 
+    /// `g` naming `f` ( i32 -- i32 ) with the given body, optionally with a word
+    /// `h` still being compiled (no body) that `f`'s code may call, in direct or
+    /// REPL mode, under a process transform: `g`'s compile output.
+    fn inline_case(
+        f_body: Option<Compiled>,
+        indirect: bool,
+        unwind: Unwind,
+        with_h: bool,
+    ) -> (Output, WordId, Ctx) {
+        let mut ctx = Ctx {
+            indirect_calls: indirect,
+            ..Ctx::default()
+        };
+        ctx.unwind = unwind;
+        let e = Effect::new(vec![Ty::I32], vec![Ty::I32]);
+        let word = |name: &str, body: Option<Compiled>| Word {
+            name: name.into(),
+            effect: e.clone(),
+            body,
+            failed: false,
+            export: false,
+            raw: false,
+            origin: Origin::User,
+            kind: WordKind::Named,
+            loc: Location::default(),
+            callees: vec![],
+            inferred: false,
+            generic: None,
+            instance_of: None,
+            generated: None,
+        };
+        if with_h {
+            ctx.add_word(word("h", None));
+        }
+        let f = ctx.add_word(word("f", f_body));
+        let body = vec![Node {
+            kind: NodeKind::Name("f".into()),
+            loc: Location::default(),
+        }];
+        let out = compile_body(
+            &mut ctx,
+            "g",
+            Mode::Declared(&e),
+            &body,
+            &Location::default(),
+            &[],
+        )
+        .unwrap();
+        (out, f, ctx)
+    }
+
+    /// A small body for `f`: one local, a marker constant and `f`'s interned name.
+    fn small_f(ctx_name: (i32, i32)) -> Compiled {
+        Compiled {
+            locals: vec![ValType::I32],
+            code: vec![
+                I::LocalGet(0),
+                I::LocalTee(1),
+                I::LocalGet(1),
+                I::I32Add,
+                I::I32Const(0x5EED),
+                I::Drop,
+                I::I32Const(ctx_name.0),
+                I::Drop,
+                I::I32Const(ctx_name.1),
+                I::Drop,
+            ],
+        }
+    }
+
+    fn calls_f(code: &[I<'static>], f: WordId) -> bool {
+        code.iter()
+            .any(|i| matches!(i, I::Call(x) if *x == Word::func_index(f)))
+    }
+
+    fn has_marker(code: &[I<'static>]) -> bool {
+        code.iter().any(|i| matches!(i, I::I32Const(0x5EED)))
+    }
+
+    #[test]
+    fn inlined_call_splices_the_body() {
+        let name = Ctx::default().intern_str("f");
+        let (out, f, _) = inline_case(Some(small_f(name)), false, Unwind::Off, false);
+        let code = &out.compiled.code;
+        assert!(!calls_f(code, f));
+        assert!(has_marker(code));
+        assert!(code.iter().any(|i| matches!(i, I::Block(_))));
+        assert!(matches!(code.last(), Some(I::End)) || code.iter().any(|i| matches!(i, I::End)));
+        // g has one parameter; f's parameter and local become g's locals 1 and 2.
+        assert_eq!(out.compiled.locals.len(), 2);
+        assert!(code.iter().all(|i| match i {
+            I::LocalGet(l) | I::LocalSet(l) | I::LocalTee(l) => *l <= 2,
+            _ => true,
+        }));
+        assert!(code.iter().any(|i| matches!(i, I::LocalTee(2))));
+        assert!(code
+            .iter()
+            .any(|i| matches!(i, I::I32Const(c) if *c == name.0)));
+        assert!(code
+            .iter()
+            .any(|i| matches!(i, I::I32Const(c) if *c == name.1)));
+        assert!(out.callees.contains(&(f, EdgeKind::Call)));
+    }
+
+    #[test]
+    fn not_inlined_over_the_limit() {
+        let big = Compiled {
+            locals: vec![],
+            code: vec![I::Nop; INLINE_LIMIT + 1],
+        };
+        let (out, f, _) = inline_case(Some(big), false, Unwind::Off, false);
+        assert!(calls_f(&out.compiled.code, f));
+        assert!(!out.compiled.code.iter().any(|i| matches!(i, I::Nop)));
+        assert!(out.callees.contains(&(f, EdgeKind::Call)));
+    }
+
+    #[test]
+    fn not_inlined_without_a_body() {
+        let (out, f, _) = inline_case(None, false, Unwind::Off, false);
+        assert!(calls_f(&out.compiled.code, f));
+        assert!(out.callees.contains(&(f, EdgeKind::Call)));
+    }
+
+    #[test]
+    fn not_inlined_when_transformed() {
+        for who in ["f", "g"] {
+            let set = std::collections::HashSet::from([who.to_string()]);
+            let (out, f, _) = inline_case(Some(small_f((0, 0))), false, Unwind::Only(set), false);
+            assert!(
+                !has_marker(&out.compiled.code),
+                "transformed {who}: spliced"
+            );
+            assert!(out.callees.contains(&(f, EdgeKind::Call)));
+        }
+    }
+
+    #[test]
+    fn not_inlined_with_a_ring_submit() {
+        let mut body = small_f((0, 0));
+        body.code.push(I::Call(FN_RING));
+        let (out, f, _) = inline_case(Some(body), false, Unwind::Off, false);
+        assert!(calls_f(&out.compiled.code, f));
+        assert!(!has_marker(&out.compiled.code));
+        assert!(out.callees.contains(&(f, EdgeKind::Call)));
+    }
+
+    #[test]
+    fn not_inlined_in_the_repl() {
+        let (out, f, _) = inline_case(Some(small_f((0, 0))), true, Unwind::Off, false);
+        assert!(out
+            .compiled
+            .code
+            .iter()
+            .any(|i| matches!(i, I::CallIndirect { .. })));
+        assert!(!has_marker(&out.compiled.code));
+        assert!(out.callees.contains(&(f, EdgeKind::Call)));
+    }
+
+    #[test]
+    fn not_inlined_calling_an_unfinished_word() {
+        let mut body = small_f((0, 0));
+        // h is word 0, added first and given no body.
+        body.code.push(I::Call(Word::func_index(0)));
+        body.code.push(I::Drop);
+        let (out, f, ctx) = inline_case(Some(body), false, Unwind::Off, true);
+        assert!(ctx.words[0].body.is_none());
+        assert!(calls_f(&out.compiled.code, f));
+        assert!(!has_marker(&out.compiled.code));
+        assert!(out.callees.contains(&(f, EdgeKind::Call)));
+    }
+
     /// A REPL line under `Unwind::All` (a step module: table calls, the
     /// line prologue and epilogue) mixing literals, binds, a site, a
     /// `leave` after a site in a `times` body and a `trap` in a run.
@@ -4746,8 +4999,11 @@ mod tests {
         let code = call_code(true);
         assert!(code.iter().any(|i| matches!(i, I::CallIndirect { .. })));
         assert!(!code.iter().any(|i| matches!(i, I::Call(_))));
+        // Direct mode: no table; this `f` (an empty body) is small, so it is
+        // inlined, a block in place of the call (`not_inlined_over_the_limit`
+        // covers a direct call).
         let code = call_code(false);
         assert!(!code.iter().any(|i| matches!(i, I::CallIndirect { .. })));
-        assert!(code.iter().any(|i| matches!(i, I::Call(_))));
+        assert!(code.iter().any(|i| matches!(i, I::Block(_))));
     }
 }

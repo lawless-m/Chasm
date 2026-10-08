@@ -319,6 +319,21 @@ fn compile_ctx(sources: &[Source], opts: &Options, unwind: Unwind) -> (Compilati
         let mut groups: Vec<&mut Vec<Item>> = parsed.iter_mut().map(|(items, _)| items).collect();
         crate::infer::require_effects(&mut groups, &mut diags);
     }
+    // A word defined twice is never inlined: the last definition wins for every
+    // caller, including callers compiled before it.
+    let mut defs: HashMap<&str, usize> = HashMap::new();
+    for (items, _) in &parsed {
+        for it in items {
+            if let Item::Def { name, .. } = it {
+                *defs.entry(name.as_str()).or_default() += 1;
+            }
+        }
+    }
+    ctx.redefined = defs
+        .into_iter()
+        .filter(|&(_, n)| n > 1)
+        .map(|(n, _)| n.to_string())
+        .collect();
     let mut prog = Program {
         diagnostics: diags,
         ..Program::default()
@@ -1508,4 +1523,111 @@ fn union_word_names(def: &UnionDef) -> Vec<String> {
         out.extend(fields.iter().map(|(f, _)| format!("{u}.{v}.{f}")));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::check::Word;
+    use wasm_encoder::Instruction as I;
+
+    fn opts(export: bool) -> Options {
+        Options {
+            prelude: true,
+            test_exports: false,
+            export,
+            wasi: false,
+        }
+    }
+
+    fn code<'a>(ctx: &'a Ctx, name: &str) -> &'a [I<'static>] {
+        &ctx.words[ctx.by_name[name]].body.as_ref().unwrap().code
+    }
+
+    fn calls(ctx: &Ctx, caller: &str, callee: &str) -> bool {
+        let f = Word::func_index(ctx.by_name[callee]);
+        code(ctx, caller)
+            .iter()
+            .any(|i| matches!(i, I::Call(x) if *x == f))
+    }
+
+    #[test]
+    fn recursive_words_keep_their_calls() {
+        let src =
+            ": f ( i32 -- i32 ) dup 0 i32.gt_s [ 1 i32.sub f ] when ;\n: g ( i32 -- i32 ) f ;\n";
+        let (c, ctx) = compile_ctx(&[Source::new("t.wack", src)], &opts(false), Unwind::Off);
+        assert!(c.ok(), "{:?}", c.diagnostics);
+        assert!(calls(&ctx, "f", "f"));
+        // g may take f's body, but the copy still calls f: no unbounded expansion.
+        assert!(calls(&ctx, "g", "f"));
+        assert!(code(&ctx, "g").len() < 4 * code(&ctx, "f").len());
+    }
+
+    #[test]
+    fn mutually_recursive_words_keep_their_calls() {
+        let src = "declare odd ( i32 -- i32 )\n\
+                   : even ( i32 -- i32 ) dup 0 i32.eq [ drop 1 ] [ 1 i32.sub odd ] if ;\n\
+                   : odd ( i32 -- i32 ) dup 0 i32.eq [ drop 0 ] [ 1 i32.sub even ] if ;\n";
+        let (c, ctx) = compile_ctx(&[Source::new("t.wack", src)], &opts(false), Unwind::Off);
+        assert!(c.ok(), "{:?}", c.diagnostics);
+        // odd had no body when even was compiled; even calls odd, so it is not
+        // inlined into odd either.
+        assert!(calls(&ctx, "even", "odd"));
+        assert!(calls(&ctx, "odd", "even"));
+    }
+
+    #[test]
+    fn process_words_keep_their_calls() {
+        let src = ": put ( chan i32 i32 -- ) :> v :> c  c v chan.send ;\n\
+                   : main ( -- )\n  chan.make ( chan i32 ) :> c\n  c chan.sender\n  [ c 7 put  c chan.close ] spawn\n  c chan.recv drop ;\n";
+        let s = [Source::new("t.wack", src)];
+        let (off, ctx_off) = compile_ctx(&s, &opts(false), Unwind::Off);
+        assert!(off.ok(), "{:?}", off.diagnostics);
+        // put submits nothing itself, but it calls chan.send (generic: an
+        // instance), whose body submits to the ring: never inlined, so put keeps
+        // that call.
+        let first = Word::func_index(0);
+        assert!(code(&ctx_off, "put").iter().any(|i| matches!(i, I::Call(x)
+            if *x >= first && ctx_off.words[(*x - first) as usize].name.starts_with("chan.send"))));
+        // Under the transform compile() applies, put can be on the stack when a
+        // process waits: it is transformed, and no caller takes its body.
+        let (c, ctx) = compile_ctx(&s, &opts(false), Unwind::Only(suspendable(&ctx_off)));
+        assert!(c.ok(), "{:?}", c.diagnostics);
+        assert!(ctx.transforms("put"));
+        let put = Word::func_index(ctx.by_name["put"]);
+        assert!(ctx
+            .words
+            .iter()
+            .filter_map(|w| w.body.as_ref())
+            .any(|b| b.code.iter().any(|i| matches!(i, I::Call(x) if *x == put))));
+        assert_eq!(off.processes, c.processes);
+        assert!(c.processes.is_some());
+    }
+
+    #[test]
+    fn redefined_words_keep_their_calls() {
+        // The last definition wins for every caller, including one compiled
+        // before it, so a word defined twice is never inlined.
+        let src = ": k ( -- i32 ) 1 ;\n: f ( -- i32 ) k ;\n: k ( -- i32 ) 2 ;\n";
+        let (c, ctx) = compile_ctx(&[Source::new("t.wack", src)], &opts(false), Unwind::Off);
+        assert!(c.ok(), "{:?}", c.diagnostics);
+        assert!(ctx.redefined.contains("k"));
+        assert!(calls(&ctx, "f", "k"));
+    }
+
+    #[test]
+    fn inlined_callees_stay_in_the_graph() {
+        let src = ": helper ( i32 -- i32 ) 1 i32.add ;\n: main ( -- ) 1 helper drop ;\n";
+        let s = [Source::new("t.wack", src)];
+        let c = compile(&s, &opts(true));
+        assert!(c.ok(), "{:?}", c.diagnostics);
+        assert!(c.wasm.is_some());
+        assert!(c.graph.callees("main").iter().any(|e| e.word == "helper"));
+        assert_eq!(c.dead().map(|d| d.len()), Some(0));
+        let (_, ctx) = compile_ctx(&s, &opts(true), Unwind::Off);
+        assert!(
+            !calls(&ctx, "main", "helper"),
+            "helper is spliced into main"
+        );
+    }
 }

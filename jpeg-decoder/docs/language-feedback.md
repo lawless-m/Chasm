@@ -79,7 +79,7 @@ Each entry says how things stand now and what the decoder does about it.
 
 ## Speed
 
-Measured with `tmp/p3/time.py` and the release compiler
+Measured with `tmp/p5/time.py` and the release compiler
 (`../target/release/wack run`, wasmtime with its function inliner on,
 bounds checks on, both compiles cached). Each row's `wack run` is the wall
 median of three decodes to a real file and its CPU the minimum child CPU
@@ -88,7 +88,7 @@ wall time includes write-back waits that depend on the run sequence and on
 background load: in P2 a row read 0.67 s wall in every pass of the timing
 script while an alternating A/B showed the same file's decode faster by
 CPU and 0.44 s wall on its own. The table is the per-row minimum of two
-passes (`tmp/p3/final.txt`). The files were made with the oracle's cjpeg
+passes (`tmp/p5/final.txt`). The files were made with the oracle's cjpeg
 from a tiling of `primary/testorig.jpg`, 4000x3000 (12 megapixels), 4:2:0:
 `tmp/m2-timing/big12.jpg` (baseline), `tmp/m4-timing/big12p.jpg`
 (progressive, libjpeg's standard ten scans), `big12s3.jpg` (three
@@ -108,32 +108,36 @@ fancy 0.38 s against 0.24 s) but only about 0.03 s of CPU.
 
 | File | Mode | `wack run` | CPU | `wack run --opt` | Decode rate | Oracle |
 |---|---|---|---|---|---|---|
-| big12, baseline | fancy (default) | 0.38 s | 0.264 s | 0.56 s | 32.0 megapixels/s | 0.07 s |
-| big12, baseline | plain (`nosmooth`) | 0.34 s | 0.225 s | 0.47 s | 35.9 megapixels/s | 0.06 s |
-| big12p, progressive | fancy (default) | 0.61 s | 0.516 s | 0.79 s | 20.1 megapixels/s | 0.12 s |
-| big12p, progressive | plain (`nosmooth`) | 0.58 s | 0.470 s | 0.76 s | 21.0 megapixels/s | 0.11 s |
-| big12s3, three scans | fancy (default) | 0.43 s | 0.315 s | 0.64 s | 28.6 megapixels/s | 0.08 s |
-| big12s3, three scans | plain (`nosmooth`) | 0.38 s | 0.276 s | 0.57 s | 32.6 megapixels/s | 0.06 s |
-| big12a, arithmetic | fancy (default) | 0.60 s | 0.507 s | 0.83 s | 20.2 megapixels/s | 0.22 s |
-| big12a, arithmetic | plain (`nosmooth`) | 0.58 s | 0.463 s | 0.72 s | 21.1 megapixels/s | 0.20 s |
-| big12pa, progressive arithmetic | fancy (default) | 0.66 s | 0.559 s | 0.86 s | 18.4 megapixels/s | 0.25 s |
-| big12pa, progressive arithmetic | plain (`nosmooth`) | 0.63 s | 0.515 s | 0.80 s | 19.3 megapixels/s | 0.23 s |
-| big12b12, 12-bit | fancy (default) | 0.65 s | 0.398 s | 0.84 s | 18.7 megapixels/s | 0.13 s |
-| big12b12, 12-bit | plain (`nosmooth`) | 0.63 s | 0.397 s | 0.88 s | 19.2 megapixels/s | 0.11 s |
-| big12cmyk, CMYK | fancy (default) | 0.43 s | 0.312 s | 0.59 s | 28.7 megapixels/s | 0.12 s |
-| big12cmyk, CMYK | plain (`nosmooth`) | 0.44 s | 0.308 s | 0.58 s | 28.1 megapixels/s | 0.10 s |
-| big12ycck, YCCK | fancy (default) | 0.57 s | 0.451 s | 0.66 s | 21.5 megapixels/s | 0.16 s |
-| big12ycck, YCCK | plain (`nosmooth`) | 0.56 s | 0.450 s | 0.71 s | 21.8 megapixels/s | 0.15 s |
+| big12, baseline | fancy (default) | 0.35 s | 0.232 s | 0.65 s | 34.9 megapixels/s | 0.08 s |
+| big12, baseline | plain (`nosmooth`) | 0.30 s | 0.191 s | 0.60 s | 40.7 megapixels/s | 0.06 s |
+| big12p, progressive | fancy (default) | 0.50 s | 0.380 s | 0.80 s | 24.3 megapixels/s | 0.13 s |
+| big12p, progressive | plain (`nosmooth`) | 0.45 s | 0.338 s | 0.77 s | 26.9 megapixels/s | 0.11 s |
+| big12s3, three scans | fancy (default) | 0.40 s | 0.292 s | 0.74 s | 30.8 megapixels/s | 0.08 s |
+| big12s3, three scans | plain (`nosmooth`) | 0.36 s | 0.247 s | 0.66 s | 34.1 megapixels/s | 0.07 s |
+| big12a, arithmetic | fancy (default) | 0.59 s | 0.484 s | 0.97 s | 20.5 megapixels/s | 0.22 s |
+| big12a, arithmetic | plain (`nosmooth`) | 0.56 s | 0.445 s | 0.89 s | 21.9 megapixels/s | 0.21 s |
+| big12pa, progressive arithmetic | fancy (default) | 0.65 s | 0.525 s | 0.96 s | 18.8 megapixels/s | 0.26 s |
+| big12pa, progressive arithmetic | plain (`nosmooth`) | 0.59 s | 0.487 s | 0.94 s | 20.7 megapixels/s | 0.24 s |
+| big12b12, 12-bit | fancy (default) | 0.62 s | 0.361 s | 0.86 s | 19.7 megapixels/s | 0.14 s |
+| big12b12, 12-bit | plain (`nosmooth`) | 0.59 s | 0.358 s | 0.91 s | 20.6 megapixels/s | 0.12 s |
+| big12cmyk, CMYK | fancy (default) | 0.39 s | 0.275 s | 0.72 s | 31.3 megapixels/s | 0.12 s |
+| big12cmyk, CMYK | plain (`nosmooth`) | 0.41 s | 0.273 s | 0.63 s | 30.3 megapixels/s | 0.10 s |
+| big12ycck, YCCK | fancy (default) | 0.54 s | 0.390 s | 0.77 s | 22.6 megapixels/s | 0.16 s |
+| big12ycck, YCCK | plain (`nosmooth`) | 0.52 s | 0.392 s | 0.77 s | 23.6 megapixels/s | 0.15 s |
 
 - The oracle is libjpeg-turbo 3.2.0 in plain C without SIMD. The decoder
   runs 3 to 6 times slower than it by wall time to a real file, and 2 to 4
   times writing to `/dev/null` as the oracle does; closest on arithmetic
   files, where the oracle itself is three times slower than on Huffman ones.
-- The native engine has Cranelift's function inliner on (ARCHITECTURE.md
-  section 28 item 3): every struct field accessor and small helper word is
-  a call in the wasm, and the inliner halves every decode. `wack run --opt`
-  (Binaryen -O3) is slower than plain `wack run` on every row: its inlining
-  buys nothing the engine's does not, and its own time is paid on each run.
+- The Whackford compiler inlines small words itself (ARCHITECTURE.md
+  section 28 item 5): a word of at most `INLINE_LIMIT` (256) instructions,
+  defined once and earlier in the program, is spliced into its callers, so
+  struct field accessors and small helper words are no longer calls in the
+  wasm. Cranelift's own inliner (item 3) handles what remains. Against the
+  compiler without it, every row's CPU falls, progressive files most
+  (big12p fancy 0.524 s to 0.380 s). `wack run --opt` (Binaryen -O3) is
+  slower than plain `wack run` on every row: its inlining buys nothing more,
+  and its own time is paid on each run.
 - Startup is 0.008 s: with both compiles cached, a run hashes the sources
   and the prelude, reads one entry, loads the cached module and reads the
   input (a one-line program runs in 0.005 s). Uncached, the Whackford
@@ -232,13 +236,17 @@ The word's IDCT is about 0.070 s of big12's 0.268 s of CPU (26%, from the stage
 breakdown above). Against that:
 
 - **Calls the engine's inliner leaves in a large word: 0.030 s, 43% of the
-  IDCT** (S2 minus S1). Cranelift inlines the struct accessors but leaves 6 of
-  the 17 calls of `i64` (a one-instruction word), 10 of the 17 descales and one
-  of the two butterflies as calls, each with spills around it, and the
-  butterfly returns eight values through the stack. This is the largest gap.
-  The general fix is an inliner in Whackford for small words, or Cranelift
-  inlining small callees whatever the caller's size; every program gains.
-- **Per-access bounds checks: 0.009 s, 13%** (S3 minus S2). The 52 checks halve
+  IDCT** (S2 minus S1). Cranelift's inliner alone leaves 8 of the 17 calls of
+  `i64` (a one-instruction word), 10 of the 17 descales and one of the two
+  butterflies as calls inside `idct.block`. The Whackford compiler now
+  inlines words of at most `INLINE_LIMIT` (256) instructions at their call
+  sites (ARCHITECTURE.md section 28 item 5), so `idct.block` has none of
+  those calls in its wasm (`tmp/p5/s2-wasm.md`) or its machine code
+  (`tmp/p5/s2-mc.md`). With the word's source unchanged, big12 fancy goes
+  from 0.266 s to 0.232 s of CPU (`tmp/p5/baseline.txt`, `tmp/p5/final.txt`),
+  the same as stage S2's 0.232 s, and every other program's small words gain
+  the same way.
+- **Per-access bounds checks: 0.009 s, 13%, still open** (S3 minus S2). The 52 checks halve
   the machine code (1015 to 560 instructions), but they never fire and so are
   predicted perfectly: the cost is their instructions, the lengths kept live
   and the spills those force. The general fix is bounds-check elimination over
