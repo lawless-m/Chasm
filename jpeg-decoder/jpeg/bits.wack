@@ -151,8 +151,10 @@ test bits.get : fx.tiny hex 156 bits.open dup 8 bits.get drop dup 1 bits.get dro
 
 : bits.get ( bitreader i32 -- i32 )
   :> n :> r
-  r n bits.peek
-  r  r bitreader.nbits n i32.sub  bitreader.nbits! ;
+  r n bits.ensure
+  r bitreader.nbits n i32.sub :> left
+  r bitreader.buf left i32.shr_u  1 n i32.shl 1 i32.sub  i32.and
+  r left bitreader.nbits! ;
 
 # The end of a restart interval (libjpeg's process_restart): the unread bits
 # are padding and are discarded, the exhausted flag and the marker are

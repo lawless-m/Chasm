@@ -152,7 +152,9 @@ declare arith.norm ( arith -- )
 # One decision with the statistics bin at an index (libjpeg's
 # arith_decode): the interval split, the conditional exchange and the state
 # update ported verbatim. In T.81's terms the spec's C register is
-# c << (16 - ct) and its A is a.
+# c << (16 - ct) and its A is a. c, a and ct are read once into locals, the
+# renormalisation (arith.norm's loop) and the decision run over them, and
+# they are written back once.
 declare arith.decode ( arith i32 -- i32 )
 
 : arith.byte ( arith -- i32 )
@@ -202,22 +204,42 @@ declare arith.decode ( arith i32 -- i32 )
 
 : arith.decode ( arith i32 -- i32 )
   :> si :> ar
-  ar arith.norm
+  ar arith.c :> c!
+  ar arith.a :> a!
+  ar arith.ct :> ct!
+  [ a 0x8000 i32.lt_s ]
+  [
+    ct 1 i32.sub ct!
+    ct 0 i32.lt_s
+    [
+      c 8 i32.shl  ar arith.byte i32.or c!
+      ct 8 i32.add ct!
+      ct 0 i32.lt_s
+      [
+        ct 1 i32.add ct!
+        ct i32.eqz [ 0x8000 a! ] when
+      ]
+      when
+    ]
+    when
+    a 1 i32.shl a!
+  ]
+  while
   ar arith.stats :> st
   st si bytes.at :> sv!
   ar arith.tab sv 127 i32.and array.at :> v
   v 255 i32.and :> nl
   v 8 i32.shr_u 255 i32.and :> nm
   v 16 i32.shr_u :> qe
-  ar arith.a qe i32.sub :> ai
-  ar ai arith.a!
-  ai ar arith.ct i32.shl :> temp
-  ar arith.c temp i32.ge_s
+  a qe i32.sub :> ai
+  ai a!
+  ai ct i32.shl :> temp
+  c temp i32.ge_s
   [
-    ar  ar arith.c temp i32.sub  arith.c!
+    c temp i32.sub c!
     ai qe i32.lt_s
-    [ ar qe arith.a!  st si  sv 128 i32.and nm i32.xor  bytes.at! ]
-    [ ar qe arith.a!  st si  sv 128 i32.and nl i32.xor  bytes.at!  sv 128 i32.xor sv! ]
+    [ qe a!  st si  sv 128 i32.and nm i32.xor  bytes.at! ]
+    [ qe a!  st si  sv 128 i32.and nl i32.xor  bytes.at!  sv 128 i32.xor sv! ]
     if
   ]
   [
@@ -231,6 +253,9 @@ declare arith.decode ( arith i32 -- i32 )
     when
   ]
   if
+  ar c arith.c!
+  ar a arith.a!
+  ar ct arith.ct!
   sv 7 i32.shr_u ;
 
 # Test fixtures: T.81 K.4.1's input bits and coded bytes; n decisions in one

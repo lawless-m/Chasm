@@ -24,11 +24,15 @@ declare plane.slot ( plane i32 -- i32 )
   k 3 i32.rem_u  p plane.rows i32.mul  p plane.stride i32.mul ;
 
 # The plane, the destination, the destination offset, the output width and
-# the number of output rows.
+# the number of output rows. A full-width row (hexp 1) is one copy; a wider
+# one reads each source sample once and stores it hexp times, the last
+# partial group (an odd width) taking the next sample.
 declare upsample.plain ( plane bytes i32 i32 i32 -- )
 
 # upsample.plain for a 12-bit plane: replication from plane.wide into an
-# array i32 (plane, dst, dst offset, output width, output rows).
+# array i32 (plane, dst, dst offset, output width, output rows). A full-width
+# row is a sample loop (there is no array copy word); a wider one reads each
+# source sample once and stores it hexp times, as upsample.plain.
 declare upsample.plain12 ( plane array i32 i32 i32 i32 -- )
 
 : upsample.plain ( plane bytes i32 i32 i32 -- )
@@ -44,8 +48,21 @@ declare upsample.plain12 ( plane array i32 i32 i32 i32 -- )
     base  r vx i32.div_u stride i32.mul  i32.add :> from
     off r width i32.mul i32.add :> to
     hx 1 i32.eq
-    [ width [ :> x0  dst to x0 i32.add  src from x0 i32.add bytes.at  bytes.at! ] times ]
-    [ width [ :> x1  dst to x1 i32.add  src from x1 hx i32.div_u i32.add bytes.at  bytes.at! ] times ]
+    [ dst to  src from width bytes.slice bytes.as-str  bytes.put ]
+    [
+      width hx i32.div_u :> groups
+      groups
+      [
+        :> k
+        src from k i32.add bytes.at :> v
+        to k hx i32.mul i32.add :> at
+        hx [ :> j  dst at j i32.add v bytes.at! ] times
+      ]
+      times
+      from groups i32.add :> last
+      to groups hx i32.mul i32.add :> tail
+      width hx i32.rem_u [ :> j2  dst tail j2 i32.add  src last bytes.at  bytes.at! ] times
+    ]
     if
   ]
   times ;
@@ -64,7 +81,20 @@ declare upsample.plain12 ( plane array i32 i32 i32 i32 -- )
     off r width i32.mul i32.add :> to
     hx 1 i32.eq
     [ width [ :> x0  dst to x0 i32.add  src from x0 i32.add array.at  array.at! ] times ]
-    [ width [ :> x1  dst to x1 i32.add  src from x1 hx i32.div_u i32.add array.at  array.at! ] times ]
+    [
+      width hx i32.div_u :> groups
+      groups
+      [
+        :> k
+        src from k i32.add array.at :> v
+        to k hx i32.mul i32.add :> at
+        hx [ :> j  dst at j i32.add v array.at! ] times
+      ]
+      times
+      from groups i32.add :> last
+      to groups hx i32.mul i32.add :> tail
+      width hx i32.rem_u [ :> j2  dst tail j2 i32.add  src last array.at  array.at! ] times
+    ]
     if
   ]
   times ;
@@ -105,6 +135,9 @@ test upsample.plain : "FF0102FF0304" 3 2 1 fx.plane dup 1 plane.base! 4 2 fx.up 
 test upsample.plain : "FF0102FF0304" 3 2 1 fx.plane dup 1 plane.base! 4 2 fx.up 7 bytes.at -> 4
 test upsample.plain : "0102" 2 1 1 fx.plane 12 bytes.new dup -rot 4 2 1 upsample.plain 4 bytes.at -> 1
 test upsample.plain : "0102" 2 1 1 fx.plane 12 bytes.new dup -rot 4 2 1 upsample.plain 3 bytes.at -> 0
+test upsample.plain : "010203" 3 2 1 fx.plane 5 1 fx.up 4 bytes.at -> 3
+test upsample.plain : "010203" 3 2 1 fx.plane 5 1 fx.up 3 bytes.at -> 2
+test upsample.plain : "0102" 2 1 1 fx.plane 12 bytes.new dup -rot 4 2 1 upsample.plain 5 bytes.at -> 2
 
 # libjpeg's per-component choice of upsampler (_jinit_upsampler in
 # jdsample.c, with no DCT scaling): fancy flag, hexp, vexp and the
@@ -247,34 +280,36 @@ test upsample.h1v2-row : "0A14" 0 0 2 4 2 2 fx.h1v2 2 bytes.at -> 10
 # rows 3/4 and 1/4; across, 3/4 of the nearer sum and 1/4 of the further,
 # so the samples weigh 9/16, 3/16, 3/16 and 1/16. The bias alternates +8,
 # +7 between the pair, libjpeg's ordered dither, and the edge outputs use
-# 4 x their column sum.
+# 4 x their column sum. As libjpeg's h2v2_fancy_upsample, each column sum is
+# computed once and slides through last, this and next across the row: the
+# first column, dw - 2 middle columns with no edge tests, then the last
+# column, whose odd output is the only one tested against the width.
 declare upsample.h2v2-row ( bytes i32 i32 i32 bytes i32 i32 -- )
 
 : upsample.h2v2-row ( bytes i32 i32 i32 bytes i32 i32 -- )
   :> width :> doff :> dst :> dw :> other :> cur :> src
-  dw
+  src cur bytes.at 3 i32.mul  src other bytes.at  i32.add :> this!
+  src cur 1 i32.add bytes.at 3 i32.mul  src other 1 i32.add bytes.at  i32.add :> next!
+  this :> last!
+  dst doff  this 4 i32.mul 8 i32.add 4 i32.shr_s  bytes.at!
+  dst doff 1 i32.add  this 3 i32.mul next i32.add 7 i32.add 4 i32.shr_s  bytes.at!
+  dw 2 i32.sub
   [
-    :> k
-    src cur k i32.add bytes.at 3 i32.mul  src other k i32.add bytes.at  i32.add :> cs
-    k 2 i32.mul :> x
-    k 0 i32.eq
-    [ cs 4 i32.mul 8 i32.add 4 i32.shr_s ]
-    [
-      src cur k i32.add 1 i32.sub bytes.at 3 i32.mul  src other k i32.add 1 i32.sub bytes.at  i32.add :> left
-      cs 3 i32.mul left i32.add 8 i32.add 4 i32.shr_s
-    ]
-    if :> even
-    k dw 1 i32.sub i32.eq
-    [ cs 4 i32.mul 7 i32.add 4 i32.shr_s ]
-    [
-      src cur k i32.add 1 i32.add bytes.at 3 i32.mul  src other k i32.add 1 i32.add bytes.at  i32.add :> right
-      cs 3 i32.mul right i32.add 7 i32.add 4 i32.shr_s
-    ]
-    if :> odd
-    x width i32.lt_s [ dst doff x i32.add even bytes.at! ] when
-    x 1 i32.add width i32.lt_s [ dst doff x i32.add 1 i32.add odd bytes.at! ] when
+    :> m
+    m 1 i32.add :> k
+    this last!
+    next this!
+    src cur k i32.add 1 i32.add bytes.at 3 i32.mul  src other k i32.add 1 i32.add bytes.at  i32.add next!
+    doff k 2 i32.mul i32.add :> x
+    dst x  this 3 i32.mul last i32.add 8 i32.add 4 i32.shr_s  bytes.at!
+    dst x 1 i32.add  this 3 i32.mul next i32.add 7 i32.add 4 i32.shr_s  bytes.at!
   ]
-  times ;
+  times
+  this last!
+  next this!
+  doff dw 2 i32.mul i32.add :> end
+  dst end 2 i32.sub  this 3 i32.mul last i32.add 8 i32.add 4 i32.shr_s  bytes.at!
+  dw 2 i32.mul 1 i32.sub width i32.lt_s [ dst end 1 i32.sub  this 4 i32.mul 7 i32.add 4 i32.shr_s  bytes.at! ] when ;
 
 # Test fixture: hex input, cur, other, dw, destination length, dst offset,
 # width.
@@ -291,6 +326,9 @@ test upsample.h2v2-row : "0A141E020406" 0 3 3 6 0 6 fx.h2v2 3 bytes.at -> 18
 test upsample.h2v2-row : "0A141E020406" 0 3 3 6 0 6 fx.h2v2 4 bytes.at -> 22
 test upsample.h2v2-row : "0A141E020406" 0 3 3 6 0 6 fx.h2v2 5 bytes.at -> 24
 test upsample.h2v2-row : "0A141E020406" 0 3 3 6 0 5 fx.h2v2 4 bytes.at -> 22
+test upsample.h2v2-row : "0A141E28 02040608" 0 4 4 8 0 8 fx.h2v2 7 bytes.at -> 32
+test upsample.h2v2-row : "0A141E28 02040608" 0 4 4 8 0 8 fx.h2v2 6 bytes.at -> 30
+test upsample.h2v2-row : "0A141E28 02040608" 0 4 4 8 0 8 fx.h2v2 3 bytes.at -> 18
 test upsample.h2v2-row : "0A141E020406" 0 3 3 6 0 5 fx.h2v2 5 bytes.at -> 0
 test upsample.h2v2-row : "0A141E020406" 3 0 3 6 0 6 fx.h2v2 0 bytes.at -> 4
 test upsample.h2v2-row : "0A141E020406" 3 0 3 6 0 6 fx.h2v2 1 bytes.at -> 5
@@ -416,6 +454,8 @@ test upsample.fancy : "0A141E 020406 000000" 3 1 2 2 3 3 0 -1 1 10 5 fx.fancy 9 
   p d off 2 1 upsample.plain12
   d ;
 
+test upsample.plain12 : "0001 0002 0003" 3 2 1 fx.plane12 5 1 fx.up12 4 array.at -> 3
+test upsample.plain12 : "0001 0002 0003" 3 2 1 fx.plane12 5 1 fx.up12 3 array.at -> 2
 test upsample.plain12 : "0001 0002 0003 0004" 2 2 2 fx.plane12 4 4 fx.up12 0 array.at -> 1
 test upsample.plain12 : "0001 0002 0003 0004" 2 2 2 fx.plane12 4 4 fx.up12 2 array.at -> 2
 test upsample.plain12 : "0001 0002 0003 0004" 2 2 2 fx.plane12 4 4 fx.up12 5 array.at -> 1
@@ -440,6 +480,7 @@ test upsample.plain12 : "0001 0002" 2 1 1 fx.plane12 4 fx.up12-at 3 array.at -> 
 # within an i32 (at most 4 x 4095 x 4). The 8-bit words are untouched.
 declare upsample.h2v1-row12 ( array i32 i32 i32 array i32 i32 i32 -- )
 declare upsample.h1v2-row12 ( array i32 i32 i32 i32 array i32 i32 i32 -- )
+# h2v2-row12 slides its column sums as upsample.h2v2-row does.
 declare upsample.h2v2-row12 ( array i32 i32 i32 i32 array i32 i32 i32 -- )
 
 : upsample.h2v1-row12 ( array i32 i32 i32 array i32 i32 i32 -- )
@@ -470,29 +511,28 @@ declare upsample.h2v2-row12 ( array i32 i32 i32 i32 array i32 i32 i32 -- )
 
 : upsample.h2v2-row12 ( array i32 i32 i32 i32 array i32 i32 i32 -- )
   :> width :> doff :> dst :> dw :> other :> cur :> src
-  dw
+  src cur array.at 3 i32.mul  src other array.at  i32.add :> this!
+  src cur 1 i32.add array.at 3 i32.mul  src other 1 i32.add array.at  i32.add :> next!
+  this :> last!
+  dst doff  this 4 i32.mul 8 i32.add 4 i32.shr_s  array.at!
+  dst doff 1 i32.add  this 3 i32.mul next i32.add 7 i32.add 4 i32.shr_s  array.at!
+  dw 2 i32.sub
   [
-    :> k
-    src cur k i32.add array.at 3 i32.mul  src other k i32.add array.at  i32.add :> cs
-    k 2 i32.mul :> x
-    k 0 i32.eq
-    [ cs 4 i32.mul 8 i32.add 4 i32.shr_s ]
-    [
-      src cur k i32.add 1 i32.sub array.at 3 i32.mul  src other k i32.add 1 i32.sub array.at  i32.add :> left
-      cs 3 i32.mul left i32.add 8 i32.add 4 i32.shr_s
-    ]
-    if :> even
-    k dw 1 i32.sub i32.eq
-    [ cs 4 i32.mul 7 i32.add 4 i32.shr_s ]
-    [
-      src cur k i32.add 1 i32.add array.at 3 i32.mul  src other k i32.add 1 i32.add array.at  i32.add :> right
-      cs 3 i32.mul right i32.add 7 i32.add 4 i32.shr_s
-    ]
-    if :> odd
-    x width i32.lt_s [ dst doff x i32.add even array.at! ] when
-    x 1 i32.add width i32.lt_s [ dst doff x i32.add 1 i32.add odd array.at! ] when
+    :> m
+    m 1 i32.add :> k
+    this last!
+    next this!
+    src cur k i32.add 1 i32.add array.at 3 i32.mul  src other k i32.add 1 i32.add array.at  i32.add next!
+    doff k 2 i32.mul i32.add :> x
+    dst x  this 3 i32.mul last i32.add 8 i32.add 4 i32.shr_s  array.at!
+    dst x 1 i32.add  this 3 i32.mul next i32.add 7 i32.add 4 i32.shr_s  array.at!
   ]
-  times ;
+  times
+  this last!
+  next this!
+  doff dw 2 i32.mul i32.add :> end
+  dst end 2 i32.sub  this 3 i32.mul last i32.add 8 i32.add 4 i32.shr_s  array.at!
+  dw 2 i32.mul 1 i32.sub width i32.lt_s [ dst end 1 i32.sub  this 4 i32.mul 7 i32.add 4 i32.shr_s  array.at! ] when ;
 
 # Test fixtures: a hex string of 16-bit big-endian samples (spaces ignored)
 # as an array; the 8-bit row fixtures over such arrays.
@@ -554,6 +594,9 @@ test upsample.h1v2-row12 : "000A 0014" 0 0 2 2 0 2 fx.h1v2-12 1 array.at -> 20
 test upsample.h1v2-row12 : "000A 0014" 0 0 2 4 2 2 fx.h1v2-12 1 array.at -> 0
 test upsample.h1v2-row12 : "000A 0014" 0 0 2 4 2 2 fx.h1v2-12 2 array.at -> 10
 test upsample.h2v2-row12 : "000A 0014 001E 0002 0004 0006" 0 3 3 6 0 6 fx.h2v2-12 0 array.at -> 8
+test upsample.h2v2-row12 : "000A 0014 001E 0028 0002 0004 0006 0008" 0 4 4 8 0 8 fx.h2v2-12 7 array.at -> 32
+test upsample.h2v2-row12 : "000A 0014 001E 0028 0002 0004 0006 0008" 0 4 4 8 0 8 fx.h2v2-12 6 array.at -> 30
+test upsample.h2v2-row12 : "000A 0014 001E 0028 0002 0004 0006 0008" 0 4 4 8 0 8 fx.h2v2-12 3 array.at -> 18
 test upsample.h2v2-row12 : "000A 0014 001E 0002 0004 0006" 0 3 3 6 0 6 fx.h2v2-12 1 array.at -> 10
 test upsample.h2v2-row12 : "000A 0014 001E 0002 0004 0006" 0 3 3 6 0 6 fx.h2v2-12 2 array.at -> 14
 test upsample.h2v2-row12 : "000A 0014 001E 0002 0004 0006" 0 3 3 6 0 6 fx.h2v2-12 3 array.at -> 18

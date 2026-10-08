@@ -143,9 +143,11 @@ test huffman.build : "" hex 0 1 huffman.build -> trap
 
 # One symbol, as libjpeg's HUFF_DECODE. The lookahead is taken only when 8
 # real bits are held: the last code of a scan may be shorter than 8 bits and
-# must not raise the exhausted flag by peeking past it. With fewer bits the
-# code is read bit by bit from length 1. Made-up bits past a marker or the
-# end are always flagged by the reader (bitreader.exhausted), never silent.
+# must not raise the exhausted flag by peeking past it. With 8 held, the
+# lookahead and the drop of the code's bits read buf and nbits directly, as
+# no fill can be needed; with fewer the code is read bit by bit from length
+# 1. Made-up bits past a marker or the end are always flagged by the reader
+# (bitreader.exhausted), never silent.
 declare huffman.decode ( bitreader hufftable -- i32 )
 
 # Figure F.16 from code length l: the bit-by-bit walk up the maxcode table.
@@ -193,9 +195,10 @@ test huffman.decode : fx.tiny hex 156 bits.open dup fx.tiny-dc huffman.decode dr
   r bitreader.nbits 8 i32.lt_s [ r bits.fill ] when
   r bitreader.nbits 8 i32.ge_s
   [
-    t hufftable.lookup  r 8 bits.peek  array.at :> e
+    r bitreader.nbits :> held
+    t hufftable.lookup  r bitreader.buf held 8 i32.sub i32.shr_u 255 i32.and  array.at :> e
     e 8 i32.shr_u :> nb
-    nb 8 i32.le_s [ r nb bits.skip  e 255 i32.and ] [ r t 9 huffman.decode-slow ] if
+    nb 8 i32.le_s [ r  held nb i32.sub  bitreader.nbits!  e 255 i32.and ] [ r t 9 huffman.decode-slow ] if
   ]
   [ r t 1 huffman.decode-slow ]
   if ;
