@@ -202,3 +202,66 @@ fancy 0.38 s against 0.24 s) but only about 0.03 s of CPU.
   subtractions and three multiply-divides a pixel. The CMYK file, with a
   fourth plane and 2.7 MB of entropy data, does only the multiply-divides
   (colour.ink) and takes 0.31 s.
+
+## The IDCT against a hand-emitted built-in
+
+A built-in can only beat a word by doing what the word cannot express or what
+the compiler does badly: both become wasm, and both go through the same
+Cranelift. So the difference between the decoder's `idct.block` and a
+hand-emitted equivalent measures general compiler gaps. The experiment lives on
+the local branch `p4-idct-builtin`, which is never merged: `idct.islow8`, a
+primitive computing exactly what `idct.block` computes, built in five stages
+that each remove one cost. Each stage passes the decoder's 1556 tests and is
+byte-exact on the 228 IDCT-heavy files (synthetic-m2, synthetic-m4 and
+m2-decoded) in both modes, and is timed by interleaved child-CPU A/B (nine pairs
+after a warm-up, minimum) on big12, big12s3 and big12b12. The wasm is counted
+from Binaryen's stack IR and the machine code from objdump of wasmtime's
+compiled module (`tmp/p4/`). big12b12 is a 12-bit file whose IDCT is
+`idct.block12`, untouched, so its column is a control.
+
+| Stage | Removes | big12 CPU | big12s3 CPU | big12b12 CPU | idct.block wasm | idct.block machine | Byte-exact |
+|---|---|---|---|---|---|---|---|
+| S0 | the word as on main | 0.268 s | 0.319 s | 0.399 s | 1989 | 1039 | P3 gate: 1689/1689 both modes |
+| S1 | nothing: transliteration, same checks, helpers called | 0.261 s | 0.311 s | 0.398 s | 2007 | 1033 | 228/228 both modes |
+| S2 | the calls to i64, idct.descale and idct.1d (helpers inline) | 0.232 s | 0.288 s | 0.403 s | 2328 | 1015 | 228/228 both modes |
+| S3 | the per-access bounds checks (hoisted to entry) | 0.223 s | 0.283 s | 0.402 s | 1611 | 560 | 228/228 both modes |
+| S4 | address arithmetic and local traffic (direct addressing) | 0.215 s | 0.278 s | 0.399 s | 1009 | 467 | 228/228 both modes |
+| S5 | i64 where i32 is exact on in-range data (upper bound) | 0.215 s | 0.274 s | 0.399 s | 975 | 463 | 228/228 both modes; fuzz: clean (646/646 both modes) |
+
+The word's IDCT is about 0.070 s of big12's 0.268 s of CPU (26%, from the stage
+breakdown above). Against that:
+
+- **Calls the engine's inliner leaves in a large word: 0.030 s, 43% of the
+  IDCT** (S2 minus S1). Cranelift inlines the struct accessors but leaves 6 of
+  the 17 calls of `i64` (a one-instruction word), 10 of the 17 descales and one
+  of the two butterflies as calls, each with spills around it, and the
+  butterfly returns eight values through the stack. This is the largest gap.
+  The general fix is an inliner in Whackford for small words, or Cranelift
+  inlining small callees whatever the caller's size; every program gains.
+- **Per-access bounds checks: 0.009 s, 13%** (S3 minus S2). The 52 checks halve
+  the machine code (1015 to 560 instructions), but they never fire and so are
+  predicted perfectly: the cost is their instructions, the lengths kept live
+  and the spills those force. The general fix is bounds-check elimination over
+  `times` loops of known range, or a fixed-size array type whose length the
+  checker knows, keeping Whackford's safety contract. The hoisted form traps
+  before any store on an invalid call, rather than at the first bad access.
+- **Address arithmetic and local traffic: 0.003 s, 4%** (S4 minus S3), inside
+  the noise. The wasm shrinks by 37%, but Cranelift already folds constant
+  index arithmetic into addressing modes and allocates the temporaries to
+  registers. Folding constant offsets into memarg offsets is a code-size
+  improvement, not a speed one.
+- **i64 where i32 is exact: 0.005 s, 7%** (S5 minus S4), an upper bound. On
+  x86-64 a 64-bit multiply costs what a 32-bit one does. i32 is byte-exact on
+  the 228 files and on the whole fuzz corpus (646 files, both modes), but
+  libjpeg-turbo computes in 64 bits, and only a proof for all inputs, which
+  the compiler has no range analysis to give, would make it safe under the
+  decoder's hostile-input contract. Not worth pursuing.
+- **The plumbing: nil** (S1 minus S0, −0.007 s, in the noise). A primitive
+  emitted through the compiler's own handlers is the word.
+
+The best stage takes the IDCT from about 0.070 s to about 0.016 s, a 77% cut,
+and the decode from 0.268 s to 0.215 s of CPU. Nearly all of that comes from
+two general compiler changes: inlining small words and eliminating provable
+bounds checks. What no stage reaches is the vector form. libjpeg-turbo's
+`jsimd` islow IDCT works on eight lanes at once, and that is not expressible in
+Whackford at all, which has no `v128` type.
