@@ -234,6 +234,10 @@ pub fn special(name: &str) -> Option<(Vec<Ty>, Vec<Ty>)> {
         "bytes.from-raw" => (vec![I32, I32], vec![Bytes]),
         "bytes.at" => (vec![Bytes, I32], vec![I32]),
         "bytes.at!" => (vec![Bytes, I32, I32], vec![]),
+        "bytes.u16-at" | "bytes.u32-at" => (vec![Bytes, I32], vec![I32]),
+        "bytes.u16-at!" | "bytes.u32-at!" => (vec![Bytes, I32, I32], vec![]),
+        "bytes.u64-at" => (vec![Bytes, I32], vec![Ty::I64]),
+        "bytes.u64-at!" => (vec![Bytes, I32, Ty::I64], vec![]),
         "mem.alloc" => (vec![I32], vec![I32]),
         "trap" => (vec![Str], vec![]),
         "host.open" => (vec![Str, I32], vec![I32]),
@@ -431,6 +435,12 @@ pub fn names() -> impl Iterator<Item = &'static str> {
         "bytes.from-raw",
         "bytes.at",
         "bytes.at!",
+        "bytes.u16-at",
+        "bytes.u16-at!",
+        "bytes.u32-at",
+        "bytes.u32-at!",
+        "bytes.u64-at",
+        "bytes.u64-at!",
         "mem.alloc",
         "trap",
         "host.open",
@@ -443,6 +453,8 @@ pub fn names() -> impl Iterator<Item = &'static str> {
         "array.at",
         "array.at!",
         "array.slice",
+        "array.copy",
+        "array.fill",
         "call",
         "leave",
         "if",
@@ -603,6 +615,8 @@ pub fn is_builtin(name: &str) -> bool {
                 | "array.at"
                 | "array.at!"
                 | "array.slice"
+                | "array.copy"
+                | "array.fill"
                 | "call"
                 | "leave"
                 | "match"

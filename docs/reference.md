@@ -530,6 +530,8 @@ past its end.
 | `array.at` | `( array T i32 -- T )` bounds-checked |
 | `array.at!` | `( array T i32 T -- )` bounds-checked |
 | `array.slice` | `( array T i32 i32 -- array T )` start, count; no copy |
+| `array.copy` | `( array T i32 array T i32 i32 -- )` dst, at, src, from, count: both ranges checked; overlapping ranges copy correctly |
+| `array.fill` | `( array T i32 T i32 -- )` dst, at, value, count: the range checked |
 | `each` | `arr [ T -- ] each` |
 | `map` | `arr [ T -- U ] map` → `array U` |
 | `filter` | `arr [ T -- i32 ] filter` → `array T` |

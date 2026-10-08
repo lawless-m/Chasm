@@ -55,6 +55,8 @@ test sum : end sum -> 0
 test total-x : 4 points total-x -> 6
 test map : 4 points [ point.x 10 i32.mul ] map array.to-str -> "0 10 20 30"
 test filter : 5 points [ point.x 2 i32.ge_s ] filter array.len -> 3
+test array.copy : 3 points :> p  p 0  5 points 3  2 array.copy  p total-x -> 9
+test array.fill : 3 points :> q  q 1 origin 2 array.fill  q total-x -> 0
 
 # A slice shares storage with its array, as for every Whackford array.
 : write-through ( -- i32 )

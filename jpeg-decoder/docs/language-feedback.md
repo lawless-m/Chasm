@@ -157,17 +157,21 @@ fancy 0.38 s against 0.24 s) but only about 0.03 s of CPU.
 - A greyscale row is one `bytes.put` copy from the upsampled plane: a
   12-megapixel greyscale file (`tmp/p3/big12g.jpg`) 0.128 s to 0.121 s of
   CPU.
-- Tried and reverted: `colour.put12` writing each 12-bit sample with one
-  `bytes.u16-at!` of the byte-swapped value instead of two `bytes.at!`
-  (big12b12 fancy 0.400 s to 0.412 s of CPU, nosmooth 0.395 s to 0.399 s):
-  `bytes.u16-at!` is a prelude word with its own range check, while
-  `bytes.at!` is an inline primitive. Also reverted in P2: `bits.fill` over
-  locals with one write-back (inside noise).
+- Tried and not kept: `colour.put12` writing each 12-bit sample with one
+  `bytes.u16-at!` of the byte-swapped value instead of two `bytes.at!`. As
+  a prelude word it was slower (big12b12 fancy 0.400 s to 0.412 s of CPU);
+  as an inline primitive it is level (0.407 s both), so the two byte stores
+  stay. Also reverted in P2: `bits.fill` over locals with one write-back
+  (inside noise). A branchless clamp with `select` is 2 to 4% slower on a
+  photograph and 3 to 5% faster on YCCK, so `colour.clamp` keeps its
+  branches.
 - `upsample.plain` copies a full-width row (hexp 1) with one `bytes.put`
   and replicates a subsampled one by reading each source sample once and
   storing it hexp times; `upsample.h2v2-row` computes each column sum once
   and slides it through last, this and next, as libjpeg's
-  h2v2_fancy_upsample; the 12-bit words do the same. `idct.block` and
+  h2v2_fancy_upsample; the 12-bit words do the same, `upsample.plain12`
+  copying a full-width row with one `array.copy` (big12b12 0.406 s to
+  0.401 s of CPU). `idct.block` and
   `idct.block12` load each column's and row's eight values once, shared by
   the zero-AC test and the transform. `huffman.decode`, holding 8 bits,
   takes the lookahead and drops the code's bits straight from buf and

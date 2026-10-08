@@ -31,8 +31,8 @@ declare upsample.plain ( plane bytes i32 i32 i32 -- )
 
 # upsample.plain for a 12-bit plane: replication from plane.wide into an
 # array i32 (plane, dst, dst offset, output width, output rows). A full-width
-# row is a sample loop (there is no array copy word); a wider one reads each
-# source sample once and stores it hexp times, as upsample.plain.
+# row is one array.copy; a wider one reads each source sample once and stores
+# it hexp times, as upsample.plain.
 declare upsample.plain12 ( plane array i32 i32 i32 i32 -- )
 
 : upsample.plain ( plane bytes i32 i32 i32 -- )
@@ -80,7 +80,7 @@ declare upsample.plain12 ( plane array i32 i32 i32 i32 -- )
     base  r vx i32.div_u stride i32.mul  i32.add :> from
     off r width i32.mul i32.add :> to
     hx 1 i32.eq
-    [ width [ :> x0  dst to x0 i32.add  src from x0 i32.add array.at  array.at! ] times ]
+    [ dst to  src from  width array.copy ]
     [
       width hx i32.div_u :> groups
       groups

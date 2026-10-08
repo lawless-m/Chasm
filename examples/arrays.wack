@@ -28,6 +28,21 @@ test evens : 10 iota evens array.len -> 5
 test index-of : 10 iota 7 index-of -> 7
 test index-of : 10 iota 70 index-of -> -1
 
+# array.copy ( dst at src from n ) and array.fill ( dst at value n ): whole
+# ranges at once, checked against both arrays' lengths.
+: spliced ( -- array i32 )
+  6 array.new ( array i32 ) :> d
+  d 0 -1 6 array.fill
+  d 1  5 iota 2  3 array.copy
+  d ;
+test spliced : spliced 0 array.at -> -1
+test spliced : spliced 1 array.at -> 2
+test spliced : spliced 3 array.at -> 4
+test spliced : spliced 4 array.at -> -1
+test spliced : 3 iota 2  3 iota 0  2 array.copy -> trap
+test spliced : 3 iota 1 7 3 array.fill -> trap
+test spliced : 3 array.new ( array str ) :> w  w 0 "hi" 3 array.fill  w 2 array.at -> "hi"
+
 # Functions as values: '\word takes an address, call calls it.
 : twice ( i32 [ i32 -- i32 ] -- i32 )  :> f  f call f call ;
 : inc ( i32 -- i32 )  1 i32.add ;

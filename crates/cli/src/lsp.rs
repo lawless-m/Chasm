@@ -279,6 +279,8 @@ pub(crate) fn primitive_effect(name: &str) -> Option<String> {
         "array.at" => "( array T i32 -- T )",
         "array.at!" => "( array T i32 T -- )",
         "array.slice" => "( array T i32 i32 -- array T )",
+        "array.copy" => "( array T i32 array T i32 i32 -- ): dst at src from n",
+        "array.fill" => "( array T i32 T i32 -- ): dst at value n",
         "call" => "( ... [ ... -- ... ] -- ... ): calls a function value",
         "leave" => "exits the innermost loop",
         "eq" => "( a a -- i32 ): equal by contents",

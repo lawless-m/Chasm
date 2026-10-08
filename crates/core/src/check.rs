@@ -1791,6 +1791,20 @@ impl<'c> Walker<'c> {
         }
     }
 
+    /// Leaves 1 when [start, start + n) is not inside [0, len): start > len
+    /// or n > len - start, unsigned, so negative values fail too.
+    fn range_check(&mut self, start: u32, n: u32, len: u32) {
+        self.op(I::LocalGet(start));
+        self.op(I::LocalGet(len));
+        self.op(I::I32GtU);
+        self.op(I::LocalGet(n));
+        self.op(I::LocalGet(len));
+        self.op(I::LocalGet(start));
+        self.op(I::I32Sub);
+        self.op(I::I32GtU);
+        self.op(I::I32Or);
+    }
+
     fn trap(&mut self, msg: &str) {
         let (ma, ml) = self.ctx.intern_str(msg);
         let (wa, wl) = self.ctx.intern_str(&self.name.clone());
@@ -3894,6 +3908,59 @@ impl<'c> Walker<'c> {
                         None => self.op(I::I32Load8U(byte)),
                     }
                 }
+                // ( addr len i [v] ): little-endian, k bytes from i, checked
+                // against the length inline as `bytes.at` is.
+                "bytes.u16-at" | "bytes.u16-at!" | "bytes.u32-at" | "bytes.u32-at!"
+                | "bytes.u64-at" | "bytes.u64-at!" => {
+                    let store = n.ends_with('!');
+                    let k: i32 = match &n[7..9] {
+                        "16" => 2,
+                        "32" => 4,
+                        _ => 8,
+                    };
+                    let mut ta = TempAlloc::default();
+                    let vt = if k == 8 { ValType::I64 } else { ValType::I32 };
+                    let val = store.then(|| self.temp(&mut ta, vt));
+                    let idx = self.temp(&mut ta, ValType::I32);
+                    let len = self.temp(&mut ta, ValType::I32);
+                    if let Some(v) = val {
+                        self.op(I::LocalSet(v));
+                    }
+                    self.op(I::LocalSet(idx));
+                    self.op(I::LocalSet(len));
+                    self.op(I::LocalGet(len));
+                    self.op(I::I32Const(k));
+                    self.op(I::I32LtU);
+                    self.op(I::LocalGet(idx));
+                    self.op(I::LocalGet(len));
+                    self.op(I::I32Const(k));
+                    self.op(I::I32Sub);
+                    self.op(I::I32GtU);
+                    self.op(I::I32Or);
+                    self.op(I::If(BlockType::Empty));
+                    self.trap(&format!("{n}: offset out of range"));
+                    self.op(I::End);
+                    self.op(I::LocalGet(idx));
+                    self.op(I::I32Add);
+                    let m = MemArg {
+                        offset: 0,
+                        align: 0,
+                        memory_index: 0,
+                    };
+                    match (val, k) {
+                        (Some(v), _) => {
+                            self.op(I::LocalGet(v));
+                            self.op(match k {
+                                2 => I::I32Store16(m),
+                                4 => I::I32Store(m),
+                                _ => I::I64Store(m),
+                            });
+                        }
+                        (None, 2) => self.op(I::I32Load16U(m)),
+                        (None, 4) => self.op(I::I32Load(m)),
+                        (None, _) => self.op(I::I64Load(m)),
+                    }
+                }
                 "mem.alloc" => self.op(I::Call(FN_ALLOC)),
                 // ( a0 a1 a2 op -- result ): exactly `rt.ring`'s parameters.
                 "ring.submit" => match self.code.last() {
@@ -4135,6 +4202,152 @@ impl<'c> Walker<'c> {
                 self.op(I::I32Add);
                 self.op(I::LocalGet(cnt));
                 self.stack.push(arr);
+                return Ok(Flow::Normal);
+            }
+            // ( dst at src from n ): n elements from src[from] to dst[at],
+            // both ranges checked; overlapping ranges copy as memmove does.
+            "array.copy" => {
+                let v = self.subst.fresh();
+                let arr = Ty::Array(Box::new(v.clone()));
+                self.pop_expect(n, &[arr.clone(), Ty::I32, arr, Ty::I32, Ty::I32], loc)?;
+                let t = self.concrete_elem(&v, n, loc)?;
+                let gc = self.gc_array(&t);
+                let mut ta = TempAlloc::default();
+                let cnt = self.temp(&mut ta, ValType::I32);
+                let from = self.temp(&mut ta, ValType::I32);
+                let (slen, sstart) = (
+                    self.temp(&mut ta, ValType::I32),
+                    self.temp(&mut ta, ValType::I32),
+                );
+                self.op(I::LocalSet(cnt));
+                self.op(I::LocalSet(from));
+                self.op(I::LocalSet(slen));
+                self.op(I::LocalSet(sstart));
+                let sref = gc.map(|ti| {
+                    let r = self.temp(&mut ta, ref_ty(ti));
+                    self.op(I::LocalSet(r));
+                    r
+                });
+                let at = self.temp(&mut ta, ValType::I32);
+                let (dlen, dstart) = (
+                    self.temp(&mut ta, ValType::I32),
+                    self.temp(&mut ta, ValType::I32),
+                );
+                self.op(I::LocalSet(at));
+                self.op(I::LocalSet(dlen));
+                self.op(I::LocalSet(dstart));
+                let dref = gc.map(|ti| {
+                    let r = self.temp(&mut ta, ref_ty(ti));
+                    self.op(I::LocalSet(r));
+                    r
+                });
+                self.range_check(from, cnt, slen);
+                self.range_check(at, cnt, dlen);
+                self.op(I::I32Or);
+                self.op(I::If(BlockType::Empty));
+                self.trap("array.copy: range out of bounds");
+                self.op(I::End);
+                match (gc, sref, dref) {
+                    (Some(ti), Some(sr), Some(dr)) => {
+                        self.op(I::LocalGet(dr));
+                        self.op(I::LocalGet(dstart));
+                        self.op(I::LocalGet(at));
+                        self.op(I::I32Add);
+                        self.op(I::LocalGet(sr));
+                        self.op(I::LocalGet(sstart));
+                        self.op(I::LocalGet(from));
+                        self.op(I::I32Add);
+                        self.op(I::LocalGet(cnt));
+                        self.op(I::ArrayCopy {
+                            array_type_index_dst: ti,
+                            array_type_index_src: ti,
+                        });
+                    }
+                    _ => {
+                        let es = t.elem_size() as i32;
+                        for (base, i) in [(dstart, at), (sstart, from)] {
+                            self.op(I::LocalGet(base));
+                            self.op(I::LocalGet(i));
+                            self.op(I::I32Const(es));
+                            self.op(I::I32Mul);
+                            self.op(I::I32Add);
+                        }
+                        self.op(I::LocalGet(cnt));
+                        self.op(I::I32Const(es));
+                        self.op(I::I32Mul);
+                        self.op(I::MemoryCopy {
+                            src_mem: 0,
+                            dst_mem: 0,
+                        });
+                    }
+                }
+                return Ok(Flow::Normal);
+            }
+            // ( dst at value n ): n elements of dst from at set to value.
+            "array.fill" => {
+                let v = self.subst.fresh();
+                let arr = Ty::Array(Box::new(v.clone()));
+                self.pop_expect(n, &[arr, Ty::I32, v.clone(), Ty::I32], loc)?;
+                let t = self.concrete_elem(&v, n, loc)?;
+                let gc = self.gc_array(&t);
+                let mut ta = TempAlloc::default();
+                let cnt = self.temp(&mut ta, ValType::I32);
+                self.op(I::LocalSet(cnt));
+                let val = self
+                    .stash(std::slice::from_ref(&t), Some(&mut ta))
+                    .pop()
+                    .unwrap();
+                let at = self.temp(&mut ta, ValType::I32);
+                let (dlen, dstart) = (
+                    self.temp(&mut ta, ValType::I32),
+                    self.temp(&mut ta, ValType::I32),
+                );
+                self.op(I::LocalSet(at));
+                self.op(I::LocalSet(dlen));
+                self.op(I::LocalSet(dstart));
+                let dref = gc.map(|ti| {
+                    let r = self.temp(&mut ta, ref_ty(ti));
+                    self.op(I::LocalSet(r));
+                    r
+                });
+                self.range_check(at, cnt, dlen);
+                self.op(I::If(BlockType::Empty));
+                self.trap("array.fill: range out of bounds");
+                self.op(I::End);
+                if let (Some(ti), Some(dr)) = (gc, dref) {
+                    self.op(I::LocalGet(dr));
+                    self.op(I::LocalGet(dstart));
+                    self.op(I::LocalGet(at));
+                    self.op(I::I32Add);
+                    self.unstash(&val);
+                    self.op(I::LocalGet(cnt));
+                    self.op(I::ArrayFill(ti));
+                } else {
+                    // A loop of element stores: memory.fill sets bytes, not
+                    // multi-byte values.
+                    let i = self.temp(&mut ta, ValType::I32);
+                    let idx = self.temp(&mut ta, ValType::I32);
+                    self.op(I::I32Const(0));
+                    self.op(I::LocalSet(i));
+                    self.op(I::Block(BlockType::Empty));
+                    self.op(I::Loop(BlockType::Empty));
+                    self.op(I::LocalGet(i));
+                    self.op(I::LocalGet(cnt));
+                    self.op(I::I32GeU);
+                    self.op(I::BrIf(1));
+                    self.op(I::LocalGet(at));
+                    self.op(I::LocalGet(i));
+                    self.op(I::I32Add);
+                    self.op(I::LocalSet(idx));
+                    self.store_elem(&t, &ArrLocals::Linear(dstart), idx, &val, &mut ta);
+                    self.op(I::LocalGet(i));
+                    self.op(I::I32Const(1));
+                    self.op(I::I32Add);
+                    self.op(I::LocalSet(i));
+                    self.op(I::Br(0));
+                    self.op(I::End);
+                    self.op(I::End);
+                }
                 return Ok(Flow::Normal);
             }
             "call" => {
