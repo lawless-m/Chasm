@@ -1,0 +1,65 @@
+exif-bad-no-sof.jpg colour refused NO_FRAME
+exif-bad-order.jpg colour refused BAD_EXIF
+exif-bad-truncated.jpg colour refused BAD_EXIF
+exif-big-offset.jpg colour refused BAD_EXIF
+exif-count-past.jpg colour refused BAD_EXIF
+exif-empty.jpg colour refused BAD_EXIF
+exif-ifd-at-end.jpg colour refused BAD_EXIF
+exif-ifd-past.jpg colour refused BAD_EXIF
+exif-orient-0.jpg colour refused BAD_EXIF
+exif-orient-9.jpg colour refused BAD_EXIF
+exif-short.jpg colour refused BAD_EXIF
+exif-wrong-count.jpg colour refused BAD_EXIF
+exif-wrong-type.jpg colour refused BAD_EXIF
+icc-after-sof.jpg colour match 1 300
+icc-chunk-dup.jpg colour refused BAD_ICC
+icc-chunk-missing.jpg colour refused BAD_ICC
+icc-cmyk-on-cmyk.jpg colour match 1 0
+icc-cmyk-on-rgb.jpg colour match 1 0
+icc-count-mismatch.jpg colour refused BAD_ICC
+icc-count-zero.jpg colour refused BAD_ICC
+icc-empty-chunk.jpg colour refused BAD_ICC
+icc-empty-second.jpg colour refused BAD_ICC
+icc-exact-chunk.jpg colour match 1 65519
+icc-gray-on-rgb.jpg colour match 1 0
+icc-grey.jpg grey match 1 300
+icc-header-only.jpg colour refused BAD_ICC
+icc-header-short.jpg colour refused BAD_ICC
+icc-min.jpg colour match 1 144
+icc-multi.jpg colour match 1 150000
+icc-no-acsp.jpg colour refused BAD_ICC
+icc-out-of-order.jpg colour match 1 150000
+icc-over-limit.jpg colour refused LIMIT_ICC
+icc-rgb-on-grey.jpg grey match 1 0
+icc-seq-over.jpg colour refused BAD_ICC
+icc-seq-zero.jpg colour refused BAD_ICC
+icc-single.jpg colour match 1 300
+icc-size-wrong.jpg colour refused BAD_ICC
+icc-tag-offset-wrap.jpg colour refused BAD_ICC
+icc-tag-past.jpg colour refused BAD_ICC
+icc-tag-table-past.jpg colour refused BAD_ICC
+icc-tiny.jpg colour refused BAD_ICC
+icc-two-chunks-min.jpg colour match 1 65520
+meta-exif-then-icc-bad.jpg colour refused BAD_EXIF
+meta-icc-missing-exif-bad.jpg colour refused BAD_EXIF
+meta-icc-then-exif-bad.jpg colour refused BAD_ICC
+orient-1.jpg colour match 1 0
+orient-2.jpg colour match 2 0
+orient-3.jpg colour match 3 0
+orient-4.jpg colour match 4 0
+orient-5.jpg colour match 5 0
+orient-6.jpg colour match 6 0
+orient-6-after-sof.jpg colour match 6 0
+orient-6-and-icc.jpg colour match 6 300
+orient-6-cmyk.jpg colour match 6 0
+orient-6-grey.jpg grey match 6 0
+orient-6-ii.jpg colour match 6 0
+orient-6-late.jpg colour match 6 0
+orient-6-p12.jpg colour match 6 0
+orient-6-p12-grey.jpg grey match 6 0
+orient-7.jpg colour match 7 0
+orient-8.jpg colour match 8 0
+orient-empty-ifd.jpg colour match 1 0
+orient-no-tag.jpg colour match 1 0
+orient-second-app1.jpg colour match 3 0
+orient-xmp-first.jpg colour match 6 0

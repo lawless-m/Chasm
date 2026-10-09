@@ -54,10 +54,22 @@ test encoder.load-icc : "/file/dev/null" encoder.load-icc -> trap
 test encoder.load-icc : "/nonexistent-dir-for-out-test/x.icc" encoder.load-icc -> trap
 test encoder.load-icc : "/file/dev/zero" encoder.load-icc -> trap
 
-# Path, width, height, ncomp, quality, sample (420, 422, 444; ignored for
-# greyscale), and the path of an ICC profile file or "" for none: the
-# encoder on a new file. The profile's bytes are embedded unchecked as APP2
-# chunks; a missing or empty file traps (encoder.load-icc).
+# Path, width, height, ncomp (1 or 3), quality, sample (420, 422, 444;
+# ignored for greyscale) and an ICC profile's bytes (empty for none): the
+# encoder on a new file, headers written, the profile embedded unchecked as
+# APP2 chunks (writer.icc) when non-empty.
+declare encoder.open-with ( str i32 i32 i32 i32 i32 bytes -- encoder )
+test encoder.open-with : "/file/dev/null" 1 1 3 50 420 0 bytes.new encoder.open-with encoder.hs -> 2
+test encoder.open-with : "/file/dev/null" 1 1 3 50 444 0 bytes.new encoder.open-with encoder.vs -> 1
+test encoder.open-with : "/file/dev/null" 1 1 1 50 420 0 bytes.new encoder.open-with encoder.hs -> 1
+test encoder.open-with : "/file/dev/null" 1 1 2 50 420 0 bytes.new encoder.open-with -> trap
+test encoder.open-with : "/file/dev/null" 1 1 3 50 411 0 bytes.new encoder.open-with -> trap
+test encoder.open-with : "/file/dev/null" 1 1 1 50 420 "0102ff" hex encoder.open-with encoder.o out.fill  "/file/dev/null" 1 1 1 50 420 0 bytes.new encoder.open-with encoder.o out.fill  i32.sub -> 21
+
+# Path, width, height, ncomp, quality, sample, and the path of an ICC
+# profile file or "" for none: the file's bytes are loaded
+# (encoder.load-icc: a missing or empty file traps) and encoder.open-with
+# opens the encoder with them.
 declare encoder.open ( str i32 i32 i32 i32 i32 str -- encoder )
 
 # Component c's horizontal and vertical sampling factors.
@@ -310,14 +322,18 @@ test encoder.row : 33 17 2 2 85 fx.imgp6-33x17 fx.feed3 fx.refp6-33x17-q85-420 h
   got 0 i32.eq [ "empty ICC profile" trap ] when
   buf 0 got bytes.slice ;
 
-: encoder.open ( str i32 i32 i32 i32 i32 str -- encoder )
-  :> icc :> sample :> q :> n :> h :> w :> path
+: encoder.open-with ( str i32 i32 i32 i32 i32 bytes -- encoder )
+  :> prof :> sample :> q :> n :> h :> w :> path
   n 1 i32.ne  n 3 i32.ne  i32.and [ "component count" trap ] when
   sample 420 i32.eq  sample 422 i32.eq i32.or  sample 444 i32.eq i32.or  i32.eqz [ "bad sample" trap ] when
   n 1 i32.eq  sample 444 i32.eq  i32.or [ 1 ] [ 2 ] if :> hs
   n 1 i32.eq  sample 420 i32.ne  i32.or [ 1 ] [ 2 ] if :> vs
-  icc str.len 0 i32.eq [ 0 bytes.new ] [ icc encoder.load-icc ] if :> prof
   path out.open w h n hs vs q prof encoder.on ;
+
+: encoder.open ( str i32 i32 i32 i32 i32 str -- encoder )
+  :> icc :> sample :> q :> n :> h :> w :> path
+  icc str.len 0 i32.eq [ 0 bytes.new ] [ icc encoder.load-icc ] if :> prof
+  path w h n q sample prof encoder.open-with ;
 
 : encoder.hc ( encoder i32 -- i32 )  :> c :> e  c 0 i32.eq [ e encoder.hs ] [ 1 ] if ;
 : encoder.vc ( encoder i32 -- i32 )  :> c :> e  c 0 i32.eq [ e encoder.vs ] [ 1 ] if ;

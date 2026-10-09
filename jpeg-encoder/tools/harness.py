@@ -50,7 +50,7 @@ Clean mode:
 Usage: python3 -I tools/harness.py clean [--quality 1,10,...] [--sample 420,422,444]
                                          [--wack PATH] [--jobs N] [--cpu SECONDS]
                                          [--memory BYTES] [--timeout SECONDS] [--out DIR]
-                                         [--expect any|match|refused:CODE] PATH...
+                                         [--manifest FILE] [--expect any|match|refused:CODE] PATH...
 
 Each PATH is a JPEG file or a directory walked as above. The program is
 CLEAN_FILES: the decoder's jpeg files in its own harness's order, the
@@ -66,20 +66,44 @@ decoded input leaves djpeg's fancy decode at
 jpeg-decoder with '/' as '_' (our own decode is deleted). A decoded input
 whose decode is P5 gives one case per quality, labelled grey; P6 gives
 qualities x samplings; any other decoder class gives one case at the first
-quality and sampling. Each case writes <out>/<flat without the
+quality and sampling. The metadata oracle, tools/meta_ref.py (written from
+SECURITY.md, independently of clean), predicts each input's orientation,
+carried ICC profile and any metadata refusal (BAD_EXIF, BAD_ICC,
+LIMIT_ICC). Each case writes <out>/<flat without the
 extension>-q<Q>-<S or grey>.jpg, and the reference beside it, .ref.jpg, is
-cjpeg (as above) of djpeg's decode. Classes, by text:
+
+    cjpeg (as above) [-icc PROFILE] (rotate(djpeg decode))
+
+rotate being tools/orient.py with the predicted orientation (the turned
+decode kept as <out>/decoder/<flat>.turned.pnm) and PROFILE the predicted
+profile (kept as <out>/decoder/<flat>.icc). clean's stdout ends
+`CLEANED width height orientation icc-bytes`. Classes, by text:
 
 - hang, cpu, memory, trap: as above
-- refused:  `REFUSED CODE:` on stderr; it passes only when the decoder
-            refused the same file with the same code (note
-            `decoder: <class> <code>` otherwise)
-- match:    stdout ends `FRAME ...` then `CLEANED w h 1 0`, the output is
-            non-empty, the decoder decoded the input, w and h are the
-            decode's, and the output is byte-identical to the reference
+- refused:  `REFUSED CODE:` on stderr; it passes when the decoder refused
+            the same file with the same code, or when the code is a
+            metadata code the oracle predicted (the decoder's walk runs
+            first, so a structural refusal keeps the decoder's code, while
+            a metadata refusal comes before any the decoder raises later);
+            otherwise the note is `decoder: <class> <code>, oracle: <code>`
+- match:    stdout ends `FRAME ...` then `CLEANED w h O B`, the output is
+            non-empty, the decoder decoded the input, O and B are the
+            oracle's orientation and profile length, w and h the decode's
+            (swapped for orientations 5 to 8), and the output is
+            byte-identical to the reference
 - mismatch: as match, but the files differ (the note as above)
 - odd:      anything else, including a clean output for an input the
-            decoder did not decode
+            decoder did not decode or the oracle expects refused, or an
+            orientation or profile length differing from the oracle's
+
+A match or mismatch line ends ` o<O> icc<B>`.
+
+With --manifest FILE (lines `<name>.jpg <grey|colour> match <O> <B>` or
+`<name>.jpg <grey|colour> refused <CODE>`, as tools/gen_meta.py writes
+them), every case of an input must also agree with its line: a match with
+that orientation and profile length, or that refusal; a disagreement fails
+with the note `manifest: expected ...`, and an input missing from the
+manifest fails with `manifest: not listed`.
 
 A case that is neither match nor mismatch has its output file deleted, so
 only real outputs remain. Failing: mismatch, trap, hang, cpu, memory, odd,
@@ -132,8 +156,11 @@ DECODER_HARNESS = os.path.join(ROOT, "..", "jpeg-decoder", "tools", "harness.py"
 CLEAN_FILES = [
     "../jpeg-decoder/jpeg/" + n + ".wack"
     for n in "limits refuse fixtures source frame coeffs markers bits huffman idct scan arith progressive upsample colour ppm rows".split()
-] + FILES[3:16] + ["clean.wack"]
-CLEANED = re.compile(r"^CLEANED ([0-9]+) ([0-9]+) 1 0$")
+] + FILES[3:16] + ["jpeg/orient.wack", "jpeg/meta.wack", "clean.wack"]
+META_REF = os.path.join(ROOT, "tools", "meta_ref.py")
+ORIENT = os.path.join(ROOT, "tools", "orient.py")
+CLEANED = re.compile(r"^CLEANED ([0-9]+) ([0-9]+) ([1-8]) ([0-9]+)$")
+METADATA_CODES = ("BAD_EXIF", "BAD_ICC", "LIMIT_ICC")
 REFUSED = re.compile(r"REFUSED ([A-Z_]+):")
 ENCODED = re.compile(r"^ENCODED \d+ \d+ \d+$")
 BAD = {"mismatch", "trap", "hang", "cpu", "memory", "odd"}
@@ -315,13 +342,22 @@ def load_decoder_harness():
     return dec
 
 
+def load_meta_ref():
+    spec = importlib.util.spec_from_file_location("meta_ref", META_REF)
+    meta = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(meta)
+    return meta
+
+
 def flat_name(dec, path):
     """The input's path under jpeg-decoder, '/' as '_'."""
     return os.path.relpath(path, dec.ROOT).replace("/", "_")
 
 
-def decode_phase(a, dec, path):
-    """The decoder's own run of one input: (class, code, note, oracle PNM or None)."""
+def decode_phase(a, dec, meta, path):
+    """The decoder's own run of one input and the metadata oracle's
+    prediction: (class, code, note, oracle PNM or None, (code, orientation,
+    profile))."""
     ddir = os.path.join(a.out, "decoder")
     os.makedirs(ddir, exist_ok=True)
     cls, code, msg = dec.run(a.wack, a.timeout, path, False, a.cpu, a.memory, ddir)
@@ -329,7 +365,26 @@ def decode_phase(a, dec, path):
     oracle = ours[: -len(".pnm")] + ".oracle.pnm"
     if os.path.exists(ours):
         os.remove(ours)
-    return cls, code, msg, (oracle if cls == "decoded" and os.path.isfile(oracle) else None)
+    oracle = oracle if cls == "decoded" and os.path.isfile(oracle) else None
+    grey = None if oracle is None else pnm_header(oracle)[0] == b"P5"
+    with open(path, "rb") as f:
+        pred = meta.predict(f.read(), grey)
+    # The reference's inputs are made here, once an input, so the cases that
+    # share them never write them concurrently: the decode turned by the
+    # predicted orientation and the predicted profile.
+    src, prof_path, why = oracle, None, ""
+    if oracle is not None and pred[0] is None:
+        flat = os.path.join(ddir, flat_name(dec, path))
+        if pred[1] != 1:
+            src = flat + ".turned.pnm"
+            r = subprocess.run([sys.executable, "-I", ORIENT, str(pred[1]), oracle, src], capture_output=True, text=True)
+            if r.returncode != 0:
+                src, why = None, r.stderr.strip()
+        if pred[2]:
+            prof_path = flat + ".icc"
+            with open(prof_path, "wb") as f:
+                f.write(pred[2])
+    return cls, code, msg, oracle, pred, (src, prof_path, why)
 
 
 def pnm_header(path):
@@ -339,7 +394,7 @@ def pnm_header(path):
 
 
 def clean_case(a, dec, case):
-    path, quality, sample, (dcls, dcode, dmsg, oracle) = case
+    path, quality, sample, (dcls, dcode, dmsg, oracle, (pcode, porient, pprof), (src, prof_path, why)) = case
     stem = os.path.splitext(flat_name(dec, path))[0]
     out = os.path.join(a.out, f"{stem}-q{quality}-{sample}.jpg")
     if os.path.exists(out):
@@ -348,35 +403,50 @@ def clean_case(a, dec, case):
     cls, code, first, lines = execute(a, CLEAN_FILES, stdin)
     agrees = True
     msg = first
+    orient, icc = None, None
     if cls == "refused":
-        agrees = dcls == "refused" and dcode == code
+        agrees = (dcls == "refused" and dcode == code) or (code in METADATA_CODES and code == pcode)
         if not agrees:
-            msg = f"decoder: {dcls} {dcode}"
+            msg = f"decoder: {dcls} {dcode}, oracle: {pcode or 'none'}"
     elif cls == "ran":
         m = CLEANED.match(lines[-1]) if lines else None
         if not (m and len(lines) >= 2 and lines[-2].startswith("FRAME ") and os.path.isfile(out) and os.path.getsize(out) > 0):
             cls, msg = "odd", first or (lines[-1] if lines else "no output")
+        elif pcode:
+            cls, msg = "odd", f"oracle: expected {pcode}"
         elif dcls != "decoded" or oracle is None:
             cls, msg = "odd", f"decoder: {dcls} {dcode}"
         else:
+            orient, icc = int(m.group(3)), int(m.group(4))
+            plen = len(pprof) if pprof else 0
             _, w, h = pnm_header(oracle)
-            if (int(m.group(1)), int(m.group(2))) != (w, h):
+            if porient >= 5:
+                w, h = h, w
+            if orient != porient:
+                cls, msg = "odd", f"orientation {orient} vs oracle {porient}"
+            elif icc != plen:
+                cls, msg = "odd", f"icc {icc} vs oracle {plen}"
+            elif (int(m.group(1)), int(m.group(2))) != (w, h):
                 cls, msg = "odd", f"CLEANED {m.group(1)}x{m.group(2)} vs decode {w}x{h}"
+            elif src is None:
+                cls, code, msg = "mismatch", "-", "orient.py failed: " + why
             else:
-                ref = out[: -len(".jpg")] + ".ref.jpg"
-                ok, why = reference(oracle, ref, quality, sample, a.timeout)
-                if not ok:
-                    cls, code, msg = "mismatch", "-", "cjpeg failed: " + why
-                else:
-                    cls, code, msg = compare_ref(out, ref)
+                if src:
+                    ref = out[: -len(".jpg")] + ".ref.jpg"
+                    ok, why = reference(src, ref, quality, sample, a.timeout, prof_path)
+                    if not ok:
+                        cls, code, msg = "mismatch", "-", "cjpeg failed: " + why
+                    else:
+                        cls, code, msg = compare_ref(out, ref)
     if cls not in ("match", "mismatch") and os.path.exists(out):
         os.remove(out)
-    return cls, code, msg, agrees
+    return cls, code, msg, agrees, orient, icc
 
 
 def clean(a):
     check_args(a)
     dec = load_decoder_harness()
+    meta = load_meta_ref()
     want = ["../jpeg-decoder/" + f for f in dec.FILES if f != "main.wack"]
     if CLEAN_FILES[:17] != want:
         sys.exit("harness: CLEAN_FILES must begin with the decoder's program order")
@@ -384,7 +454,7 @@ def clean(a):
     samples = a.sample.split(",")
     paths = inputs(a.paths)
     with concurrent.futures.ThreadPoolExecutor(a.jobs) as pool:
-        decoded = list(pool.map(lambda p: decode_phase(a, dec, p), paths))
+        decoded = list(pool.map(lambda p: decode_phase(a, dec, meta, p), paths))
     cases = []
     for p, d in zip(paths, decoded):
         if d[0] == "decoded" and d[3]:
@@ -397,14 +467,30 @@ def clean(a):
     with concurrent.futures.ThreadPoolExecutor(a.jobs) as pool:
         results = list(pool.map(lambda c: clean_case(a, dec, c), cases))
     failed = 0
-    for (p, q, s, _), (cls, code, msg, agrees) in zip(cases, results):
+    manifest = None
+    if a.manifest:
+        manifest = {}
+        for line in open(a.manifest):
+            f = line.split()
+            if f:
+                manifest[f[0]] = f[2:]
+    for (p, q, s, _), (cls, code, msg, agrees, orient, icc) in zip(cases, results):
         bad = cls in BAD or not agrees
+        if manifest is not None:
+            want = manifest.get(os.path.basename(p))
+            if want is None:
+                bad, msg = True, "manifest: not listed"
+            elif want[0] == "match" and not (cls == "match" and str(orient) == want[1] and str(icc) == want[2]):
+                bad, msg = True, f"manifest: expected match {want[1]} {want[2]}"
+            elif want[0] == "refused" and not (cls == "refused" and code == want[1]):
+                bad, msg = True, f"manifest: expected refused {want[1]}"
         if not bad and a.expect == "match" and cls != "match":
             bad = True
         if not bad and a.expect.startswith("refused:") and (cls, code) != ("refused", a.expect[8:]):
             bad = True
         rel = os.path.relpath(p, ROOT)
-        print(f"{cls:8} {code:20} {rel} q{q} {s}" + (f"  {msg}" if bad and msg else ""))
+        extra = f" o{orient} icc{icc}" if cls in ("match", "mismatch") and orient is not None else ""
+        print(f"{cls:8} {code:20} {rel} q{q} {s}{extra}" + (f"  {msg}" if bad and msg else ""))
         failed += bad
     print(f"== {len(cases)} cases, {failed} failing")
     sys.exit(1 if failed else 0)
@@ -523,6 +609,7 @@ def main():
     c.add_argument("--timeout", type=float, default=180)
     c.add_argument("--out", default=os.path.join(ROOT, "..", "tmp", "harness-enc", "clean"))
     c.add_argument("--expect", default="any")
+    c.add_argument("--manifest", default=None)
     c.add_argument("paths", nargs="+")
     c.set_defaults(fn=clean)
     r = sub.add_parser("roundtrip", help="outputs decoded by our decoder and by djpeg, which must agree")

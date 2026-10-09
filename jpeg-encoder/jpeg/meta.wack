@@ -1,0 +1,418 @@
+# The input's EXIF orientation and ICC profile, read by meta's own walk over
+# the bytes the decoder has already walked: clean runs it after
+# markers.walk, so every segment before the first SOS is well formed, and
+# before rows.setup (SECURITY.md, "EXIF orientation" and "ICC profile").
+#
+# EXIF: the first APP1 whose payload starts `Exif\0\0` is read, and only
+# the path to the orientation: a TIFF header `II*\0` or `MM\0*` giving the
+# byte order, the IFD0 offset and its two-byte entry count inside the
+# segment, all of IFD0's 12-byte entries inside it, and the first tag
+# 0x0112, which must be SHORT, count 1, value 1 to 8. Any failure refuses
+# BAD_EXIF; no Exif APP1, or no tag 0x0112, is orientation 1. Offsets are
+# compared unsigned, an offset is checked against the length before
+# anything is added to it, so a huge offset cannot wrap round into range.
+#
+# ICC: APP2 segments whose payload starts `ICC_PROFILE\0` are chunks. Each
+# chunk's header is checked as it is met, refusing BAD_ICC where libjpeg's
+# jpeg_read_icc_profile (jdicc.c) quietly ignores the profile: a payload of
+# 12 or 13 bytes (no sequence number or count; jdicc.c does not even count
+# it as a chunk), a zero count or one differing from the first chunk's, a
+# sequence number outside 1 to the count or seen before, a chunk with no
+# data. Chunks may arrive in any order, as jdicc.c reassembles them by
+# sequence number. After the walk every chunk must be present, then the
+# total is capped at MAX_ICC (LIMIT_ICC) before the joined buffer is
+# allocated, then the joined profile's structure is checked (BAD_ICC). A
+# valid profile whose colour space does not match the output is dropped,
+# not refused.
+#
+# The walk reads only the segments before the first SOS, as libjpeg's
+# jpeg_read_header saves only those; nothing after the SOS is looked at.
+# The decoder's markers.walk has already run over the same bytes, so every
+# structural refusal is the decoder's and every segment met here has a
+# valid length. Refusals come in file order of the segment that fails; the
+# joined ICC profile is checked after the walk (the same order as
+# tools/meta_ref.py).
+
+# Data, offset and byte order (0 little-endian, II; 1 big-endian, MM): the
+# unsigned 16-bit value there. Out of range is a plain trap: callers check
+# bounds first.
+declare meta.u16 ( bytes i32 i32 -- i32 )
+test meta.u16 : "1234" hex 0 0 meta.u16 -> 0x3412
+test meta.u16 : "1234" hex 0 1 meta.u16 -> 0x1234
+
+# The same for 32 bits; a value of 2^31 or more comes back negative, which
+# unsigned comparisons treat as out of range.
+declare meta.u32 ( bytes i32 i32 -- i32 )
+test meta.u32 : "12345678" hex 0 1 meta.u32 -> 0x12345678
+test meta.u32 : "78563412" hex 0 0 meta.u32 -> 0x12345678
+test meta.u32 : "123456" hex 0 1 meta.u32 -> trap
+
+# Data, the TIFF start (the APP1 payload's offset + 6, after `Exif\0\0`)
+# and the TIFF length (the payload's length - 6): the orientation, or a
+# BAD_EXIF refusal.
+declare meta.exif ( bytes i32 i32 -- i32 )
+test meta.exif : "4d4d002a00000008000101120003000000010006000000000000" hex 0 26 meta.exif -> 6
+test meta.exif : "49492a00080000000100120103000100000006000000" hex 0 22 meta.exif -> 6
+test meta.exif : "4d4d002a000000080001011a00050000000100000016" hex 0 22 meta.exif -> 1
+test meta.exif : "4d4d002a000000080000" hex 0 10 meta.exif -> 1
+test meta.exif : "4d4d002a000000080002011a00050000000100000026011200030000000100030000" hex 0 34 meta.exif -> 3
+test meta.exif : "ffff4d4d002a00000008000101120003000000010008000000000000" hex 2 26 meta.exif -> 8
+test meta.exif : "4d4d002b00000008000101120003000000010006000000000000" hex 0 26 meta.exif -> trap
+test meta.exif : "4d4d002a000000" hex 0 7 meta.exif -> trap
+test meta.exif : "4d4d002a00000100000101120003000000010006000000000000" hex 0 26 meta.exif -> trap
+test meta.exif : "4d4d002a0000001a000101120003000000010006000000000000" hex 0 26 meta.exif -> trap
+test meta.exif : "4d4d002a80000008000101120003000000010006000000000000" hex 0 26 meta.exif -> trap
+test meta.exif : "4d4d002a00000008000201120003000000010006000000000000" hex 0 26 meta.exif -> trap
+test meta.exif : "4d4d002a00000008000101120004000000010000000600000000" hex 0 26 meta.exif -> trap
+test meta.exif : "4d4d002a00000008000101120003000000020006000700000000" hex 0 26 meta.exif -> trap
+test meta.exif : "4d4d002a00000008000101120003000000010000000000000000" hex 0 26 meta.exif -> trap
+test meta.exif : "4d4d002a00000008000101120003000000010009000000000000" hex 0 26 meta.exif -> trap
+test meta.exif : "4d4d002a fffffffe 0001 0112 0003 00000001 0006 0000 00000000" hex 0 26 meta.exif -> trap
+
+: meta.u16 ( bytes i32 i32 -- i32 )
+  :> be :> at :> d
+  be
+  [ d at bytes.at 8 i32.shl  d at 1 i32.add bytes.at  i32.or ]
+  [ d at 1 i32.add bytes.at 8 i32.shl  d at bytes.at  i32.or ]
+  if ;
+
+: meta.u32 ( bytes i32 i32 -- i32 )
+  :> be :> at :> d
+  be
+  [ d at be meta.u16 16 i32.shl  d at 2 i32.add be meta.u16  i32.or ]
+  [ d at 2 i32.add be meta.u16 16 i32.shl  d at be meta.u16  i32.or ]
+  if ;
+
+: meta.exif ( bytes i32 i32 -- i32 )
+  :> len :> t :> d
+  len 8 i32.lt_s [ BAD_EXIF "TIFF header shorter than 8 bytes" refusal trap ] when
+  d t bytes.at :> b0
+  d t 1 i32.add bytes.at :> b1
+  d t 2 i32.add bytes.at :> b2
+  d t 3 i32.add bytes.at :> b3
+  b0 0x49 i32.eq  b1 0x49 i32.eq i32.and  b2 0x2a i32.eq i32.and  b3 0 i32.eq i32.and :> ii
+  b0 0x4d i32.eq  b1 0x4d i32.eq i32.and  b2 0 i32.eq i32.and  b3 0x2a i32.eq i32.and :> mm
+  ii mm i32.or i32.eqz [ BAD_EXIF "TIFF byte order" refusal trap ] when
+  mm :> be
+  d t 4 i32.add be meta.u32 :> off
+  off len i32.gt_u [ BAD_EXIF "IFD0 offset past the segment" refusal trap ] when
+  off 2 i32.add len i32.gt_u [ BAD_EXIF "IFD0 entry count past the segment" refusal trap ] when
+  d t off i32.add be meta.u16 :> n
+  off 2 i32.add n 12 i32.mul i32.add len i32.gt_u [ BAD_EXIF "IFD0 entries past the segment" refusal trap ] when
+  1 :> result!
+  0 :> found!
+  n
+  [
+    :> k
+    found i32.eqz
+    [
+      t off i32.add 2 i32.add k 12 i32.mul i32.add :> e
+      d e be meta.u16 0x0112 i32.eq
+      [
+        1 found!
+        d e 2 i32.add be meta.u16 3 i32.ne [ BAD_EXIF "orientation is not SHORT" refusal trap ] when
+        d e 4 i32.add be meta.u32 1 i32.ne [ BAD_EXIF "orientation count is not 1" refusal trap ] when
+        d e 8 i32.add be meta.u16 :> v
+        v 1 i32.lt_s  v 8 i32.gt_s  i32.or [ BAD_EXIF "orientation out of range" refusal trap ] when
+        v result!
+      ]
+      when
+    ]
+    when
+  ]
+  times
+  result ;
+
+# The ICC chunks seen so far: the count every chunk repeats (0 until the
+# first), each chunk's data offset in the input and length by sequence
+# number (256 entries each; a length of 0 is unseen), the data bytes so far
+# and the chunks so far.
+struct iccacc  count: i32  at: array i32  len: array i32  total: i32  seen: i32
+
+# A fresh accumulator; its arrays are allocated here, once a file.
+declare meta.icc-acc ( -- iccacc )
+
+# The accumulator, the data, an APP2 payload's offset and length (its
+# 12-byte `ICC_PROFILE\0` prefix already matched): the chunk's header
+# checked and the chunk recorded, or BAD_ICC.
+declare meta.icc-chunk ( iccacc bytes i32 i32 -- )
+
+# A total: LIMIT_ICC when over MAX_ICC.
+declare meta.icc-cap ( i32 -- )
+
+# The accumulator and the data: the joined profile, or an empty buffer when
+# no chunk was seen; a missing chunk is BAD_ICC, an oversize total
+# LIMIT_ICC (both before the one allocation).
+declare meta.icc-join ( iccacc bytes -- bytes )
+
+# A joined profile's structure, or BAD_ICC: at least 128 bytes, the size
+# field equal to the length, `acsp` at 36, the tag count and every 12-byte
+# tag entry inside the profile, each tag's offset plus size inside it (all
+# unsigned, checked without overflow).
+declare meta.icc-check ( bytes -- )
+
+# A checked profile and the output's component count: 1 when its colour
+# space is `RGB ` with 3 components or `GRAY` with 1, else 0 (dropped).
+declare meta.icc-space? ( bytes i32 -- i32 )
+
+# A length and the hex of a 4-byte colour space: a test profile of that
+# length (size field, space, acsp, tag count 1, one `desc` entry at 144
+# covering the rest), each part only where it fits, zero elsewhere.
+: fx.icc ( i32 str -- bytes )
+  :> space :> n
+  n bytes.new :> p
+  n 4 i32.ge_s [ p 0  n 24 i32.shr_u bytes.at!  p 1  n 16 i32.shr_u 255 i32.and bytes.at!  p 2  n 8 i32.shr_u 255 i32.and bytes.at!  p 3  n 255 i32.and bytes.at! ] when
+  n 20 i32.ge_s [ p 16  space hex bytes.as-str  bytes.put ] when
+  n 40 i32.ge_s [ p 36 "acsp" bytes.put ] when
+  n 132 i32.ge_s [ p 131 1 bytes.at! ] when
+  n 144 i32.ge_s
+  [
+    p 132 "desc" bytes.put
+    p 138 0 bytes.at!  p 139 144 bytes.at!
+    n 144 i32.sub :> size
+    p 140  size 24 i32.shr_u bytes.at!  p 141  size 16 i32.shr_u 255 i32.and bytes.at!
+    p 142  size 8 i32.shr_u 255 i32.and bytes.at!  p 143  size 255 i32.and bytes.at!
+  ]
+  when
+  p ;
+
+# Two APP2 payloads as hex (an empty second means one chunk), laid in one
+# buffer, each recorded by meta.icc-chunk, then joined.
+: fx.icc-join2 ( str str -- bytes )
+  :> b :> a
+  a b str.concat hex :> d
+  a str.len 2 i32.div_s :> la
+  b str.len 2 i32.div_s :> lb
+  meta.icc-acc :> acc
+  la 0 i32.gt_s [ acc d 0 la meta.icc-chunk ] when
+  lb 0 i32.gt_s [ acc d la lb meta.icc-chunk ] when
+  acc d meta.icc-join ;
+
+test meta.icc-join : "4943435f50524f46494c45000101aabbcc" "" fx.icc-join2 "aabbcc" hex eq -> 1
+test meta.icc-join : "4943435f50524f46494c45000102aabb" "4943435f50524f46494c45000202ccdd" fx.icc-join2 "aabbccdd" hex eq -> 1
+test meta.icc-join : "4943435f50524f46494c45000202ccdd" "4943435f50524f46494c45000102aabb" fx.icc-join2 "aabbccdd" hex eq -> 1
+test meta.icc-join : "" "" fx.icc-join2 bytes.len -> 0
+test meta.icc-join : "4943435f50524f46494c45000102aabb" "" fx.icc-join2 -> trap
+test meta.icc-join : "4943435f50524f46494c45000102aabb" "4943435f50524f46494c45000102ccdd" fx.icc-join2 -> trap
+test meta.icc-join : "4943435f50524f46494c45000102aabb" "4943435f50524f46494c45000203ccdd" fx.icc-join2 -> trap
+test meta.icc-join : "4943435f50524f46494c45000100aabb" "" fx.icc-join2 -> trap
+test meta.icc-join : "4943435f50524f46494c45000001aabb" "" fx.icc-join2 -> trap
+test meta.icc-join : "4943435f50524f46494c45000201aabb" "" fx.icc-join2 -> trap
+test meta.icc-join : "4943435f50524f46494c45000101" "" fx.icc-join2 -> trap
+test meta.icc-join : "4943435f50524f46494c450001" "" fx.icc-join2 -> trap
+test meta.icc-cap : MAX_ICC meta.icc-cap 1 -> 1
+test meta.icc-cap : MAX_ICC 1 i32.add meta.icc-cap -> trap
+test meta.icc-check : 300 "52474220" fx.icc meta.icc-check 1 -> 1
+test meta.icc-check : 144 "52474220" fx.icc meta.icc-check 1 -> 1
+test meta.icc-check : 300 "52474220" fx.icc dup 3 0x2d bytes.at! meta.icc-check -> trap
+test meta.icc-check : 300 "52474220" fx.icc dup 36 0x62 bytes.at! meta.icc-check -> trap
+test meta.icc-check : 100 "52474220" fx.icc meta.icc-check -> trap
+test meta.icc-check : 128 "52474220" fx.icc meta.icc-check -> trap
+test meta.icc-check : 132 "52474220" fx.icc meta.icc-check -> trap
+test meta.icc-check : 300 "52474220" fx.icc dup 131 0x10 bytes.at! meta.icc-check -> trap
+test meta.icc-check : 300 "52474220" fx.icc dup 130 0xff bytes.at! meta.icc-check -> trap
+test meta.icc-check : 300 "52474220" fx.icc dup 143 0xff bytes.at! meta.icc-check -> trap
+test meta.icc-check : 300 "52474220" fx.icc dup 136 0xff bytes.at! meta.icc-check -> trap
+test meta.icc-check : 300 "52474220" fx.icc dup 140 0xff bytes.at! meta.icc-check -> trap
+test meta.icc-space? : 300 "52474220" fx.icc 3 meta.icc-space? -> 1
+test meta.icc-space? : 300 "52474220" fx.icc 1 meta.icc-space? -> 0
+test meta.icc-space? : 300 "47524159" fx.icc 1 meta.icc-space? -> 1
+test meta.icc-space? : 300 "47524159" fx.icc 3 meta.icc-space? -> 0
+test meta.icc-space? : 300 "434d594b" fx.icc 3 meta.icc-space? -> 0
+test meta.icc-space? : 300 "434d594b" fx.icc 1 meta.icc-space? -> 0
+
+: meta.icc-acc ( -- iccacc )
+  256 array.new ( array i32 ) :> at
+  256 array.new ( array i32 ) :> len
+  0 at len 0 0 iccacc.new ;
+
+: meta.icc-chunk ( iccacc bytes i32 i32 -- )
+  :> n :> off :> d :> a
+  n 14 i32.lt_s [ BAD_ICC "ICC chunk without a sequence number and count" refusal trap ] when
+  d off 12 i32.add bytes.at :> seq
+  d off 13 i32.add bytes.at :> count
+  count 0 i32.eq [ BAD_ICC "ICC chunk count 0" refusal trap ] when
+  a iccacc.count 0 i32.ne  a iccacc.count count i32.ne  i32.and [ BAD_ICC "ICC chunk counts differ" refusal trap ] when
+  seq 1 i32.lt_s  seq count i32.gt_s  i32.or [ BAD_ICC "ICC sequence number out of range" refusal trap ] when
+  a iccacc.len seq array.at 0 i32.ne [ BAD_ICC "ICC sequence number repeated" refusal trap ] when
+  n 14 i32.eq [ BAD_ICC "ICC chunk with no data" refusal trap ] when
+  a count iccacc.count!
+  a iccacc.at seq  off 14 i32.add  array.at!
+  a iccacc.len seq  n 14 i32.sub  array.at!
+  a  a iccacc.total n i32.add 14 i32.sub  iccacc.total!
+  a  a iccacc.seen 1 i32.add  iccacc.seen! ;
+
+: meta.icc-cap ( i32 -- )
+  MAX_ICC i32.gt_s [ LIMIT_ICC "ICC profile over MAX_ICC" refusal trap ] when ;
+
+: meta.icc-join ( iccacc bytes -- bytes )
+  :> d :> a
+  a iccacc.seen 0 i32.eq
+  [ 0 bytes.new ]
+  [
+    a iccacc.count
+    [ 1 i32.add :> s  a iccacc.len s array.at 0 i32.eq [ BAD_ICC "missing chunk" refusal trap ] when ]
+    times
+    a iccacc.total meta.icc-cap
+    a iccacc.total bytes.new :> out
+    0 :> pos!
+    a iccacc.count
+    [
+      1 i32.add :> q
+      a iccacc.len q array.at :> l
+      out pos  d  a iccacc.at q array.at  l bytes.slice bytes.as-str  bytes.put
+      pos l i32.add pos!
+    ]
+    times
+    out
+  ]
+  if ;
+
+: meta.icc-check ( bytes -- )
+  :> p
+  p bytes.len :> n
+  n 128 i32.lt_s [ BAD_ICC "ICC profile under 128 bytes" refusal trap ] when
+  p 0 1 meta.u32 n i32.ne [ BAD_ICC "ICC size field" refusal trap ] when
+  p 36 bytes.at 0x61 i32.ne  p 37 bytes.at 0x63 i32.ne i32.or  p 38 bytes.at 0x73 i32.ne i32.or  p 39 bytes.at 0x70 i32.ne i32.or
+  [ BAD_ICC "no acsp" refusal trap ]
+  when
+  n 132 i32.lt_s [ BAD_ICC "no ICC tag count" refusal trap ] when
+  p 128 1 meta.u32 :> count
+  count  n 132 i32.sub 12 i32.div_u  i32.gt_u [ BAD_ICC "ICC tag table past the profile" refusal trap ] when
+  count
+  [
+    :> i
+    132 i 12 i32.mul i32.add :> e
+    p e 4 i32.add 1 meta.u32 :> toff
+    p e 8 i32.add 1 meta.u32 :> tsize
+    toff n i32.gt_u [ BAD_ICC "ICC tag offset past the profile" refusal trap ] when
+    tsize  n toff i32.sub  i32.gt_u [ BAD_ICC "ICC tag past the profile" refusal trap ] when
+  ]
+  times ;
+
+: meta.icc-space? ( bytes i32 -- i32 )
+  :> ncomp :> p
+  p 16 bytes.at :> c0
+  p 17 bytes.at :> c1
+  p 18 bytes.at :> c2
+  p 19 bytes.at :> c3
+  c0 0x52 i32.eq  c1 0x47 i32.eq i32.and  c2 0x42 i32.eq i32.and  c3 0x20 i32.eq i32.and  ncomp 3 i32.eq i32.and
+  c0 0x47 i32.eq  c1 0x52 i32.eq i32.and  c2 0x41 i32.eq i32.and  c3 0x59 i32.eq i32.and  ncomp 1 i32.eq i32.and
+  i32.or ;
+
+# What the walk found: the orientation (1 to 8) and the joined,
+# structure-checked ICC profile (empty when the input has none; whether it
+# is carried is clean's decision, by meta.icc-space?).
+struct meta  orientation: i32  icc: bytes
+
+# The input's bytes, already walked by the decoder's markers.walk: the
+# orientation and profile, or BAD_EXIF, BAD_ICC or LIMIT_ICC. A fresh
+# markers.open of the same bytes walks them; the decoder's own state is
+# left alone.
+declare meta.walk ( bytes -- meta )
+
+# Data, an offset and a string: 1 when the bytes there are the string's.
+declare meta.starts? ( bytes i32 str -- i32 )
+test meta.starts? : "457869660000" hex 0 "Exif\u{0}\u{0}" meta.starts? -> 1
+test meta.starts? : "457869660001" hex 0 "Exif\u{0}\u{0}" meta.starts? -> 0
+
+# The hex of a 2-byte orientation value: the hex of an APP1 Exif segment
+# carrying only tag 0x0112, big-endian.
+: fx.exif-seg ( str -- str )
+  :> v
+  "ffe10022457869660000" "4d4d002a0000000800010112000300000001" str.concat v str.concat "0000" str.concat "00000000" str.concat ;
+
+# A hex string inserted between APP0 and DQT in the decoder's tiny file.
+: fx.meta-file ( str -- bytes )
+  :> s
+  fx.soi fx.app0 str.concat s str.concat fx.dqt str.concat fx.sof str.concat fx.dht-dc str.concat fx.dht-ac str.concat fx.sos str.concat fx.tail str.concat hex ;
+
+# The same inserted between SOF and DHT.
+: fx.meta-file-late ( str -- bytes )
+  :> s
+  fx.soi fx.app0 str.concat fx.dqt str.concat fx.sof str.concat s str.concat fx.dht-dc str.concat fx.dht-ac str.concat fx.sos str.concat fx.tail str.concat hex ;
+
+# A profile: the tiny file with that profile in one APP2 chunk (1 of 1)
+# between APP0 and DQT.
+: fx.icc-file ( bytes -- bytes )
+  :> prof
+  fx.soi fx.app0 str.concat hex :> head
+  fx.dqt fx.sof str.concat fx.dht-dc str.concat fx.dht-ac str.concat fx.sos str.concat fx.tail str.concat hex :> tail
+  prof bytes.len :> n
+  head bytes.len 18 i32.add n i32.add tail bytes.len i32.add bytes.new :> f
+  f 0  head bytes.as-str  bytes.put
+  head bytes.len :> h
+  f h 0xFF bytes.at!
+  f h 1 i32.add 0xE2 bytes.at!
+  f h 2 i32.add  n 16 i32.add 8 i32.shr_u  bytes.at!
+  f h 3 i32.add  n 16 i32.add 255 i32.and  bytes.at!
+  f h 4 i32.add "ICC_PROFILE\u{0}" bytes.put
+  f h 16 i32.add 1 bytes.at!
+  f h 17 i32.add 1 bytes.at!
+  f h 18 i32.add  prof bytes.as-str  bytes.put
+  f  h 18 i32.add n i32.add  tail bytes.as-str  bytes.put
+  f ;
+
+test meta.walk : "" fx.meta-file meta.walk meta.orientation -> 1
+test meta.walk : "" fx.meta-file meta.walk meta.icc bytes.len -> 0
+test meta.walk : "0006" fx.exif-seg fx.meta-file meta.walk meta.orientation -> 6
+test meta.walk : "0008" fx.exif-seg fx.meta-file-late meta.walk meta.orientation -> 8
+test meta.walk : "0000" fx.exif-seg fx.meta-file meta.walk -> trap
+test meta.walk : "0009" fx.exif-seg fx.meta-file meta.walk -> trap
+test meta.walk : "0003" fx.exif-seg "0006" fx.exif-seg str.concat fx.meta-file meta.walk meta.orientation -> 3
+test meta.walk : "ffe10004aabb" "0006" fx.exif-seg str.concat fx.meta-file meta.walk meta.orientation -> 6
+test meta.walk : "ffe10008457869660000" fx.meta-file meta.walk -> trap
+test meta.walk : "ffe100074578696600" fx.meta-file meta.walk meta.orientation -> 1
+test meta.walk : "ffe200134943435f50524f46494c45000101aabbcc" fx.meta-file meta.walk -> trap
+test meta.walk : "ffe200134943435f50524f46494c45000001aabbcc" fx.meta-file meta.walk -> trap
+test meta.walk : "ffe200104943435f50524f46494c45000101" fx.meta-file meta.walk -> trap
+test meta.walk : "ffe2000e4943435f50524f46494c4500" fx.meta-file meta.walk -> trap
+test meta.walk : 300 "52474220" fx.icc fx.icc-file meta.walk meta.icc bytes.len -> 300
+test meta.walk : 300 "52474220" fx.icc fx.icc-file meta.walk meta.icc 300 "52474220" fx.icc eq -> 1
+test meta.walk : 300 "434d594b" fx.icc fx.icc-file meta.walk meta.icc 16 4 bytes.slice "434d594b" hex eq -> 1
+test meta.walk : 300 "52474220" fx.icc dup 36 0x62 bytes.at! fx.icc-file meta.walk -> trap
+test meta.walk : 100 bytes.new fx.icc-file meta.walk -> trap
+test meta.walk : 300 "52474220" fx.icc fx.icc-file meta.walk meta.orientation -> 1
+test meta.walk : fx.tiny hex meta.walk meta.orientation -> 1
+
+: meta.starts? ( bytes i32 str -- i32 )
+  :> s :> off :> d
+  1 :> ok!
+  s str.len [ :> i  d  off i i32.add  bytes.at  s i str.byte-at  i32.ne [ 0 ok! ] when ] times
+  ok ;
+
+: meta.walk ( bytes -- meta )
+  :> d
+  d markers.open :> j
+  j markers.soi
+  1 :> orientation!
+  0 :> seen-exif!
+  meta.icc-acc :> acc
+  1 :> more!
+  [ more ]
+  [
+    j markers.next-marker :> m
+    m 0xDA i32.eq  m 0xD9 i32.eq  i32.or
+    [ 0 more! ]
+    [
+      j markers.segment :> len :> start
+      m 0xE1 i32.eq  seen-exif i32.eqz i32.and  len 6 i32.ge_s i32.and
+      [
+        d start "Exif\u{0}\u{0}" meta.starts?
+        [
+          1 seen-exif!
+          d  start 6 i32.add  len 6 i32.sub  meta.exif orientation!
+        ]
+        when
+      ]
+      when
+      m 0xE2 i32.eq  len 12 i32.ge_s i32.and
+      [ d start "ICC_PROFILE\u{0}" meta.starts? [ acc d start len meta.icc-chunk ] when ]
+      when
+    ]
+    if
+  ]
+  while
+  acc d meta.icc-join :> icc
+  icc bytes.len 0 i32.gt_s [ icc meta.icc-check ] when
+  orientation icc meta.new ;

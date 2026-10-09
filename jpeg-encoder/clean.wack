@@ -7,17 +7,34 @@
 # `quality=Q` (default 85) and `sample=S` (420, 422 or 444, default 420;
 # ignored for greyscale); any other line is a trap. stdout gets the
 # decoder's `FRAME width height ncomp kind` line, then
-# `CLEANED width height 1 0`: the output's dimensions, the orientation,
-# which is always 1, and the ICC byte count, which is always 0 (the output
-# carries no metadata). The exit status is 0. A refusal is the decoder's
-# own trap `REFUSED CODE: message` on stderr with exit status 1; any other
-# trap is a bug. The output is opened after the decoder's setup, so a
-# refusal mid-scan can leave a partial file, which the harness ignores.
+# `CLEANED width height orientation icc-bytes`: the output's dimensions,
+# the orientation read from the input's Exif (1 when it has none), and the
+# length of the ICC profile carried into the output (0 when none). The exit
+# status is 0. A refusal is a trap `REFUSED CODE: message` on stderr with
+# exit status 1; any other trap is a bug. The output is opened after the
+# decoder's setup, so a refusal mid-scan can leave a partial file, which the
+# harness ignores.
+#
+# The steps: the decoder's source.load and markers.walk, so a structural
+# refusal before the SOS keeps the decoder's code; then meta.walk over the
+# same bytes, so BAD_EXIF, BAD_ICC and LIMIT_ICC (elimits.wack) come before
+# any scan or setup refusal; then the decoder's tables and rows.setup, and
+# the rows into the encoder. Orientation 1 streams the rows straight into
+# the encoder. Any other orientation collects the whole decoded image into
+# one buffer (clean.gather), allocated once after rows.setup and before the
+# encoder opens, then streams it turned (orient.row-into), a row at a time.
+# That buffer is at most MAX_PIXELS x 3 bytes, 240 MB; with the input (at
+# most 64 MB), the decoder's own buffers (an MCU-row ring a component and
+# about 8 MB more) and the encoder's (one iMCU row), the total stays inside
+# MEM_BUDGET for every frame the decoder accepts. The CLEANED dimensions are
+# the output's, after the turn. The input's profile is carried only when its
+# colour space is RGB for a colour output or GRAY for a greyscale one; any
+# other valid profile is dropped, with no refusal.
 #
 # The program is the decoder's jpeg files unchanged, in its own order
 # (limits, refuse, fixtures, source, frame, coeffs, markers, bits, huffman,
 # idct, scan, arith, progressive, upsample, colour, ppm, rows), then the
-# encoder's (elimits to options), then this file.
+# encoder's (elimits to options), orient.wack, meta.wack, then this file.
 
 # A decoded row as rows.decode hands it out, the encoder, the rescale table
 # and the 8-bit row buffer. An 8-bit frame passes an empty table and buffer
@@ -55,6 +72,43 @@ test clean.row : 0 "ff00" fx.clean-row -> trap
   ]
   if ;
 
+# The collected image: its buffer, the 8-bit row length (width x n), the
+# rows received so far, and the 12-bit rescale table (empty for 8 bits).
+struct gather  buf: bytes  rb: i32  rows: i32  tab: bytes
+
+# A row as rows.decode hands it out, and the gather: the row copied into
+# the image at rows x rb (a 12-bit row narrowed straight into that view),
+# then counted. A row past the image's height is a plain trap. Allocates
+# nothing but the view.
+declare clean.gather ( bytes gather -- )
+
+# A wide flag and the hex of two 1x1 RGB rows laid end to end (3 bytes a
+# row, or 6 when wide): a 1x2 image gathered from both rows.
+: fx.gather ( i32 str -- bytes )
+  :> img :> wide
+  img hex :> rows
+  wide [ 6 ] [ 3 ] if :> rl
+  6 bytes.new :> buf
+  buf 3 0  wide [ 4095 ppmread.rescale ] [ 0 bytes.new ] if  gather.new :> g
+  rows 0 rl bytes.slice g clean.gather
+  rows rl rl bytes.slice g clean.gather
+  buf ;
+
+test clean.gather : 0 "ff000000ff00" fx.gather "ff000000ff00" hex eq -> 1
+test clean.gather : 1 "0fff00000000000000000fff" fx.gather "ff00000000ff" hex eq -> 1
+test clean.gather : 0 "ff0000" fx.gather -> trap
+
+: clean.gather ( bytes gather -- )
+  :> g :> row
+  g gather.rb :> rb
+  g gather.rows rb i32.mul :> off
+  off rb i32.add  g gather.buf bytes.len  i32.gt_s [ "row past the image" trap ] when
+  g gather.tab bytes.len 0 i32.eq
+  [ g gather.buf off  row bytes.as-str  bytes.put ]
+  [ row  g gather.tab  g gather.buf off rb bytes.slice  ppmread.narrow-into ]
+  if
+  g  g gather.rows 1 i32.add  gather.rows! ;
+
 : main ( -- )
   read-line drop :> inp
   read-line drop :> outp
@@ -74,8 +128,10 @@ test clean.row : 0 "ff00" fx.clean-row -> trap
     when
   ]
   while
-  inp source.load markers.open :> j
+  inp source.load :> data
+  data markers.open :> j
   j markers.walk
+  data meta.walk :> m
   j huffman.scan-tables :> tabs
   j markers.frame-line println
   j tabs 1 rows.setup :> d
@@ -85,9 +141,27 @@ test clean.row : 0 "ff00" fx.clean-row -> trap
   d decoder.wide :> wide
   wide [ 4095 ppmread.rescale ] [ 0 bytes.new ] if :> tab
   wide [ width n i32.mul bytes.new ] [ 0 bytes.new ] if :> buf
-  outp width height n quality sample "" encoder.open :> e
-  d [ ( bytes -- ) e tab buf clean.row ] rows.decode
-  e encoder.close
-  "CLEANED " width i32.to-str str.concat " " str.concat height i32.to-str str.concat
-  " 1 0" str.concat
+  m meta.icc bytes.len 0 i32.gt_s [ m meta.icc n meta.icc-space? ] [ 0 ] if :> carry
+  carry [ m meta.icc ] [ 0 bytes.new ] if :> prof
+  m meta.orientation :> o
+  o width height orient.dims :> oh :> ow
+  o 1 i32.eq
+  [
+    outp width height n quality sample prof encoder.open-with :> e
+    d [ ( bytes -- ) e tab buf clean.row ] rows.decode
+    e encoder.close
+  ]
+  [
+    width height i32.mul n i32.mul bytes.new :> img
+    img  width n i32.mul  0 tab gather.new :> g
+    d [ ( bytes -- ) g clean.gather ] rows.decode
+    outp ow oh n quality sample prof encoder.open-with :> e2
+    ow n i32.mul bytes.new :> row
+    oh [ :> y  img width height n o row y orient.row-into  e2 row encoder.row ] times
+    e2 encoder.close
+  ]
+  if
+  "CLEANED " ow i32.to-str str.concat " " str.concat oh i32.to-str str.concat
+  " " str.concat  m meta.orientation i32.to-str str.concat
+  " " str.concat  prof bytes.len i32.to-str str.concat
   println ;
