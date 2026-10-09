@@ -3,16 +3,15 @@
 #
 # Protocol: stdin gives the input path and the output path (natively
 # `/file/<absolute path>`), then option lines until the end of input:
-# `quality=Q` (default 85) and `sample=S` (420, 422 or 444; read and
-# ignored, as greyscale ignores it). stdout gets `ENCODED width height
-# ncomp`, with the JPEG written to the output path; the exit status is 0. A
-# refusal is a trap `REFUSED CODE: message` on stderr with exit status 1;
-# any other trap is an encoder bug.
+# `quality=Q` (default 85) and `sample=S` (420, 422 or 444, default 420;
+# ignored for greyscale). stdout gets `ENCODED width height ncomp`, with
+# the JPEG written to the output path; the exit status is 0. A refusal is
+# a trap `REFUSED CODE: message` on stderr with exit status 1; any other
+# trap is an encoder bug.
 #
-# E1 scope: greyscale (P5) input only; a P6 input is the plain trap
-# `E1: greyscale only` from encoder.open until E2 adds colour. Rows stream
-# from the loaded image into the row sink encoder.wack, which codes one MCU
-# row at a time.
+# P5 (greyscale) and P6 (RGB) inputs are both encoded: rows stream from the
+# loaded image into the row sink encoder.wack, which codes one iMCU row at
+# a time.
 
 # The quality so far and an option line: the quality after it.
 declare encode.option ( i32 str -- i32 )
@@ -25,6 +24,18 @@ test encode.option : 85 "quality=" encode.option -> trap
 test encode.option : 85 "quality=5x" encode.option -> trap
 test encode.option : 85 "colour=red" encode.option -> trap
 test encode.option : 85 "q" encode.option -> trap
+
+# The sample so far and an option line: for `sample=S` the sample, which
+# must be 420, 422 or 444; any other line leaves it as it was.
+declare encode.sample ( i32 str -- i32 )
+test encode.sample : 420 "sample=444" encode.sample -> 444
+test encode.sample : 420 "sample=422" encode.sample -> 422
+test encode.sample : 444 "sample=420" encode.sample -> 420
+test encode.sample : 420 "quality=50" encode.sample -> 420
+test encode.sample : 420 "" encode.sample -> 420
+test encode.sample : 420 "sample=411" encode.sample -> trap
+test encode.sample : 420 "sample=" encode.sample -> trap
+test encode.sample : 420 "sample=420x" encode.sample -> trap
 
 : encode.prefix? ( str str -- i32 )
   :> p :> line
@@ -46,23 +57,42 @@ test encode.option : 85 "q" encode.option -> trap
   ]
   if ;
 
+: encode.sample ( i32 str -- i32 )
+  :> line :> s
+  line "sample=" encode.prefix?
+  [
+    line 7 str.i32-at :> next :> v
+    next line str.len i32.ne [ "bad sample" trap ] when
+    v 420 i32.eq  v 422 i32.eq i32.or  v 444 i32.eq i32.or  i32.eqz [ "bad sample" trap ] when
+    v
+  ]
+  [ s ]
+  if ;
+
 : main ( -- )
   read-line drop :> inp
   read-line drop :> outp
   85 :> quality!
+  420 :> sample!
   1 :> more!
   [ more ]
   [
     read-line more!
     :> line
-    more [ quality line encode.option quality! ] when
+    more
+    [
+      quality line encode.option quality!
+      sample line encode.sample sample!
+    ]
+    when
   ]
   while
   inp ppmread.load :> im
   im pimage.w :> w
   im pimage.h :> h
-  outp w h im pimage.n quality 420 "" encoder.open :> e
-  h [ :> y  e  im pimage.data y w i32.mul w bytes.slice  encoder.row ] times
+  outp w h im pimage.n quality sample "" encoder.open :> e
+  w im pimage.n i32.mul :> rb
+  h [ :> y  e  im pimage.data y rb i32.mul rb bytes.slice  encoder.row ] times
   e encoder.close
   "ENCODED " im pimage.w i32.to-str str.concat " " str.concat im pimage.h i32.to-str str.concat
   " " str.concat im pimage.n i32.to-str str.concat

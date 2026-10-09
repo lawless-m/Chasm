@@ -10,7 +10,9 @@
 # field, a value over 65535, a zero width or height, a maxval other than
 # 255, a header running past the bytes read, a sample count over
 # MAX_PIXELS x 3, or data shorter than width x height x components. Bytes
-# after the samples are ignored, as cjpeg ignores them.
+# after the samples are ignored, as cjpeg ignores them. Maxval 4095, a
+# 12-bit decode scaled to 8 bits, is the one milestone limit here: E3
+# accepts it.
 #
 # A load allocates twice: a 64-byte header buffer (the longest legal header,
 # `P6\n65535 65535\n255\n`, is 19 bytes) and the data buffer.

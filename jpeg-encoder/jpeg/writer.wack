@@ -80,7 +80,11 @@ test out.flush : 64 fx.out dup 1 out.byte dup out.flush out.fill -> trap
 
 # The markers, in the order cjpeg writes them: SOI, APP0 (JFIF), [APP2 ICC
 # chunks, E4], DQT, SOF0, DHT for each table used, SOS, the scan, EOI
-# (jcmarker.c). DQT writes its table in zigzag order.
+# (jcmarker.c). DQT writes its table in zigzag order. Greyscale writes one
+# component with writer.sof0 and writer.sos; colour writes DQT 0, DQT 1,
+# writer.sof0-ycc, DHT 0x00, 0x10, 0x01, 0x11 and writer.sos-ycc, with
+# components 1 (Y, sampled hs x vs, tables 0), 2 (Cb) and 3 (Cr) (1x1,
+# tables 1), as jpeg_set_colorspace sets them for YCbCr.
 
 declare writer.soi ( out -- )
 test writer.soi : 64 fx.out dup writer.soi fx.taken fx.soi hex eq -> 1
@@ -175,3 +179,51 @@ test writer.eoi : 64 fx.out dup writer.eoi fx.taken "ffd9" hex eq -> 1
   o 0 out.byte  o 63 out.byte  o 0 out.byte ;
 
 : writer.eoi ( out -- )  0xFFD9 out.u16 ;
+
+# The output, width, height and the luma sampling factors hs, vs (2 2 for
+# 420, 2 1 for 422, 1 1 for 444): a three-component SOF0.
+declare writer.sof0-ycc ( out i32 i32 i32 i32 -- )
+
+# A three-component SOS: Y with tables 0 and 0, Cb and Cr with 1 and 1.
+declare writer.sos-ycc ( out -- )
+
+# Segments of cjpeg -dct int -baseline -quality 50 -sample S of a 1x1 red
+# P6: DQT 1, SOF0 at 2x2, 2x1 and 1x1, DHT 0x01, DHT 0x11, SOS.
+: fx.dqt1-q50 ( -- str )  "ffdb0043011112121815182f1a1a2f634238426363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363" ;
+: fx.sof-420 ( -- str )  "ffc00011080001000103012200021101031101" ;
+: fx.sof-422 ( -- str )  "ffc00011080001000103012100021101031101" ;
+: fx.sof-444 ( -- str )  "ffc00011080001000103011100021101031101" ;
+: fx.dht01 ( -- str )  "ffc4001f0100030101010101010101010000000000000102030405060708090a0b" ;
+: fx.dht11 ( -- str )  "ffc400b51100020102040403040705040400010277000102031104052131061241510761711322328108144291a1b1c109233352f0156272d10a162434e125f11718191a262728292a35363738393a434445464748494a535455565758595a636465666768696a737475767778797a82838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae2e3e4e5e6e7e8e9eaf2f3f4f5f6f7f8f9fa" ;
+: fx.sos-ycc ( -- str )  "ffda000c03010002110311003f00" ;
+
+test writer.sof0-ycc : 64 fx.out dup 1 1 2 2 writer.sof0-ycc fx.taken fx.sof-420 hex eq -> 1
+test writer.sof0-ycc : 64 fx.out dup 1 1 2 1 writer.sof0-ycc fx.taken fx.sof-422 hex eq -> 1
+test writer.sof0-ycc : 64 fx.out dup 1 1 1 1 writer.sof0-ycc fx.taken fx.sof-444 hex eq -> 1
+test writer.sof0-ycc : 64 fx.out dup 300 200 2 2 writer.sof0-ycc fx.taken 5 4 bytes.slice "00c8012c" hex eq -> 1
+test writer.sos-ycc : 64 fx.out dup writer.sos-ycc fx.taken fx.sos-ycc hex eq -> 1
+test writer.dqt : 128 fx.out dup 1 qtables.chrom 50 qtables.scaled writer.dqt fx.taken fx.dqt1-q50 hex eq -> 1
+test writer.dht : 64 fx.out dup 0x01 htables.dc-chrom-bits htables.dc-chrom-vals writer.dht fx.taken fx.dht01 hex eq -> 1
+test writer.dht : 256 fx.out dup 0x11 htables.ac-chrom-bits htables.ac-chrom-vals writer.dht fx.taken fx.dht11 hex eq -> 1
+
+: writer.sof0-ycc ( out i32 i32 i32 i32 -- )
+  :> vs :> hs :> ht :> wd :> o
+  o 0xFFC0 out.u16
+  o 17 out.u16
+  o 8 out.byte
+  o ht out.u16
+  o wd out.u16
+  o 3 out.byte
+  o 1 out.byte  o  hs 4 i32.shl vs i32.or  out.byte  o 0 out.byte
+  o 2 out.byte  o 0x11 out.byte  o 1 out.byte
+  o 3 out.byte  o 0x11 out.byte  o 1 out.byte ;
+
+: writer.sos-ycc ( out -- )
+  :> o
+  o 0xFFDA out.u16
+  o 12 out.u16
+  o 3 out.byte
+  o 1 out.byte  o 0x00 out.byte
+  o 2 out.byte  o 0x11 out.byte
+  o 3 out.byte  o 0x11 out.byte
+  o 0 out.byte  o 63 out.byte  o 0 out.byte ;

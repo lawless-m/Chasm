@@ -1,0 +1,106 @@
+# RGB to YCbCr as libjpeg-turbo's jccolor.c does it (rgb_ycc_start's
+# tables, rgb_ycc_convert): 16-bit fixed point, eight tables of 256 entries
+# made once by ccolour.make.
+#
+# FIX(x) is x x 65536 rounded: FIX(0.29900) 19595, FIX(0.58700) 38470,
+# FIX(0.11400) 7471, FIX(0.16874) 11059, FIX(0.33126) 21709,
+# FIX(0.50000) 32768, FIX(0.41869) 27439, FIX(0.08131) 5329. The rounding
+# term ONE_HALF (32768) sits in the blue-to-Y table; the chroma offset
+# 128 << 16 and the fudge ONE_HALF - 1 sit in the table that is both
+# blue-to-Cb and red-to-Cr, so every sum is non-negative and below 2^24 and
+# each output is the sum shifted right by 16, with no clamp. The values are
+# checked against tools/prep_oracle.c, libjpeg's own converter.
+
+struct ccolour  r-y: array i32  g-y: array i32  b-y: array i32  r-cb: array i32  g-cb: array i32  b-cb: array i32  g-cr: array i32  b-cr: array i32
+
+# The eight tables (b-cb is also the red-to-Cr table).
+declare ccolour.make ( -- ccolour )
+
+# The tables and r g b: y cb cr.
+declare ccolour.pixel ( ccolour i32 i32 i32 -- i32 i32 i32 )
+
+# The tables, a packed RGB row (3 bytes a pixel), the destination, the
+# plane stride and the offset: pixel x writes Y to dst[at + x], Cb to
+# dst[at + plane + x] and Cr to dst[at + 2 plane + x].
+declare ccolour.row ( ccolour bytes bytes i32 i32 -- )
+
+# The values libjpeg's rgb_ycc_convert gives (tools/prep_oracle.c ycc).
+test ccolour.pixel : ccolour.make 0 0 0 ccolour.pixel -> 0 128 128
+test ccolour.pixel : ccolour.make 255 255 255 ccolour.pixel -> 255 128 128
+test ccolour.pixel : ccolour.make 255 0 0 ccolour.pixel -> 76 85 255
+test ccolour.pixel : ccolour.make 0 255 0 ccolour.pixel -> 150 44 21
+test ccolour.pixel : ccolour.make 0 0 255 ccolour.pixel -> 29 255 107
+test ccolour.pixel : ccolour.make 255 255 0 ccolour.pixel -> 226 0 149
+test ccolour.pixel : ccolour.make 0 255 255 ccolour.pixel -> 179 171 0
+test ccolour.pixel : ccolour.make 255 0 255 ccolour.pixel -> 105 212 235
+test ccolour.pixel : ccolour.make 128 128 128 ccolour.pixel -> 128 128 128
+test ccolour.pixel : ccolour.make 77 77 77 ccolour.pixel -> 77 128 128
+test ccolour.pixel : ccolour.make 10 200 30 ccolour.pixel -> 124 75 47
+test ccolour.pixel : ccolour.make 201 75 0 ccolour.pixel -> 104 69 197
+test ccolour.pixel : ccolour.make 100 50 200 ccolour.pixel -> 82 195 141
+test ccolour.pixel : ccolour.make 1 2 3 ccolour.pixel -> 2 129 127
+
+# The hex of an RGB row: a fresh buffer of its three planes, each as long
+# as the row has pixels.
+: fx.crow ( str -- bytes )
+  hex :> src
+  src bytes.len 3 i32.div_s :> n
+  n 3 i32.mul bytes.new :> dst
+  ccolour.make src dst n 0 ccolour.row
+  dst ;
+
+# Pixels 255 0 0 and 10 200 30: Y 76 124, Cb 85 75, Cr 255 47.
+test ccolour.row : "ff00000ac81e" fx.crow 0 bytes.at -> 76
+test ccolour.row : "ff00000ac81e" fx.crow 1 bytes.at -> 124
+test ccolour.row : "ff00000ac81e" fx.crow 2 bytes.at -> 85
+test ccolour.row : "ff00000ac81e" fx.crow 3 bytes.at -> 75
+test ccolour.row : "ff00000ac81e" fx.crow 4 bytes.at -> 255
+test ccolour.row : "ff00000ac81e" fx.crow 5 bytes.at -> 47
+# At offset 3 with stride 5 in a 20-byte buffer: Cr of pixel 1 at 3 + 10 + 1.
+test ccolour.row : ccolour.make "ff00000ac81e" hex 20 bytes.new dup :> d 5 3 ccolour.row d 14 bytes.at -> 47
+test ccolour.row : ccolour.make "ff00000ac81e" hex 20 bytes.new dup :> d 5 3 ccolour.row d 3 bytes.at -> 76
+test ccolour.row : "ff00000a" fx.crow bytes.len -> trap
+
+: ccolour.make ( -- ccolour )
+  256 array.new ( array i32 ) :> ry
+  256 array.new ( array i32 ) :> gy
+  256 array.new ( array i32 ) :> by
+  256 array.new ( array i32 ) :> rcb
+  256 array.new ( array i32 ) :> gcb
+  256 array.new ( array i32 ) :> bcb
+  256 array.new ( array i32 ) :> gcr
+  256 array.new ( array i32 ) :> bcr
+  256
+  [
+    :> i
+    ry i  19595 i i32.mul  array.at!
+    gy i  38470 i i32.mul  array.at!
+    by i  7471 i i32.mul 32768 i32.add  array.at!
+    rcb i  0 11059 i32.sub i i32.mul  array.at!
+    gcb i  0 21709 i32.sub i i32.mul  array.at!
+    bcb i  32768 i i32.mul  128 16 i32.shl i32.add  32767 i32.add  array.at!
+    gcr i  0 27439 i32.sub i i32.mul  array.at!
+    bcr i  0 5329 i32.sub i i32.mul  array.at!
+  ]
+  times
+  ry gy by rcb gcb bcb gcr bcr ccolour.new ;
+
+: ccolour.pixel ( ccolour i32 i32 i32 -- i32 i32 i32 )
+  :> b :> g :> r :> t
+  t ccolour.r-y r array.at  t ccolour.g-y g array.at i32.add  t ccolour.b-y b array.at i32.add  16 i32.shr_s
+  t ccolour.r-cb r array.at  t ccolour.g-cb g array.at i32.add  t ccolour.b-cb b array.at i32.add  16 i32.shr_s
+  t ccolour.b-cb r array.at  t ccolour.g-cr g array.at i32.add  t ccolour.b-cr b array.at i32.add  16 i32.shr_s ;
+
+: ccolour.row ( ccolour bytes bytes i32 i32 -- )
+  :> at :> plane :> dst :> src :> t
+  src bytes.len 3 i32.rem_s 0 i32.ne [ "rgb row length" trap ] when
+  src bytes.len 3 i32.div_s
+  [
+    :> x
+    x 3 i32.mul :> k
+    t  src k bytes.at  src k 1 i32.add bytes.at  src k 2 i32.add bytes.at  ccolour.pixel :> cr :> cb :> y
+    dst  at x i32.add  y bytes.at!
+    dst  at plane i32.add x i32.add  cb bytes.at!
+    dst  at plane 2 i32.mul i32.add x i32.add  cr bytes.at!
+  ]
+  times ;

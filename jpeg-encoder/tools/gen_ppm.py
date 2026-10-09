@@ -3,9 +3,13 @@
 Usage: python3 -I tools/gen_ppm.py flat WIDTH HEIGHT VALUE OUT
        python3 -I tools/gen_ppm.py noise WIDTH HEIGHT SEED OUT
        python3 -I tools/gen_ppm.py pattern WIDTH HEIGHT SEED OUT
+       python3 -I tools/gen_ppm.py noise6 WIDTH HEIGHT SEED OUT
+       python3 -I tools/gen_ppm.py pattern6 WIDTH HEIGHT SEED OUT
 
-Each writes a binary P5 (greyscale, maxval 255) image of WIDTH x HEIGHT
-pixels with the header `P5\\n<w> <h>\\n255\\n`, rows top to bottom:
+`flat`, `noise` and `pattern` write a binary P5 (greyscale, maxval 255)
+image of WIDTH x HEIGHT pixels with the header `P5\\n<w> <h>\\n255\\n`;
+`noise6` and `pattern6` write a P6 (RGB, maxval 255) image, three bytes a
+pixel, with the header `P6\\n<w> <h>\\n255\\n`. Rows run top to bottom:
 
 - `flat`: every pixel VALUE (0 to 255); the E0 gate's 8x8 inputs.
 - `noise`: `random.Random(SEED).randbytes(WIDTH * HEIGHT)`, deterministic
@@ -15,8 +19,14 @@ pixels with the header `P5\\n<w> <h>\\n255\\n`, rows top to bottom:
   coefficients at mid qualities (EOB and ZRL cases), dense ones at the
   edges.
 
-`noise` and `pattern` are the `encode` inputs of the E1 gate: every grid
-size at every grid quality.
+- `noise6`: `random.Random(SEED).randbytes(WIDTH * HEIGHT * 3)`.
+- `pattern6`: `pattern` per channel with a different period for each of
+  red, green and blue, the same inverted rectangle, and sparse seeded
+  texture added to all three channels of a pixel.
+
+`noise` and `pattern` are the `encode` inputs of the E1 gate (every grid
+size at every grid quality); `noise6` and `pattern6` those of the E2 gate
+(every grid size at every grid quality and sampling).
 """
 
 import argparse
@@ -68,6 +78,37 @@ def pattern(a):
             f.write(bytes(row))
 
 
+def noise6(a):
+    size_ok(a)
+    with open(a.out, "wb") as f:
+        f.write(b"P6\n%d %d\n255\n" % (a.width, a.height))
+        f.write(random.Random(a.seed).randbytes(a.width * a.height * 3))
+
+
+def pattern6(a):
+    size_ok(a)
+    w, h = a.width, a.height
+    cx = [[int(64 * math.sin(x / (9.0 + 3 * c))) for x in range(w)] for c in range(3)]
+    cy = [[int(64 * math.cos(y / (13.0 + 5 * c))) for y in range(h)] for c in range(3)]
+    r = random.Random(a.seed)
+    with open(a.out, "wb") as f:
+        f.write(b"P6\n%d %d\n255\n" % (w, h))
+        for y in range(h):
+            row = bytearray(w * 3)
+            inside_y = h // 4 <= y < h // 2
+            for x in range(w):
+                inv = inside_y and w // 4 <= x < w // 2
+                vs = [128 + cx[c][x] + cy[c][y] for c in range(3)]
+                if inv:
+                    vs = [255 - v for v in vs]
+                if r.randrange(16) == 0:
+                    vs = [v + r.randrange(-8, 9) for v in vs]
+                for c in range(3):
+                    v = vs[c]
+                    row[3 * x + c] = 0 if v < 0 else 255 if v > 255 else v
+            f.write(bytes(row))
+
+
 def main():
     ap = argparse.ArgumentParser(description="Generate PPM test images for the encoder.")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -77,7 +118,12 @@ def main():
     p.add_argument("value", type=int)
     p.add_argument("out")
     p.set_defaults(fn=flat)
-    for name, fn, help in (("noise", noise, "seeded random bytes"), ("pattern", pattern, "seeded smooth content with edges")):
+    for name, fn, help in (
+        ("noise", noise, "seeded random bytes"),
+        ("pattern", pattern, "seeded smooth content with edges"),
+        ("noise6", noise6, "seeded random RGB bytes"),
+        ("pattern6", pattern6, "seeded smooth RGB content with edges"),
+    ):
         p = sub.add_parser(name, help=help)
         p.add_argument("width", type=int)
         p.add_argument("height", type=int)

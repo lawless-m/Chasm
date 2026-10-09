@@ -6,8 +6,9 @@
 # unused) and vals (the symbols in code order); DHT writes bits[1..16] then
 # the vals. The derived `htab` holds each symbol's code and size, indexed by
 # symbol; size 0 means the symbol has no code. Each table word allocates, so
-# callers build a table once, outside any loop. The colour-difference (Cb, Cr)
-# tables arrive with colour, in E2.
+# callers build a table once, outside any loop. The file holds all four
+# Annex K tables: DC and AC for luminance (table 0) and for chrominance
+# (table 1, for Cb and Cr).
 
 struct htab  code: array i32  size: array i32
 
@@ -72,6 +73,58 @@ test htables.ac-lum : htables.ac-lum htab.size 240 array.at -> 11
 test htables.ac-lum : htables.ac-lum htab.code 250 array.at -> 65534
 test htables.ac-lum : htables.ac-lum htab.size 250 array.at -> 16
 
+declare htables.dc-chrom-bits ( -- array i32 )
+test htables.dc-chrom-bits : htables.dc-chrom-bits array.len -> 17
+test htables.dc-chrom-bits : htables.dc-chrom-bits 2 array.at -> 3
+
+declare htables.dc-chrom-vals ( -- array i32 )
+test htables.dc-chrom-vals : htables.dc-chrom-vals array.len -> 12
+
+declare htables.ac-chrom-bits ( -- array i32 )
+test htables.ac-chrom-bits : htables.ac-chrom-bits array.len -> 17
+test htables.ac-chrom-bits : 0 htables.ac-chrom-bits 17 [ :> i  dup i array.at  rot i32.add swap ] times drop -> 162
+
+declare htables.ac-chrom-vals ( -- array i32 )
+test htables.ac-chrom-vals : htables.ac-chrom-vals array.len -> 162
+test htables.ac-chrom-vals : htables.ac-chrom-vals 0 array.at -> 0
+test htables.ac-chrom-vals : htables.ac-chrom-vals 31 array.at -> 240
+test htables.ac-chrom-vals : htables.ac-chrom-vals 161 array.at -> 250
+
+# The derived chrominance codes, by Annex C from the bits: DC lengths 2 (3
+# codes), 3, 4, ... 11 (1 each): symbols 0, 1, 2 are 00, 01, 10; 3 is 110
+# (6); each further symbol one longer, ending with 11 at 11111111110
+# (2046). AC lengths 2 (2 codes: 0x00 EOB 00, 0x01 01), 3 (1: 0x02 100),
+# 4 (2: 0x03 1010, 0x11 1011), ...; ZRL (0xF0) is the 32nd symbol, 10 bits,
+# 1111111010 (1018); 0xFA is the last code, 16 ones but the last (65534).
+declare htables.dc-chrom ( -- htab )
+test htables.dc-chrom : htables.dc-chrom htab.code 0 array.at -> 0
+test htables.dc-chrom : htables.dc-chrom htab.size 0 array.at -> 2
+test htables.dc-chrom : htables.dc-chrom htab.code 1 array.at -> 1
+test htables.dc-chrom : htables.dc-chrom htab.size 1 array.at -> 2
+test htables.dc-chrom : htables.dc-chrom htab.code 2 array.at -> 2
+test htables.dc-chrom : htables.dc-chrom htab.size 2 array.at -> 2
+test htables.dc-chrom : htables.dc-chrom htab.code 3 array.at -> 6
+test htables.dc-chrom : htables.dc-chrom htab.size 3 array.at -> 3
+test htables.dc-chrom : htables.dc-chrom htab.code 11 array.at -> 2046
+test htables.dc-chrom : htables.dc-chrom htab.size 11 array.at -> 11
+test htables.dc-chrom : htables.dc-chrom htab.size 12 array.at -> 0
+
+declare htables.ac-chrom ( -- htab )
+test htables.ac-chrom : htables.ac-chrom htab.code 0 array.at -> 0
+test htables.ac-chrom : htables.ac-chrom htab.size 0 array.at -> 2
+test htables.ac-chrom : htables.ac-chrom htab.code 1 array.at -> 1
+test htables.ac-chrom : htables.ac-chrom htab.size 1 array.at -> 2
+test htables.ac-chrom : htables.ac-chrom htab.code 2 array.at -> 4
+test htables.ac-chrom : htables.ac-chrom htab.size 2 array.at -> 3
+test htables.ac-chrom : htables.ac-chrom htab.code 3 array.at -> 10
+test htables.ac-chrom : htables.ac-chrom htab.size 3 array.at -> 4
+test htables.ac-chrom : htables.ac-chrom htab.code 17 array.at -> 11
+test htables.ac-chrom : htables.ac-chrom htab.size 17 array.at -> 4
+test htables.ac-chrom : htables.ac-chrom htab.code 240 array.at -> 1018
+test htables.ac-chrom : htables.ac-chrom htab.size 240 array.at -> 10
+test htables.ac-chrom : htables.ac-chrom htab.code 250 array.at -> 65534
+test htables.ac-chrom : htables.ac-chrom htab.size 250 array.at -> 16
+
 : htables.hexn ( str -- array i32 )
   hex :> src
   src bytes.len :> n
@@ -117,3 +170,14 @@ test htables.ac-lum : htables.ac-lum htab.size 250 array.at -> 16
 
 : htables.dc-lum ( -- htab )  htables.dc-lum-bits htables.dc-lum-vals htables.derive ;
 : htables.ac-lum ( -- htab )  htables.ac-lum-bits htables.ac-lum-vals htables.derive ;
+
+: htables.dc-chrom-bits ( -- array i32 )  "0000030101010101010101010000000000" htables.hexn ;
+: htables.dc-chrom-vals ( -- array i32 )  "000102030405060708090a0b" htables.hexn ;
+: htables.ac-chrom-bits ( -- array i32 )  "0000020102040403040705040400010277" htables.hexn ;
+
+: htables.ac-chrom-vals ( -- array i32 )
+  "000102031104052131061241510761711322328108144291a1b1c109233352f0156272d10a162434e125f11718191a262728292a35363738393a434445464748494a535455565758595a636465666768696a737475767778797a82838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae2e3e4e5e6e7e8e9eaf2f3f4f5f6f7f8f9fa"
+  htables.hexn ;
+
+: htables.dc-chrom ( -- htab )  htables.dc-chrom-bits htables.dc-chrom-vals htables.derive ;
+: htables.ac-chrom ( -- htab )  htables.ac-chrom-bits htables.ac-chrom-vals htables.derive ;

@@ -67,6 +67,8 @@ FILES = [
     "jpeg/huffenc.wack",
     "jpeg/fdct.wack",
     "jpeg/quantise.wack",
+    "jpeg/ccolour.wack",
+    "jpeg/downsample.wack",
     "jpeg/encoder.wack",
     "encode.wack",
 ]
