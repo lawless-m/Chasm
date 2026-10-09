@@ -4,7 +4,7 @@ for byte.
 Usage: python3 -I tools/harness.py encode [--quality 1,10,...] [--sample 420,422,444]
                                           [--wack PATH] [--jobs N] [--cpu SECONDS]
                                           [--memory BYTES] [--timeout SECONDS] [--out DIR]
-                                          [--expect any|match|refused:CODE] PATH...
+                                          [--icc PATH] [--expect any|match|refused:CODE] PATH...
 
 Each PATH is a .ppm, .pgm or .pnm file, or a directory walked recursively
 (names ending in .md or .txt are skipped). A case is one input at one
@@ -13,11 +13,12 @@ so it gives one case per quality, labelled `grey`.
 
 Protocol: the encoder runs as `prlimit --cpu=S:S+1 --data=BYTES wack run
 <FILES>` from the jpeg-encoder directory, with stdin lines `/file<input>`,
-`/file<output>`, `quality=Q`, and `sample=S` for a P6 input. The output is
+`/file<output>`, `quality=Q`, `sample=S` for a P6 input, and with --icc
+`icc=/file<profile>`. The output is
 <out>/<input stem>-q<Q>-<S or grey>.jpg (a stale one is deleted first); the
 reference beside it, .ref.jpg, is made by the oracle:
 
-    cjpeg -dct int -baseline -quality Q -sample 2x2|2x1|1x1 [-grayscale] -outfile REF IN
+    cjpeg -dct int -baseline -quality Q -sample 2x2|2x1|1x1 [-grayscale] [-icc PROFILE] -outfile REF IN
 
 with 420, 422, 444 as 2x2, 2x1, 1x1, and a P5 input as 1x1 with
 -grayscale. -baseline clamps the scaled tables to 255, as the encoder
@@ -165,7 +166,7 @@ def note(ours, ref):
     return f"byte {k} in {locate(b, k)}"
 
 
-def reference(src, dst, quality, sample, timeout):
+def reference(src, dst, quality, sample, timeout, icc=None):
     """Make cjpeg's file: (True, '') when it wrote one, else (False, its
     first stderr line)."""
     if os.path.exists(dst):
@@ -174,7 +175,7 @@ def reference(src, dst, quality, sample, timeout):
     try:
         r = subprocess.run(
             [CJPEG, "-dct", "int", "-baseline", "-quality", str(quality), "-sample", "1x1" if grey else SAMPLES[sample],
-             *(["-grayscale"] if grey else []), "-outfile", dst, src],
+             *(["-grayscale"] if grey else []), *(["-icc", icc] if icc else []), "-outfile", dst, src],
             capture_output=True,
             text=True,
             errors="replace",
@@ -195,6 +196,8 @@ def run(a, case):
     if os.path.exists(out):
         os.remove(out)
     stdin = f"/file{path}\n/file{out}\nquality={quality}\n" + ("" if sample == "grey" else f"sample={sample}\n")
+    if a.icc:
+        stdin += f"icc=/file{a.icc}\n"
     try:
         r = subprocess.run(
             [*limits(a.cpu, a.memory), a.wack, "run", *FILES],
@@ -221,7 +224,7 @@ def run(a, case):
     last = lines[-1] if lines else ""
     if ENCODED.match(last) and os.path.isfile(out) and os.path.getsize(out) > 0:
         ref = out[: -len(".jpg")] + ".ref.jpg"
-        ok, why = reference(path, ref, quality, sample, a.timeout)
+        ok, why = reference(path, ref, quality, sample, a.timeout, a.icc)
         if not ok:
             return "mismatch", "-", "cjpeg failed: " + why
         if open(out, "rb").read() != open(ref, "rb").read():
@@ -242,6 +245,8 @@ def encode(a):
             sys.exit(f"harness: unknown sample {s}")
     a.out = os.path.abspath(a.out)
     a.wack = os.path.abspath(a.wack)
+    if a.icc:
+        a.icc = os.path.abspath(a.icc)
     cases = []
     for p in inputs(a.paths):
         with open(p, "rb") as f:
@@ -277,6 +282,7 @@ def main():
     e.add_argument("--memory", type=int, default=MEMORY)
     e.add_argument("--timeout", type=float, default=180)
     e.add_argument("--out", default=OUT)
+    e.add_argument("--icc", default=None)
     e.add_argument("--expect", default="any")
     e.add_argument("paths", nargs="+")
     e.set_defaults(fn=encode)

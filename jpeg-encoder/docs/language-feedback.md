@@ -23,3 +23,6 @@ each with what the encoder does about it.
 - `bytes.u16-at` reads little-endian only, so the two-byte big-endian
   samples of a 12-bit PPM are read as two `bytes.at` and combined
   (ppmread.narrow).
+- There is no way to learn a file's size before reading it, so
+  encoder.load-icc reads an ICC profile into one buffer of MAX_ICC + 1
+  bytes (1 MB) whatever the profile's size.

@@ -78,9 +78,9 @@ test out.flush : 64 fx.out dup 1 out.byte dup out.flush out.fill -> trap
   o out.flush
   o out.h host.close drop ;
 
-# The markers, in the order cjpeg writes them: SOI, APP0 (JFIF), [APP2 ICC
-# chunks, E4], DQT, SOF0, DHT for each table used, SOS, the scan, EOI
-# (jcmarker.c). DQT writes its table in zigzag order. Greyscale writes one
+# The markers, in the order cjpeg writes them: SOI, APP0 (JFIF), APP2 ICC
+# chunks when a profile is carried (writer.icc, jcicc.c), DQT, SOF0, DHT
+# for each table used, SOS, the scan, EOI (jcmarker.c). DQT writes its table in zigzag order. Greyscale writes one
 # component with writer.sof0 and writer.sos; colour writes DQT 0, DQT 1,
 # writer.sof0-ycc, DHT 0x00, 0x10, 0x01, 0x11 and writer.sos-ycc, with
 # components 1 (Y, sampled hs x vs, tables 0), 2 (Cb) and 3 (Cr) (1x1,
@@ -93,6 +93,24 @@ test writer.soi : 64 fx.out dup writer.soi fx.taken fx.soi hex eq -> 1
 # defaults, emit_jfif_app0).
 declare writer.app0 ( out -- )
 test writer.app0 : 64 fx.out dup writer.app0 fx.taken fx.app0 hex eq -> 1
+
+# The output and an ICC profile of n bytes (n > 0): APP2 segments as
+# jcicc.c jpeg_write_icc_profile writes them. The profile is cut into
+# chunks of at most 65519 bytes (65533 less the 14-byte header); each is
+# FF E2, the length (chunk + 16), `ICC_PROFILE` and a 0 byte, the sequence
+# number from 1, the chunk count, then the chunk's bytes, copied as they
+# are (marker segments are not stuffed). An empty profile traps, where
+# libjpeg errors JERR_BUFFER_SIZE.
+declare writer.icc ( out bytes -- )
+test writer.icc : 64 fx.out dup "0102ff" hex writer.icc fx.taken "ffe200134943435f50524f46494c450001010102ff" hex eq -> 1
+test writer.icc : 65600 fx.out dup 65519 bytes.new writer.icc out.fill -> 65537
+test writer.icc : 65600 fx.out dup 65519 bytes.new writer.icc fx.taken 0 18 bytes.slice "ffe2ffff4943435f50524f46494c45000101" hex eq -> 1
+test writer.icc : 65600 fx.out dup 65520 bytes.new writer.icc out.fill -> 65556
+test writer.icc : 65600 fx.out dup 65520 bytes.new writer.icc fx.taken 0 18 bytes.slice "ffe2ffff4943435f50524f46494c45000102" hex eq -> 1
+test writer.icc : 65600 fx.out dup 65520 bytes.new writer.icc fx.taken 65537 18 bytes.slice "ffe200114943435f50524f46494c45000202" hex eq -> 1
+test writer.icc : 140000 fx.out dup 131039 bytes.new writer.icc out.fill -> 131093
+test writer.icc : 140000 fx.out dup 131039 bytes.new writer.icc fx.taken 131074 18 bytes.slice "ffe200114943435f50524f46494c45000303" hex eq -> 1
+test writer.icc : 64 fx.out dup 0 bytes.new writer.icc -> trap
 
 # The output, a table id (0 to 3), a 64-entry table in natural order.
 declare writer.dqt ( out i32 array i32 -- )
@@ -134,6 +152,31 @@ test writer.eoi : 64 fx.out dup writer.eoi fx.taken "ffd9" hex eq -> 1
   o 0 out.byte
   o 1 out.u16  o 1 out.u16
   o 0 out.byte  o 0 out.byte ;
+
+: writer.icc ( out bytes -- )
+  :> prof :> o
+  prof bytes.len :> n
+  n 0 i32.eq [ "empty ICC profile" trap ] when
+  n 65519 i32.div_u :> full
+  full 65519 i32.mul n i32.eq [ full ] [ full 1 i32.add ] if :> count
+  0 :> at!
+  1 :> seq!
+  [ at n i32.lt_u ]
+  [
+    n at i32.sub :> left
+    left 65519 i32.gt_u [ 65519 ] [ left ] if :> len
+    o 0xFFE2 out.u16
+    o  len 16 i32.add  out.u16
+    o 0x49 out.byte  o 0x43 out.byte  o 0x43 out.byte  o 0x5F out.byte
+    o 0x50 out.byte  o 0x52 out.byte  o 0x4F out.byte  o 0x46 out.byte
+    o 0x49 out.byte  o 0x4C out.byte  o 0x45 out.byte  o 0 out.byte
+    o seq out.byte
+    o count out.byte
+    len [ :> k  o  prof at k i32.add bytes.at  out.byte ] times
+    at len i32.add at!
+    seq 1 i32.add seq!
+  ]
+  while ;
 
 : writer.dqt ( out i32 array i32 -- )
   :> t :> id :> o
