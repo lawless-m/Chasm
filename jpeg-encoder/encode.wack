@@ -9,9 +9,10 @@
 # a trap `REFUSED CODE: message` on stderr with exit status 1; any other
 # trap is an encoder bug.
 #
-# P5 (greyscale) and P6 (RGB) inputs are both encoded: rows stream from the
-# loaded image into the row sink encoder.wack, which codes one iMCU row at
-# a time.
+# P5 (greyscale) and P6 (RGB) inputs are both encoded, with maxval 255 or
+# 4095: 12-bit samples are scaled to 8 bits by ppmread, so the encoder sees
+# 8-bit rows either way. Rows stream from the loaded image into the row
+# sink encoder.wack, which codes one iMCU row at a time.
 
 # The quality so far and an option line: the quality after it.
 declare encode.option ( i32 str -- i32 )

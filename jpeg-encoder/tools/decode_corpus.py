@@ -1,14 +1,15 @@
 """Decode every file of the decoder's corpus with the oracle's djpeg, keeping
 the decodes the encoder takes as `encode` inputs.
 
-Usage: python3 -I tools/decode_corpus.py [--jobs N] [--timeout SECONDS] OUTDIR
+Usage: python3 -I tools/decode_corpus.py [--jobs N] [--timeout SECONDS] [--keep-p12 DIR] OUTDIR
 
 Walks ../jpeg-decoder/corpus recursively in sorted order (names ending in
 .md or .txt skipped) and runs `djpeg -dct int -pnm -outfile <tmp> <file>` on
 each. Classes:
 
 - refused: djpeg exited non-zero, timed out or wrote nothing
-- p12:     maxval 4095, a 12-bit decode (E3's input; ppmread refuses it)
+- p12:     maxval 4095, a 12-bit decode; deleted unless --keep-p12 DIR,
+           which moves it to DIR, named as a kept decode is
 - other:   any other maxval but 255
 - large:   width x height over 80000000 (MAX_PIXELS in
            ../jpeg-decoder/jpeg/limits.wack: ppmread refuses such an image
@@ -16,12 +17,13 @@ each. Classes:
 - kept:    everything else; moved to OUTDIR/<path under corpus, '/' as '_'>
            with the extension .pgm (P5) or .ppm (P6)
 
-Every decode but a kept one is deleted. OUTDIR/manifest.txt has one line a
+Every other decode is deleted. OUTDIR/manifest.txt has one line a
 corpus file, `<class> <path> [<w>x<h> <P5|P6> <maxval>]`, in corpus order,
 and a last line `== decoded D kept K p12 T other O large L refused R`
 (decoded = kept + p12 + other + large), also printed to stdout. The kept
-files are the E2 gate's corpus inputs; rerunning gives the same files and
-manifest.
+files are the E2 gate's corpus inputs and the --keep-p12 files the E3
+gate's; the classes and the manifest are the same with or without
+--keep-p12, and rerunning gives the same files and manifest.
 """
 
 import argparse
@@ -54,7 +56,7 @@ def header(path):
     return fields[0].decode(), int(fields[1]), int(fields[2]), int(fields[3])
 
 
-def decode(rel, outdir, timeout):
+def decode(rel, outdir, timeout, p12dir):
     flat = rel.replace("/", "_")
     tmp = os.path.join(outdir, "tmp-" + flat + ".pnm")
     try:
@@ -77,8 +79,11 @@ def decode(rel, outdir, timeout):
         cls = "large"
     else:
         cls = "kept"
+    name = os.path.splitext(flat)[0] + (".pgm" if magic == "P5" else ".ppm")
     if cls == "kept":
-        os.replace(tmp, os.path.join(outdir, os.path.splitext(flat)[0] + (".pgm" if magic == "P5" else ".ppm")))
+        os.replace(tmp, os.path.join(outdir, name))
+    elif cls == "p12" and p12dir:
+        os.replace(tmp, os.path.join(p12dir, name))
     else:
         os.remove(tmp)
     return cls, info
@@ -88,14 +93,17 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--timeout", type=float, default=120)
+    ap.add_argument("--keep-p12", metavar="DIR")
     ap.add_argument("outdir")
     a = ap.parse_args()
     if not os.path.isfile(DJPEG):
         sys.exit(f"decode_corpus: {DJPEG} is missing")
     os.makedirs(a.outdir, exist_ok=True)
+    if a.keep_p12:
+        os.makedirs(a.keep_p12, exist_ok=True)
     files = corpus_files()
     with concurrent.futures.ThreadPoolExecutor(a.jobs) as pool:
-        results = list(pool.map(lambda f: decode(f, a.outdir, a.timeout), files))
+        results = list(pool.map(lambda f: decode(f, a.outdir, a.timeout, a.keep_p12), files))
     counts = {k: 0 for k in ("kept", "p12", "other", "large", "refused")}
     lines = []
     for rel, (cls, info) in zip(files, results):

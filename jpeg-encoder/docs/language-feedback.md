@@ -20,3 +20,6 @@ each with what the encoder does about it.
 - A stack assertion asserts the whole stack, so `64 array.new ( array i32 )`
   fails when other values sit beneath it (encoder.on builds its struct's
   fields on the stack). The array is bound to a local first, then pushed.
+- `bytes.u16-at` reads little-endian only, so the two-byte big-endian
+  samples of a 12-bit PPM are read as two `bytes.at` and combined
+  (ppmread.narrow).
