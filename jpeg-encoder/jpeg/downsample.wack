@@ -23,40 +23,40 @@ declare downsample.full ( bytes i32 bytes i32 i32 -- )
 
 # Downsampled into fresh buffers of n samples: one row (h2v1), two rows of
 # the given length back to back (h2v2), n samples copied from offset 4.
-: fx.h2v1 ( str i32 -- bytes )  :> n :> s  n bytes.new :> d  s fx.ds 0 d 0 n downsample.h2v1  d ;
-: fx.h2v2 ( str i32 i32 -- bytes )  :> n :> len :> s  n bytes.new :> d  s fx.ds 0 len d 0 n downsample.h2v2  d ;
-: fx.full ( str i32 -- bytes )  :> n :> s  n bytes.new :> d  s fx.ds 4 d 0 n downsample.full  d ;
+: fx.ds-h2v1 ( str i32 -- bytes )  :> n :> s  n bytes.new :> d  s fx.ds 0 d 0 n downsample.h2v1  d ;
+: fx.ds-h2v2 ( str i32 i32 -- bytes )  :> n :> len :> s  n bytes.new :> d  s fx.ds 0 len d 0 n downsample.h2v2  d ;
+: fx.ds-full ( str i32 -- bytes )  :> n :> s  n bytes.new :> d  s fx.ds 4 d 0 n downsample.full  d ;
 
 # tools/prep_oracle.c down 16 2x2 (component 1) on two seeded rows (seeds 3, 4).
-test downsample.h2v2 : "7942bdf22106f0847762f0f3cb4d764d789b34caf54f2e220acd941e71b88d58" 16 8 fx.h2v2 0 bytes.at -> 115
-test downsample.h2v2 : "7942bdf22106f0847762f0f3cb4d764d789b34caf54f2e220acd941e71b88d58" 16 8 fx.h2v2 1 bytes.at -> 171
-test downsample.h2v2 : "7942bdf22106f0847762f0f3cb4d764d789b34caf54f2e220acd941e71b88d58" 16 8 fx.h2v2 2 bytes.at -> 91
-test downsample.h2v2 : "7942bdf22106f0847762f0f3cb4d764d789b34caf54f2e220acd941e71b88d58" 16 8 fx.h2v2 3 bytes.at -> 113
-test downsample.h2v2 : "7942bdf22106f0847762f0f3cb4d764d789b34caf54f2e220acd941e71b88d58" 16 8 fx.h2v2 4 bytes.at -> 108
-test downsample.h2v2 : "7942bdf22106f0847762f0f3cb4d764d789b34caf54f2e220acd941e71b88d58" 16 8 fx.h2v2 5 bytes.at -> 165
-test downsample.h2v2 : "7942bdf22106f0847762f0f3cb4d764d789b34caf54f2e220acd941e71b88d58" 16 8 fx.h2v2 6 bytes.at -> 144
-test downsample.h2v2 : "7942bdf22106f0847762f0f3cb4d764d789b34caf54f2e220acd941e71b88d58" 16 8 fx.h2v2 7 bytes.at -> 106
+test downsample.h2v2 : "7942bdf22106f0847762f0f3cb4d764d789b34caf54f2e220acd941e71b88d58" 16 8 fx.ds-h2v2 0 bytes.at -> 115
+test downsample.h2v2 : "7942bdf22106f0847762f0f3cb4d764d789b34caf54f2e220acd941e71b88d58" 16 8 fx.ds-h2v2 1 bytes.at -> 171
+test downsample.h2v2 : "7942bdf22106f0847762f0f3cb4d764d789b34caf54f2e220acd941e71b88d58" 16 8 fx.ds-h2v2 2 bytes.at -> 91
+test downsample.h2v2 : "7942bdf22106f0847762f0f3cb4d764d789b34caf54f2e220acd941e71b88d58" 16 8 fx.ds-h2v2 3 bytes.at -> 113
+test downsample.h2v2 : "7942bdf22106f0847762f0f3cb4d764d789b34caf54f2e220acd941e71b88d58" 16 8 fx.ds-h2v2 4 bytes.at -> 108
+test downsample.h2v2 : "7942bdf22106f0847762f0f3cb4d764d789b34caf54f2e220acd941e71b88d58" 16 8 fx.ds-h2v2 5 bytes.at -> 165
+test downsample.h2v2 : "7942bdf22106f0847762f0f3cb4d764d789b34caf54f2e220acd941e71b88d58" 16 8 fx.ds-h2v2 6 bytes.at -> 144
+test downsample.h2v2 : "7942bdf22106f0847762f0f3cb4d764d789b34caf54f2e220acd941e71b88d58" 16 8 fx.ds-h2v2 7 bytes.at -> 106
 # down 16 2x1 (component 1) on the seed-3 row.
-test downsample.h2v1 : "7942bdf22106f0847762f0f3cb4d764d" 8 fx.h2v1 0 bytes.at -> 93
-test downsample.h2v1 : "7942bdf22106f0847762f0f3cb4d764d" 8 fx.h2v1 1 bytes.at -> 216
-test downsample.h2v1 : "7942bdf22106f0847762f0f3cb4d764d" 8 fx.h2v1 2 bytes.at -> 19
-test downsample.h2v1 : "7942bdf22106f0847762f0f3cb4d764d" 8 fx.h2v1 3 bytes.at -> 186
-test downsample.h2v1 : "7942bdf22106f0847762f0f3cb4d764d" 8 fx.h2v1 4 bytes.at -> 108
-test downsample.h2v1 : "7942bdf22106f0847762f0f3cb4d764d" 8 fx.h2v1 5 bytes.at -> 242
-test downsample.h2v1 : "7942bdf22106f0847762f0f3cb4d764d" 8 fx.h2v1 6 bytes.at -> 140
-test downsample.h2v1 : "7942bdf22106f0847762f0f3cb4d764d" 8 fx.h2v1 7 bytes.at -> 98
+test downsample.h2v1 : "7942bdf22106f0847762f0f3cb4d764d" 8 fx.ds-h2v1 0 bytes.at -> 93
+test downsample.h2v1 : "7942bdf22106f0847762f0f3cb4d764d" 8 fx.ds-h2v1 1 bytes.at -> 216
+test downsample.h2v1 : "7942bdf22106f0847762f0f3cb4d764d" 8 fx.ds-h2v1 2 bytes.at -> 19
+test downsample.h2v1 : "7942bdf22106f0847762f0f3cb4d764d" 8 fx.ds-h2v1 3 bytes.at -> 186
+test downsample.h2v1 : "7942bdf22106f0847762f0f3cb4d764d" 8 fx.ds-h2v1 4 bytes.at -> 108
+test downsample.h2v1 : "7942bdf22106f0847762f0f3cb4d764d" 8 fx.ds-h2v1 5 bytes.at -> 242
+test downsample.h2v1 : "7942bdf22106f0847762f0f3cb4d764d" 8 fx.ds-h2v1 6 bytes.at -> 140
+test downsample.h2v1 : "7942bdf22106f0847762f0f3cb4d764d" 8 fx.ds-h2v1 7 bytes.at -> 98
 # down 2 2x2 on rows 10 11 / 10 11, expanded to 16: 10 then 11s.
-test downsample.h2v2 : "0a0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0a0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b" 16 8 fx.h2v2 0 bytes.at -> 10
-test downsample.h2v2 : "0a0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0a0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b" 16 8 fx.h2v2 7 bytes.at -> 11
+test downsample.h2v2 : "0a0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0a0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b" 16 8 fx.ds-h2v2 0 bytes.at -> 10
+test downsample.h2v2 : "0a0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0a0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b" 16 8 fx.ds-h2v2 7 bytes.at -> 11
 # down 4 2x1 on 10 11 11 12, expanded to 16: 10 then 12s.
-test downsample.h2v1 : "0a0b0b0c0c0c0c0c0c0c0c0c0c0c0c0c" 8 fx.h2v1 0 bytes.at -> 10
-test downsample.h2v1 : "0a0b0b0c0c0c0c0c0c0c0c0c0c0c0c0c" 8 fx.h2v1 1 bytes.at -> 12
+test downsample.h2v1 : "0a0b0b0c0c0c0c0c0c0c0c0c0c0c0c0c" 8 fx.ds-h2v1 0 bytes.at -> 10
+test downsample.h2v1 : "0a0b0b0c0c0c0c0c0c0c0c0c0c0c0c0c" 8 fx.ds-h2v1 1 bytes.at -> 12
 # The bias alternation on 1 2 pairs: 1 2 1 2 for both.
-test downsample.h2v1 : "01020102010201020102010201020102" 8 fx.h2v1 "0102010201020102" hex eq -> 1
-test downsample.h2v2 : "0102010201020102010201020102010201020102010201020102010201020102" 16 8 fx.h2v2 "0102010201020102" hex eq -> 1
-test downsample.full : "000102030405060708090a0b" 8 fx.full "0405060708090a0b" hex eq -> 1
-test downsample.full : "000102030405" 0 fx.full bytes.len -> 0
-test downsample.h2v1 : "0102" 0 fx.h2v1 bytes.len -> 0
+test downsample.h2v1 : "01020102010201020102010201020102" 8 fx.ds-h2v1 "0102010201020102" hex eq -> 1
+test downsample.h2v2 : "0102010201020102010201020102010201020102010201020102010201020102" 16 8 fx.ds-h2v2 "0102010201020102" hex eq -> 1
+test downsample.full : "000102030405060708090a0b" 8 fx.ds-full "0405060708090a0b" hex eq -> 1
+test downsample.full : "000102030405" 0 fx.ds-full bytes.len -> 0
+test downsample.h2v1 : "0102" 0 fx.ds-h2v1 bytes.len -> 0
 
 : downsample.h2v1 ( bytes i32 bytes i32 i32 -- )
   :> n :> do :> dst :> so :> src

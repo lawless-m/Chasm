@@ -1,5 +1,5 @@
-"""Run the encoder over PPM inputs and compare each output with cjpeg's byte
-for byte.
+"""Run the encoder's programs over their inputs and compare each output with
+cjpeg's byte for byte.
 
 Usage: python3 -I tools/harness.py encode [--quality 1,10,...] [--sample 420,422,444]
                                           [--wack PATH] [--jobs N] [--cpu SECONDS]
@@ -44,10 +44,64 @@ RLIMIT_DATA, --timeout 180 s wall clock.
 The exit status is non-zero if any case is mismatch, trap, hang, cpu,
 memory or odd; with `--expect match` also if any case is not a match, and
 with `--expect refused:CODE` if any case is not that refusal.
+
+Clean mode:
+
+Usage: python3 -I tools/harness.py clean [--quality 1,10,...] [--sample 420,422,444]
+                                         [--wack PATH] [--jobs N] [--cpu SECONDS]
+                                         [--memory BYTES] [--timeout SECONDS] [--out DIR]
+                                         [--expect any|match|refused:CODE] PATH...
+
+Each PATH is a JPEG file or a directory walked as above. The program is
+CLEAN_FILES: the decoder's jpeg files in its own harness's order, the
+encoder's, then clean.wack, run from the jpeg-encoder directory with stdin
+`/file<input>`, `/file<output>`, `quality=Q` and, unless grey,
+`sample=S`.
+
+First the decoder's own harness (../jpeg-decoder/tools/harness.py, loaded
+read-only) runs each input once: its class and code (decoded, refused CODE,
+mismatch, trap, hang, cpu, memory, odd) say what clean must do, and a
+decoded input leaves djpeg's fancy decode at
+<out>/decoder/<flat>.oracle.pnm, flat being the input's path under
+jpeg-decoder with '/' as '_' (our own decode is deleted). A decoded input
+whose decode is P5 gives one case per quality, labelled grey; P6 gives
+qualities x samplings; any other decoder class gives one case at the first
+quality and sampling. Each case writes <out>/<flat without the
+extension>-q<Q>-<S or grey>.jpg, and the reference beside it, .ref.jpg, is
+cjpeg (as above) of djpeg's decode. Classes, by text:
+
+- hang, cpu, memory, trap: as above
+- refused:  `REFUSED CODE:` on stderr; it passes only when the decoder
+            refused the same file with the same code (note
+            `decoder: <class> <code>` otherwise)
+- match:    stdout ends `FRAME ...` then `CLEANED w h 1 0`, the output is
+            non-empty, the decoder decoded the input, w and h are the
+            decode's, and the output is byte-identical to the reference
+- mismatch: as match, but the files differ (the note as above)
+- odd:      anything else, including a clean output for an input the
+            decoder did not decode
+
+A case that is neither match nor mismatch has its output file deleted, so
+only real outputs remain. Failing: mismatch, trap, hang, cpu, memory, odd,
+a refusal the decoder does not share, and --expect as above.
+
+Roundtrip mode:
+
+Usage: python3 -I tools/harness.py roundtrip [--wack PATH] [--jobs N] [--cpu SECONDS]
+                                             [--memory BYTES] [--timeout SECONDS]
+                                             [--out DIR] PATH...
+
+Each PATH is a .jpg file or a directory walked recursively in sorted order,
+taking every .jpg that is not a .ref.jpg. Each goes through the decoder's
+own harness: our decoder decodes it, djpeg -dct int -pnm decodes it, and
+the two must be byte-identical (`decoded`); every other class is failing,
+with the decoder harness's note. After a pass both decodes are deleted;
+after a failure they are kept for inspection.
 """
 
 import argparse
 import concurrent.futures
+import importlib.util
 import os
 import re
 import signal
@@ -71,8 +125,15 @@ FILES = [
     "jpeg/ccolour.wack",
     "jpeg/downsample.wack",
     "jpeg/encoder.wack",
+    "jpeg/options.wack",
     "encode.wack",
 ]
+DECODER_HARNESS = os.path.join(ROOT, "..", "jpeg-decoder", "tools", "harness.py")
+CLEAN_FILES = [
+    "../jpeg-decoder/jpeg/" + n + ".wack"
+    for n in "limits refuse fixtures source frame coeffs markers bits huffman idct scan arith progressive upsample colour ppm rows".split()
+] + FILES[3:16] + ["clean.wack"]
+CLEANED = re.compile(r"^CLEANED ([0-9]+) ([0-9]+) 1 0$")
 REFUSED = re.compile(r"REFUSED ([A-Z_]+):")
 ENCODED = re.compile(r"^ENCODED \d+ \d+ \d+$")
 BAD = {"mismatch", "trap", "hang", "cpu", "memory", "odd"}
@@ -188,6 +249,42 @@ def reference(src, dst, quality, sample, timeout, icc=None):
     return True, ""
 
 
+def execute(a, files, stdin):
+    """Run a program under the limits: (class, code, first stderr line,
+    stdout lines), the class one of hang, refused, cpu, memory, trap, or
+    ran when the program exited 0 with nothing of those."""
+    try:
+        r = subprocess.run(
+            [*limits(a.cpu, a.memory), a.wack, "run", *files],
+            cwd=ROOT,
+            input=stdin,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=a.timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return "hang", "-", "", []
+    first = r.stderr.strip().splitlines()[0] if r.stderr.strip() else ""
+    m = REFUSED.search(r.stderr)
+    if m:
+        return "refused", m.group(1), first, []
+    if r.returncode == -signal.SIGXCPU:
+        return "cpu", "-", first or "CPU budget exhausted", []
+    if "out of memory" in r.stderr or "memory allocation of" in r.stderr:
+        return "memory", "-", first, []
+    if "trap in" in r.stderr or r.returncode != 0:
+        return "trap", "-", first, []
+    return "ran", "-", first, r.stdout.strip().splitlines()
+
+
+def compare_ref(out, ref):
+    """match or mismatch of an output against its reference."""
+    if open(out, "rb").read() != open(ref, "rb").read():
+        return "mismatch", "-", note(out, ref)
+    return "match", "-", ""
+
+
 def run(a, case):
     path, quality, sample = case
     os.makedirs(a.out, exist_ok=True)
@@ -198,53 +295,183 @@ def run(a, case):
     stdin = f"/file{path}\n/file{out}\nquality={quality}\n" + ("" if sample == "grey" else f"sample={sample}\n")
     if a.icc:
         stdin += f"icc=/file{a.icc}\n"
-    try:
-        r = subprocess.run(
-            [*limits(a.cpu, a.memory), a.wack, "run", *FILES],
-            cwd=ROOT,
-            input=stdin,
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=a.timeout,
-        )
-    except subprocess.TimeoutExpired:
-        return "hang", "-", ""
-    first = r.stderr.strip().splitlines()[0] if r.stderr.strip() else ""
-    m = REFUSED.search(r.stderr)
-    if m:
-        return "refused", m.group(1), first
-    if r.returncode == -signal.SIGXCPU:
-        return "cpu", "-", first or "CPU budget exhausted"
-    if "out of memory" in r.stderr or "memory allocation of" in r.stderr:
-        return "memory", "-", first
-    if "trap in" in r.stderr or r.returncode != 0:
-        return "trap", "-", first
-    lines = r.stdout.strip().splitlines()
+    cls, code, first, lines = execute(a, FILES, stdin)
+    if cls != "ran":
+        return cls, code, first
     last = lines[-1] if lines else ""
     if ENCODED.match(last) and os.path.isfile(out) and os.path.getsize(out) > 0:
         ref = out[: -len(".jpg")] + ".ref.jpg"
         ok, why = reference(path, ref, quality, sample, a.timeout, a.icc)
         if not ok:
             return "mismatch", "-", "cjpeg failed: " + why
-        if open(out, "rb").read() != open(ref, "rb").read():
-            return "mismatch", "-", note(out, ref)
-        return "match", "-", first
+        return compare_ref(out, ref)
     return "odd", "-", first or last or "no output"
 
 
-def encode(a):
+def load_decoder_harness():
+    spec = importlib.util.spec_from_file_location("dec", DECODER_HARNESS)
+    dec = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dec)
+    return dec
+
+
+def flat_name(dec, path):
+    """The input's path under jpeg-decoder, '/' as '_'."""
+    return os.path.relpath(path, dec.ROOT).replace("/", "_")
+
+
+def decode_phase(a, dec, path):
+    """The decoder's own run of one input: (class, code, note, oracle PNM or None)."""
+    ddir = os.path.join(a.out, "decoder")
+    os.makedirs(ddir, exist_ok=True)
+    cls, code, msg = dec.run(a.wack, a.timeout, path, False, a.cpu, a.memory, ddir)
+    ours = os.path.join(ddir, flat_name(dec, path) + ".pnm")
+    oracle = ours[: -len(".pnm")] + ".oracle.pnm"
+    if os.path.exists(ours):
+        os.remove(ours)
+    return cls, code, msg, (oracle if cls == "decoded" and os.path.isfile(oracle) else None)
+
+
+def pnm_header(path):
+    with open(path, "rb") as f:
+        fields = f.read(64).split(None, 4)
+    return fields[0], int(fields[1]), int(fields[2])
+
+
+def clean_case(a, dec, case):
+    path, quality, sample, (dcls, dcode, dmsg, oracle) = case
+    stem = os.path.splitext(flat_name(dec, path))[0]
+    out = os.path.join(a.out, f"{stem}-q{quality}-{sample}.jpg")
+    if os.path.exists(out):
+        os.remove(out)
+    stdin = f"/file{path}\n/file{out}\nquality={quality}\n" + ("" if sample == "grey" else f"sample={sample}\n")
+    cls, code, first, lines = execute(a, CLEAN_FILES, stdin)
+    agrees = True
+    msg = first
+    if cls == "refused":
+        agrees = dcls == "refused" and dcode == code
+        if not agrees:
+            msg = f"decoder: {dcls} {dcode}"
+    elif cls == "ran":
+        m = CLEANED.match(lines[-1]) if lines else None
+        if not (m and len(lines) >= 2 and lines[-2].startswith("FRAME ") and os.path.isfile(out) and os.path.getsize(out) > 0):
+            cls, msg = "odd", first or (lines[-1] if lines else "no output")
+        elif dcls != "decoded" or oracle is None:
+            cls, msg = "odd", f"decoder: {dcls} {dcode}"
+        else:
+            _, w, h = pnm_header(oracle)
+            if (int(m.group(1)), int(m.group(2))) != (w, h):
+                cls, msg = "odd", f"CLEANED {m.group(1)}x{m.group(2)} vs decode {w}x{h}"
+            else:
+                ref = out[: -len(".jpg")] + ".ref.jpg"
+                ok, why = reference(oracle, ref, quality, sample, a.timeout)
+                if not ok:
+                    cls, code, msg = "mismatch", "-", "cjpeg failed: " + why
+                else:
+                    cls, code, msg = compare_ref(out, ref)
+    if cls not in ("match", "mismatch") and os.path.exists(out):
+        os.remove(out)
+    return cls, code, msg, agrees
+
+
+def clean(a):
+    check_args(a)
+    dec = load_decoder_harness()
+    want = ["../jpeg-decoder/" + f for f in dec.FILES if f != "main.wack"]
+    if CLEAN_FILES[:17] != want:
+        sys.exit("harness: CLEAN_FILES must begin with the decoder's program order")
+    qualities = [int(q) for q in a.quality.split(",")]
+    samples = a.sample.split(",")
+    paths = inputs(a.paths)
+    with concurrent.futures.ThreadPoolExecutor(a.jobs) as pool:
+        decoded = list(pool.map(lambda p: decode_phase(a, dec, p), paths))
+    cases = []
+    for p, d in zip(paths, decoded):
+        if d[0] == "decoded" and d[3]:
+            grey = pnm_header(d[3])[0] == b"P5"
+            for q in qualities:
+                for s in ["grey"] if grey else samples:
+                    cases.append((p, q, s, d))
+        else:
+            cases.append((p, qualities[0], samples[0], d))
+    with concurrent.futures.ThreadPoolExecutor(a.jobs) as pool:
+        results = list(pool.map(lambda c: clean_case(a, dec, c), cases))
+    failed = 0
+    for (p, q, s, _), (cls, code, msg, agrees) in zip(cases, results):
+        bad = cls in BAD or not agrees
+        if not bad and a.expect == "match" and cls != "match":
+            bad = True
+        if not bad and a.expect.startswith("refused:") and (cls, code) != ("refused", a.expect[8:]):
+            bad = True
+        rel = os.path.relpath(p, ROOT)
+        print(f"{cls:8} {code:20} {rel} q{q} {s}" + (f"  {msg}" if bad and msg else ""))
+        failed += bad
+    print(f"== {len(cases)} cases, {failed} failing")
+    sys.exit(1 if failed else 0)
+
+
+def roundtrip_inputs(paths):
+    out = []
+    for p in paths:
+        p = os.path.abspath(p)
+        if os.path.isdir(p):
+            for d, dirs, names in os.walk(p):
+                dirs.sort()
+                for n in sorted(names):
+                    if n.endswith(".jpg") and not n.endswith(".ref.jpg"):
+                        out.append(os.path.join(d, n))
+        elif os.path.isfile(p):
+            out.append(p)
+        else:
+            sys.exit(f"harness: no such file or directory: {p}")
+    return out
+
+
+def roundtrip_one(a, dec, path):
+    cls, code, msg = dec.run(a.wack, a.timeout, path, False, a.cpu, a.memory, a.out)
+    if cls == "decoded":
+        ours = os.path.join(a.out, os.path.relpath(path, dec.ROOT).replace("/", "_") + ".pnm")
+        for f in (ours, ours[: -len(".pnm")] + ".oracle.pnm"):
+            if os.path.exists(f):
+                os.remove(f)
+    return cls, code, msg
+
+
+def roundtrip(a):
+    if not os.path.isfile(a.wack):
+        sys.exit(f"harness: {a.wack} is missing; run `cargo build -p wack-cli` in the Whackford repo")
+    a.out = os.path.abspath(a.out)
+    a.wack = os.path.abspath(a.wack)
+    os.makedirs(a.out, exist_ok=True)
+    dec = load_decoder_harness()
+    paths = roundtrip_inputs(a.paths)
+    with concurrent.futures.ThreadPoolExecutor(a.jobs) as pool:
+        results = list(pool.map(lambda p: roundtrip_one(a, dec, p), paths))
+    failed = 0
+    for p, (cls, code, msg) in zip(paths, results):
+        bad = cls != "decoded"
+        print(f"{cls:8} {code:20} {os.path.relpath(p, ROOT)}" + (f"  {msg}" if bad and msg else ""))
+        failed += bad
+    print(f"== {len(paths)} files, {failed} failing")
+    sys.exit(1 if failed else 0)
+
+
+def check_args(a):
     if not os.path.isfile(a.wack):
         sys.exit(f"harness: {a.wack} is missing; run `cargo build -p wack-cli` in the Whackford repo")
     if a.expect not in ("any", "match") and not a.expect.startswith("refused:"):
         sys.exit(f"harness: unknown --expect {a.expect}")
-    qualities = [int(q) for q in a.quality.split(",")]
-    samples = a.sample.split(",")
-    for s in samples:
+    for s in a.sample.split(","):
         if s not in SAMPLES:
             sys.exit(f"harness: unknown sample {s}")
     a.out = os.path.abspath(a.out)
     a.wack = os.path.abspath(a.wack)
+
+
+def encode(a):
+    check_args(a)
+    qualities = [int(q) for q in a.quality.split(",")]
+    samples = a.sample.split(",")
     if a.icc:
         a.icc = os.path.abspath(a.icc)
     cases = []
@@ -286,6 +513,27 @@ def main():
     e.add_argument("--expect", default="any")
     e.add_argument("paths", nargs="+")
     e.set_defaults(fn=encode)
+    c = sub.add_parser("clean", help="JPEG inputs through clean, against cjpeg of djpeg's decode")
+    c.add_argument("--quality", default=GRID_QUALITY)
+    c.add_argument("--sample", default=GRID_SAMPLE)
+    c.add_argument("--wack", default=os.path.join(ROOT, "..", "target", "debug", "wack"))
+    c.add_argument("--jobs", type=int, default=4)
+    c.add_argument("--cpu", type=int, default=CPU)
+    c.add_argument("--memory", type=int, default=MEMORY)
+    c.add_argument("--timeout", type=float, default=180)
+    c.add_argument("--out", default=os.path.join(ROOT, "..", "tmp", "harness-enc", "clean"))
+    c.add_argument("--expect", default="any")
+    c.add_argument("paths", nargs="+")
+    c.set_defaults(fn=clean)
+    r = sub.add_parser("roundtrip", help="outputs decoded by our decoder and by djpeg, which must agree")
+    r.add_argument("--wack", default=os.path.join(ROOT, "..", "target", "debug", "wack"))
+    r.add_argument("--jobs", type=int, default=4)
+    r.add_argument("--cpu", type=int, default=CPU)
+    r.add_argument("--memory", type=int, default=MEMORY)
+    r.add_argument("--timeout", type=float, default=180)
+    r.add_argument("--out", default=os.path.join(ROOT, "..", "tmp", "harness-enc", "roundtrip"))
+    r.add_argument("paths", nargs="+")
+    r.set_defaults(fn=roundtrip)
     a = ap.parse_args()
     a.fn(a)
 

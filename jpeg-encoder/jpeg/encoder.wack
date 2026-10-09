@@ -96,7 +96,7 @@ declare encoder.close ( encoder -- )
 # A quality and the hex of an 8x8 greyscale image: the whole file. The image
 # is loaded straight into the component plane and its one block coded, so
 # the eight rows count as received.
-: fx.one ( i32 str -- bytes )
+: fx.enc-one ( i32 str -- bytes )
   :> img :> q
   q fx.enc :> e
   e encoder.cp 0  img hex bytes.as-str  bytes.put
@@ -215,9 +215,9 @@ test encoder.open : "/file/dev/null" 1 1 3 85 411 "" encoder.open encoder.hs -> 
 test encoder.open : "/file/dev/null" 1 1 2 85 420 "" encoder.open encoder.hs -> trap
 test encoder.open : "/file/dev/null" 1 1 1 85 420 "/file/x.icc" encoder.open encoder.hs -> trap
 test encoder.open : "/file/dev/null" 1 1 1 85 420 "/file/dev/null" encoder.open encoder.hs -> trap
-test encoder.block : 50 fx.img8 fx.one fx.ref8-q50 hex eq -> 1
-test encoder.block : 100 fx.img8 fx.one fx.ref8-q100 hex eq -> 1
-test encoder.block : 50 "4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d" fx.one fx.ref-flat77-q50 hex eq -> 1
+test encoder.block : 50 fx.img8 fx.enc-one fx.ref8-q50 hex eq -> 1
+test encoder.block : 100 fx.img8 fx.enc-one fx.ref8-q100 hex eq -> 1
+test encoder.block : 50 "4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d" fx.enc-one fx.ref-flat77-q50 hex eq -> 1
 # A luminance dummy: DC category 0 00, EOB 1010, pad 11: 0x2b, as cjpeg
 # writes a flat-128 block.
 test encoder.dummy : 85 fx.enc dup 0 encoder.dummy dup encoder.bw bitwriter.flush encoder.o fx.taken 328 bytes.at -> 0x2b

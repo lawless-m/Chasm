@@ -90,11 +90,35 @@ test ppmread.rescale : 4095 ppmread.rescale 2049 bytes.at -> 128
 test ppmread.rescale : 4095 ppmread.rescale 4094 bytes.at -> 255
 test ppmread.rescale : 4095 ppmread.rescale 4095 bytes.at -> 255
 
+# Raw bytes, a rescale table and an output buffer as long as the sample
+# count: fills entry i of the output with table[(raw[2i] << 8) | raw[2i+1]],
+# two bytes a sample, big-endian, allocating nothing. A sample past the
+# table's end refuses BAD_PPM, where rdppm.c errors JERR_PPM_OUTOFRANGE;
+# raw too short is a plain trap.
+declare ppmread.narrow-into ( bytes bytes bytes -- )
+
+# The hex of raw bytes and a count: a fresh buffer of count bytes filled by
+# narrow-into with the 4095 table.
+: fx.narrowed ( str i32 -- bytes )
+  :> count :> raw
+  count bytes.new :> out
+  raw hex  4095 ppmread.rescale  out ppmread.narrow-into
+  out ;
+
+test ppmread.narrow-into : "00000FFF0800" 3 fx.narrowed 0 bytes.at -> 0
+test ppmread.narrow-into : "00000FFF0800" 3 fx.narrowed 1 bytes.at -> 255
+test ppmread.narrow-into : "00000FFF0800" 3 fx.narrowed 2 bytes.at -> 128
+test ppmread.narrow-into : "0009" 1 fx.narrowed 0 bytes.at -> 1
+test ppmread.narrow-into : "1000" 1 fx.narrowed -> trap
+test ppmread.narrow-into : "0F" 1 fx.narrowed -> trap
+test ppmread.narrow-into : "0800" 2 fx.narrowed -> trap
+
 # Raw bytes, a rescale table and a sample count: a fresh buffer of count
-# 8-bit samples, entry i being table[(raw[2i] << 8) | raw[2i+1]], two bytes
-# a sample, big-endian, as rdppm.c's get_word_gray_row and get_word_rgb_row
-# read them. A sample past the table's end refuses BAD_PPM, where rdppm.c
-# errors JERR_PPM_OUTOFRANGE ("Numeric value out of range in PPM file").
+# 8-bit samples, filled by ppmread.narrow-into: entry i is
+# table[(raw[2i] << 8) | raw[2i+1]], two bytes a sample, big-endian, as
+# rdppm.c's get_word_gray_row and get_word_rgb_row read them. A sample
+# past the table's end refuses BAD_PPM, where rdppm.c errors
+# JERR_PPM_OUTOFRANGE ("Numeric value out of range in PPM file").
 declare ppmread.narrow ( bytes bytes i32 -- bytes )
 test ppmread.narrow : "0800" hex 4095 ppmread.rescale 1 ppmread.narrow 0 bytes.at -> 128
 test ppmread.narrow : "0FFF" hex 4095 ppmread.rescale 1 ppmread.narrow 0 bytes.at -> 255
@@ -163,18 +187,22 @@ test ppmread.load : "/file/no/such/file.pgm" ppmread.load pimage.w -> trap
   maxval 1 i32.add [ :> v  t v  v 255 i32.mul maxval 2 i32.div_u i32.add maxval i32.div_u  bytes.at! ] times
   t ;
 
-: ppmread.narrow ( bytes bytes i32 -- bytes )
-  :> count :> table :> raw
-  count bytes.new :> out
+: ppmread.narrow-into ( bytes bytes bytes -- )
+  :> out :> table :> raw
   table bytes.len :> limit
-  count
+  out bytes.len
   [
     :> i
     raw i 2 i32.mul bytes.at 8 i32.shl  raw i 2 i32.mul 1 i32.add bytes.at  i32.or :> v
     v limit i32.ge_u [ BAD_PPM "sample over maxval" refusal trap ] when
     out i  table v bytes.at  bytes.at!
   ]
-  times
+  times ;
+
+: ppmread.narrow ( bytes bytes i32 -- bytes )
+  :> count :> table :> raw
+  count bytes.new :> out
+  raw table out ppmread.narrow-into
   out ;
 
 : ppmread.load ( str -- pimage )

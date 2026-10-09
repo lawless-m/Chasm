@@ -1,0 +1,93 @@
+# The sanitiser's entry point: JPEG in, JPEG out, in one process, the
+# decoder's rows going straight into the encoder (ARCHITECTURE.md, "The two
+# programs").
+#
+# Protocol: stdin gives the input path and the output path (natively
+# `/file/<absolute path>`), then option lines until the end of input:
+# `quality=Q` (default 85) and `sample=S` (420, 422 or 444, default 420;
+# ignored for greyscale); any other line is a trap. stdout gets the
+# decoder's `FRAME width height ncomp kind` line, then
+# `CLEANED width height 1 0`: the output's dimensions, the orientation,
+# which is always 1, and the ICC byte count, which is always 0 (the output
+# carries no metadata). The exit status is 0. A refusal is the decoder's
+# own trap `REFUSED CODE: message` on stderr with exit status 1; any other
+# trap is a bug. The output is opened after the decoder's setup, so a
+# refusal mid-scan can leave a partial file, which the harness ignores.
+#
+# The program is the decoder's jpeg files unchanged, in its own order
+# (limits, refuse, fixtures, source, frame, coeffs, markers, bits, huffman,
+# idct, scan, arith, progressive, upsample, colour, ppm, rows), then the
+# encoder's (elimits to options), then this file.
+
+# A decoded row as rows.decode hands it out, the encoder, the rescale table
+# and the 8-bit row buffer. An 8-bit frame passes an empty table and buffer
+# and its row goes to encoder.row as it is; a 12-bit frame's row (two bytes
+# a sample, big-endian) is narrowed into the buffer through rdppm.c's table
+# (ppmread.narrow-into) and the buffer goes to encoder.row. The row comes
+# first so main's quotation is `[ ( bytes -- ) e tab buf clean.row ]` with
+# no shuffling; the table and buffer are allocated once by main, so this
+# word allocates nothing.
+declare clean.row ( bytes encoder bytes bytes -- )
+
+# A wide flag and the hex of one 1x1 row: the row through clean.row into a
+# 1x1 4:2:0 encoder at q50, finished; the whole file.
+: fx.clean-row ( i32 str -- bytes )
+  :> img :> wide
+  wide [ 4095 ppmread.rescale ] [ 0 bytes.new ] if :> tab
+  wide [ 3 bytes.new ] [ 0 bytes.new ] if :> buf
+  1 1 2 2 50 fx.enc3 :> e
+  img hex e tab buf clean.row
+  e encoder.finish
+  e encoder.o fx.taken ;
+
+test clean.row : 0 "ff0000" fx.clean-row fx.ref-red-q50-420 hex eq -> 1
+test clean.row : 1 "0fff00000000" fx.clean-row fx.ref-red-q50-420 hex eq -> 1
+test clean.row : 1 "0fff0000" fx.clean-row -> trap
+test clean.row : 0 "ff00" fx.clean-row -> trap
+
+: clean.row ( bytes encoder bytes bytes -- )
+  :> buf :> tab :> e :> row
+  tab bytes.len 0 i32.eq
+  [ e row encoder.row ]
+  [
+    row tab buf ppmread.narrow-into
+    e buf encoder.row
+  ]
+  if ;
+
+: main ( -- )
+  read-line drop :> inp
+  read-line drop :> outp
+  85 :> quality!
+  420 :> sample!
+  1 :> more!
+  [ more ]
+  [
+    read-line more!
+    :> line
+    more
+    [
+      line "icc=" options.prefix? [ "unknown option" trap ] when
+      quality line options.quality quality!
+      sample line options.sample sample!
+    ]
+    when
+  ]
+  while
+  inp source.load markers.open :> j
+  j markers.walk
+  j huffman.scan-tables :> tabs
+  j markers.frame-line println
+  j tabs 1 rows.setup :> d
+  d decoder.width :> width
+  d decoder.height :> height
+  d decoder.ncomp 4 i32.eq [ 3 ] [ d decoder.ncomp ] if :> n
+  d decoder.wide :> wide
+  wide [ 4095 ppmread.rescale ] [ 0 bytes.new ] if :> tab
+  wide [ width n i32.mul bytes.new ] [ 0 bytes.new ] if :> buf
+  outp width height n quality sample "" encoder.open :> e
+  d [ ( bytes -- ) e tab buf clean.row ] rows.decode
+  e encoder.close
+  "CLEANED " width i32.to-str str.concat " " str.concat height i32.to-str str.concat
+  " 1 0" str.concat
+  println ;
