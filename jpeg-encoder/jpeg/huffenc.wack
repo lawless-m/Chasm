@@ -1,0 +1,66 @@
+# Huffman coding of blocks, as jchuff.c encode_one_block writes them
+# (T.81 F.1.2): the DC difference as its magnitude category's code then the
+# value's low bits, and the AC coefficients as run/size codes ending in EOB.
+#
+# E0 holds the two words a flat block needs: huffenc.dc and huffenc.eob.
+# E1's full block coder (huffenc.block, the AC run/size loop with ZRL)
+# calls both unchanged.
+
+# The number of bits in a value's magnitude (JPEG_NBITS of |v|).
+declare huffenc.nbits ( i32 -- i32 )
+test huffenc.nbits : 0 huffenc.nbits -> 0
+test huffenc.nbits : 1 huffenc.nbits -> 1
+test huffenc.nbits : -1 huffenc.nbits -> 1
+test huffenc.nbits : 2 huffenc.nbits -> 2
+test huffenc.nbits : 3 huffenc.nbits -> 2
+test huffenc.nbits : -4 huffenc.nbits -> 3
+test huffenc.nbits : 26 huffenc.nbits -> 5
+test huffenc.nbits : 82 huffenc.nbits -> 7
+test huffenc.nbits : 1023 huffenc.nbits -> 10
+test huffenc.nbits : -1024 huffenc.nbits -> 11
+test huffenc.nbits : 2047 huffenc.nbits -> 11
+
+# A bit writer, the DC table, the DC difference.
+declare huffenc.dc ( bitwriter htab i32 -- )
+
+# A bit writer, the AC table: the end-of-block code.
+declare huffenc.eob ( bitwriter htab -- )
+
+# The scan bytes of flat 8x8 greyscale images, from cjpeg -dct int
+# -grayscale -sample 1x1: 128 (any quality); 77 at q50, q85, q100; 0 and 255
+# at q100; 0 and 255 at q50.
+test huffenc.dc : fx.bw dup htables.dc-lum 0 huffenc.dc dup htables.ac-lum huffenc.eob dup bitwriter.flush bitwriter.o fx.taken "2b" hex eq -> 1
+test huffenc.dc : fx.bw dup htables.dc-lum -26 huffenc.dc dup htables.ac-lum huffenc.eob dup bitwriter.flush bitwriter.o fx.taken "c5af" hex eq -> 1
+test huffenc.dc : fx.bw dup htables.dc-lum -82 huffenc.dc dup htables.ac-lum huffenc.eob dup bitwriter.flush bitwriter.o fx.taken "f2da" hex eq -> 1
+test huffenc.dc : fx.bw dup htables.dc-lum -408 huffenc.dc dup htables.ac-lum huffenc.eob dup bitwriter.flush bitwriter.o fx.taken "fc67af" hex eq -> 1
+test huffenc.dc : fx.bw dup htables.dc-lum -1024 huffenc.dc dup htables.ac-lum huffenc.eob dup bitwriter.flush bitwriter.o fx.taken "ff003ffa" hex eq -> 1
+test huffenc.dc : fx.bw dup htables.dc-lum 1016 huffenc.dc dup htables.ac-lum huffenc.eob dup bitwriter.flush bitwriter.o fx.taken "fefe2b" hex eq -> 1
+test huffenc.dc : fx.bw dup htables.dc-lum -64 huffenc.dc dup htables.ac-lum huffenc.eob dup bitwriter.flush bitwriter.o fx.taken "f3fa" hex eq -> 1
+test huffenc.dc : fx.bw dup htables.dc-lum 64 huffenc.dc dup htables.ac-lum huffenc.eob dup bitwriter.flush bitwriter.o fx.taken "f40a" hex eq -> 1
+test huffenc.dc : fx.bw dup htables.dc-lum 2048 huffenc.dc bitwriter.n -> trap
+test huffenc.eob : fx.bw dup htables.ac-lum huffenc.eob bitwriter.n -> 4
+
+: huffenc.nbits ( i32 -- i32 )
+  :> v
+  v 0 i32.lt_s [ 0 v i32.sub ] [ v ] if :> m
+  32 m i32.clz i32.sub ;
+
+: huffenc.dc ( bitwriter htab i32 -- )
+  :> diff :> t :> w
+  diff huffenc.nbits :> nbits
+  nbits 11 i32.gt_s [ "DC difference over 11 bits" trap ] when
+  t htab.size nbits array.at :> size
+  size 0 i32.eq [ "no Huffman code for the DC category" trap ] when
+  w  t htab.code nbits array.at  size  bitwriter.put
+  nbits 0 i32.gt_s
+  [
+    w
+    diff 0 i32.lt_s [ diff 1 i32.sub ] [ diff ] if  1 nbits i32.shl 1 i32.sub  i32.and
+    nbits
+    bitwriter.put
+  ]
+  when ;
+
+: huffenc.eob ( bitwriter htab -- )
+  :> t :> w
+  w  t htab.code 0 array.at  t htab.size 0 array.at  bitwriter.put ;

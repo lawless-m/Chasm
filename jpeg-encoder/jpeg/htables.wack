@@ -1,0 +1,119 @@
+# Huffman tables: the T.81 Annex K luminance tables (jstdhuff.c) and the
+# encoding table derived from them (jchuff.c jpeg_make_c_derived_tbl,
+# Annex C figures C.1 to C.3).
+#
+# A table is given as bits (17 entries: bits[l] codes of length l, index 0
+# unused) and vals (the symbols in code order); DHT writes bits[1..16] then
+# the vals. The derived `htab` holds each symbol's code and size, indexed by
+# symbol; size 0 means the symbol has no code. Each table word allocates, so
+# callers build a table once, outside any loop. The colour-difference (Cb, Cr)
+# tables arrive with colour, in E2.
+
+struct htab  code: array i32  size: array i32
+
+# A hex string: an array of its bytes.
+declare htables.hexn ( str -- array i32 )
+test htables.hexn : "00ff10" htables.hexn array.len -> 3
+test htables.hexn : "00ff10" htables.hexn 1 array.at -> 255
+
+declare htables.dc-lum-bits ( -- array i32 )
+test htables.dc-lum-bits : htables.dc-lum-bits array.len -> 17
+test htables.dc-lum-bits : htables.dc-lum-bits 3 array.at -> 5
+
+declare htables.dc-lum-vals ( -- array i32 )
+test htables.dc-lum-vals : htables.dc-lum-vals array.len -> 12
+test htables.dc-lum-vals : htables.dc-lum-vals 11 array.at -> 11
+
+declare htables.ac-lum-bits ( -- array i32 )
+test htables.ac-lum-bits : htables.ac-lum-bits array.len -> 17
+test htables.ac-lum-bits : 0 htables.ac-lum-bits 17 [ :> i  dup i array.at  rot i32.add swap ] times drop -> 162
+
+declare htables.ac-lum-vals ( -- array i32 )
+test htables.ac-lum-vals : htables.ac-lum-vals array.len -> 162
+test htables.ac-lum-vals : htables.ac-lum-vals 3 array.at -> 0
+test htables.ac-lum-vals : htables.ac-lum-vals 31 array.at -> 240
+test htables.ac-lum-vals : htables.ac-lum-vals 161 array.at -> 250
+
+# Bits and vals: the encoding table. The tables are constants, so a
+# malformed one (over 256 codes, a code too long for its length, a repeated
+# symbol) is a plain trap, not a refusal.
+declare htables.derive ( array i32 array i32 -- htab )
+test htables.derive : htables.dc-lum-bits htables.dc-lum-vals htables.derive htab.code 11 array.at -> 510
+test htables.derive : htables.dc-lum-bits htables.dc-lum-vals htables.derive htab.size 11 array.at -> 9
+test htables.derive : "0000020000000000000000000000000000" htables.hexn "0505" htables.hexn htables.derive -> trap
+test htables.derive : "0003000000000000000000000000000000" htables.hexn "000102" htables.hexn htables.derive -> trap
+
+declare htables.dc-lum ( -- htab )
+test htables.dc-lum : htables.dc-lum htab.code 0 array.at -> 0
+test htables.dc-lum : htables.dc-lum htab.size 0 array.at -> 2
+test htables.dc-lum : htables.dc-lum htab.code 1 array.at -> 2
+test htables.dc-lum : htables.dc-lum htab.size 1 array.at -> 3
+test htables.dc-lum : htables.dc-lum htab.code 2 array.at -> 3
+test htables.dc-lum : htables.dc-lum htab.size 2 array.at -> 3
+test htables.dc-lum : htables.dc-lum htab.code 5 array.at -> 6
+test htables.dc-lum : htables.dc-lum htab.size 5 array.at -> 3
+test htables.dc-lum : htables.dc-lum htab.code 6 array.at -> 14
+test htables.dc-lum : htables.dc-lum htab.size 6 array.at -> 4
+test htables.dc-lum : htables.dc-lum htab.code 11 array.at -> 510
+test htables.dc-lum : htables.dc-lum htab.size 11 array.at -> 9
+test htables.dc-lum : htables.dc-lum htab.size 12 array.at -> 0
+
+declare htables.ac-lum ( -- htab )
+test htables.ac-lum : htables.ac-lum htab.code 1 array.at -> 0
+test htables.ac-lum : htables.ac-lum htab.size 1 array.at -> 2
+test htables.ac-lum : htables.ac-lum htab.code 0 array.at -> 10
+test htables.ac-lum : htables.ac-lum htab.size 0 array.at -> 4
+test htables.ac-lum : htables.ac-lum htab.code 17 array.at -> 12
+test htables.ac-lum : htables.ac-lum htab.size 17 array.at -> 4
+test htables.ac-lum : htables.ac-lum htab.code 3 array.at -> 4
+test htables.ac-lum : htables.ac-lum htab.size 3 array.at -> 3
+test htables.ac-lum : htables.ac-lum htab.code 240 array.at -> 2041
+test htables.ac-lum : htables.ac-lum htab.size 240 array.at -> 11
+test htables.ac-lum : htables.ac-lum htab.code 250 array.at -> 65534
+test htables.ac-lum : htables.ac-lum htab.size 250 array.at -> 16
+
+: htables.hexn ( str -- array i32 )
+  hex :> src
+  src bytes.len :> n
+  n array.new ( array i32 ) :> t
+  n [ :> i  t i  src i bytes.at  array.at! ] times
+  t ;
+
+: htables.dc-lum-bits ( -- array i32 )  "0000010501010101010100000000000000" htables.hexn ;
+: htables.dc-lum-vals ( -- array i32 )  "000102030405060708090a0b" htables.hexn ;
+: htables.ac-lum-bits ( -- array i32 )  "000002010303020403050504040000017d" htables.hexn ;
+
+: htables.ac-lum-vals ( -- array i32 )
+  "01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9fa"
+  htables.hexn ;
+
+: htables.derive ( array i32 array i32 -- htab )
+  :> vals :> bits
+  256 array.new ( array i32 ) :> code
+  256 array.new ( array i32 ) :> size
+  0 :> c!
+  0 :> p!
+  16
+  [
+    :> i
+    i 1 i32.add :> l
+    bits l array.at
+    [
+      drop
+      p 256 i32.ge_s [ "Huffman table: over 256 codes" trap ] when
+      vals p array.at :> sym
+      size sym array.at [ "Huffman table: repeated symbol" trap ] when
+      code sym c array.at!
+      size sym l array.at!
+      c 1 i32.add c!
+      p 1 i32.add p!
+    ]
+    times
+    c 1 l i32.shl i32.ge_s [ "Huffman table: code too long for its length" trap ] when
+    c 1 i32.shl c!
+  ]
+  times
+  code size htab.new ;
+
+: htables.dc-lum ( -- htab )  htables.dc-lum-bits htables.dc-lum-vals htables.derive ;
+: htables.ac-lum ( -- htab )  htables.ac-lum-bits htables.ac-lum-vals htables.derive ;

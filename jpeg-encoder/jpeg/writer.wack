@@ -1,0 +1,177 @@
+# The output sink: the role of libjpeg's destination manager (jdatadst.c),
+# a byte buffer written to the file when full and at close.
+#
+# One 1 MiB buffer is allocated per encode, by out.open. Failures here are
+# plain traps, deliberately not refusals: the output path is the host's
+# business, not the input's.
+
+# The open output: its handle, the buffer and how much of it is filled.
+struct out  h: i32  buf: bytes  fill: i32
+
+declare out.bufsize ( -- i32 )
+test out.bufsize : out.bufsize -> 1048576
+
+# A path: the open output.
+declare out.open ( str -- out )
+test out.open : "/nonexistent-dir-for-out-test/x.jpg" out.open out.fill -> trap
+
+# One byte (the low 8 bits), flushing first when the buffer is full.
+declare out.byte ( out i32 -- )
+
+# A 16-bit value, big-endian: the high byte, then the low byte.
+declare out.u16 ( out i32 -- )
+
+# Write out whatever is buffered.
+declare out.flush ( out -- )
+
+# Flush, then close the file.
+declare out.close ( out -- )
+
+# An output with a buffer of the given size and no file (handle -1: any
+# write traps); one on /dev/null with a 4-byte buffer; the filled part of an
+# output's buffer.
+: fx.out ( i32 -- out )  -1 swap bytes.new 0 out.new ;
+: fx.out-null ( -- out )  "/file/dev/null" host.OWRITE host.open 4 bytes.new 0 out.new ;
+: fx.taken ( out -- bytes )  :> o  o out.buf 0 o out.fill bytes.slice ;
+
+test out.byte : 64 fx.out dup 0xFF out.byte dup 0xD8 out.byte fx.taken "ffd8" hex eq -> 1
+test out.byte : 64 fx.out dup 0x1FF out.byte fx.taken "ff" hex eq -> 1
+test out.byte : fx.out-null dup 1 out.byte dup 2 out.byte dup 3 out.byte dup 4 out.byte dup 5 out.byte out.fill -> 1
+test out.byte : 2 fx.out dup 1 out.byte dup 2 out.byte dup 3 out.byte out.fill -> trap
+test out.u16 : 64 fx.out dup 0x0010 out.u16 fx.taken "0010" hex eq -> 1
+test out.u16 : 64 fx.out dup 0xFFD8 out.u16 out.fill -> 2
+test out.u16 : 64 fx.out dup 0xFFD8 out.u16 fx.taken "ffd8" hex eq -> 1
+test out.flush : fx.out-null dup 1 out.byte dup out.flush out.fill -> 0
+test out.flush : 64 fx.out dup out.flush out.fill -> 0
+test out.flush : 64 fx.out dup 1 out.byte dup out.flush out.fill -> trap
+
+: out.bufsize ( -- i32 )  1048576 ;
+
+: out.open ( str -- out )
+  host.OWRITE host.open :> h
+  h 0 i32.lt_s [ "cannot open output" trap ] when
+  h out.bufsize bytes.new 0 out.new ;
+
+: out.flush ( out -- )
+  :> o
+  o out.fill :> n
+  n 0 i32.gt_s
+  [
+    o out.h  o out.buf 0 n bytes.slice bytes.as-str  host.write n i32.ne [ "short write" trap ] when
+    o 0 out.fill!
+  ]
+  when ;
+
+: out.byte ( out i32 -- )
+  :> v :> o
+  o out.fill  o out.buf bytes.len  i32.ge_s [ o out.flush ] when
+  o out.buf  o out.fill  v 255 i32.and  bytes.at!
+  o  o out.fill 1 i32.add  out.fill! ;
+
+: out.u16 ( out i32 -- )
+  :> v :> o
+  o  v 8 i32.shr_u  out.byte
+  o  v out.byte ;
+
+: out.close ( out -- )
+  :> o
+  o out.flush
+  o out.h host.close drop ;
+
+# The markers, in the order cjpeg writes them: SOI, APP0 (JFIF), [APP2 ICC
+# chunks, E4], DQT, SOF0, DHT for each table used, SOS, the scan, EOI
+# (jcmarker.c). DQT writes its table in zigzag order.
+
+declare writer.soi ( out -- )
+test writer.soi : 64 fx.out dup writer.soi fx.taken fx.soi hex eq -> 1
+
+# APP0: JFIF 1.01, density unit 0, density 1:1, no thumbnail (cjpeg's
+# defaults, emit_jfif_app0).
+declare writer.app0 ( out -- )
+test writer.app0 : 64 fx.out dup writer.app0 fx.taken fx.app0 hex eq -> 1
+
+# The output, a table id (0 to 3), a 64-entry table in natural order.
+declare writer.dqt ( out i32 array i32 -- )
+test writer.dqt : 128 fx.out dup 0 qtables.lum 50 qtables.scaled writer.dqt fx.taken fx.dqt hex eq -> 1
+test writer.dqt : 128 fx.out dup 1 qtables.lum 50 qtables.scaled writer.dqt fx.taken 4 bytes.at -> 1
+test writer.dqt : 128 fx.out dup 0 qtables.lum 100 qtables.scaled dup 0 256 array.at! writer.dqt -> trap
+
+# The output, width, height: a one-component (greyscale) SOF0.
+declare writer.sof0 ( out i32 i32 -- )
+test writer.sof0 : 64 fx.out dup 1 1 writer.sof0 fx.taken fx.sof hex eq -> 1
+test writer.sof0 : 64 fx.out dup 8 8 writer.sof0 fx.taken "ffc0000b080008000801011100" hex eq -> 1
+test writer.sof0 : 64 fx.out dup 300 200 writer.sof0 fx.taken 5 4 bytes.slice "00c8012c" hex eq -> 1
+
+# The output, the class-and-id byte (0x00 DC table 0, 0x10 AC table 0),
+# bits (17 entries, [1..16] written), vals (as many as the bits count).
+declare writer.dht ( out i32 array i32 array i32 -- )
+test writer.dht : 64 fx.out dup 0 htables.dc-lum-bits htables.dc-lum-vals writer.dht fx.taken "ffc4001f00" "00010501010101010100000000000000" str.concat "000102030405060708090a0b" str.concat hex eq -> 1
+test writer.dht : 256 fx.out dup 0x10 htables.ac-lum-bits htables.ac-lum-vals writer.dht out.fill -> 183
+test writer.dht : 256 fx.out dup 0x10 htables.ac-lum-bits htables.ac-lum-vals writer.dht fx.taken 3 bytes.at -> 0xB5
+test writer.dht : 256 fx.out dup 0x10 htables.ac-lum-bits htables.ac-lum-vals writer.dht fx.taken 4 bytes.at -> 0x10
+test writer.dht : 256 fx.out dup 0x10 htables.ac-lum-bits htables.ac-lum-vals writer.dht fx.taken 20 bytes.at -> 0x7D
+test writer.dht : 256 fx.out dup 0x10 htables.ac-lum-bits htables.ac-lum-vals writer.dht fx.taken 182 bytes.at -> 0xFA
+
+# A one-component (greyscale) SOS: tables 0 and 0, Ss 0, Se 63, AhAl 0.
+declare writer.sos ( out -- )
+test writer.sos : 64 fx.out dup writer.sos fx.taken fx.sos hex eq -> 1
+
+declare writer.eoi ( out -- )
+test writer.eoi : 64 fx.out dup writer.eoi fx.taken "ffd9" hex eq -> 1
+
+: writer.soi ( out -- )  0xFFD8 out.u16 ;
+
+: writer.app0 ( out -- )
+  :> o
+  o 0xFFE0 out.u16
+  o 16 out.u16
+  o 0x4A out.byte  o 0x46 out.byte  o 0x49 out.byte  o 0x46 out.byte  o 0 out.byte
+  o 1 out.byte  o 1 out.byte
+  o 0 out.byte
+  o 1 out.u16  o 1 out.u16
+  o 0 out.byte  o 0 out.byte ;
+
+: writer.dqt ( out i32 array i32 -- )
+  :> t :> id :> o
+  qtables.natural :> nat
+  o 0xFFDB out.u16
+  o 67 out.u16
+  o id out.byte
+  64
+  [
+    :> k
+    t  nat k array.at  array.at :> v
+    v 255 i32.gt_s [ "DQT entry over 255" trap ] when
+    o v out.byte
+  ]
+  times ;
+
+: writer.sof0 ( out i32 i32 -- )
+  :> ht :> wd :> o
+  o 0xFFC0 out.u16
+  o 11 out.u16
+  o 8 out.byte
+  o ht out.u16
+  o wd out.u16
+  o 1 out.byte
+  o 1 out.byte  o 0x11 out.byte  o 0 out.byte ;
+
+: writer.dht ( out i32 array i32 array i32 -- )
+  :> vals :> bits :> tc :> o
+  0 :> count!
+  16 [ :> i  count  bits i 1 i32.add array.at  i32.add count! ] times
+  o 0xFFC4 out.u16
+  o  19 count i32.add  out.u16
+  o tc out.byte
+  16 [ :> j  o  bits j 1 i32.add array.at  out.byte ] times
+  count [ :> k  o  vals k array.at  out.byte ] times ;
+
+: writer.sos ( out -- )
+  :> o
+  o 0xFFDA out.u16
+  o 8 out.u16
+  o 1 out.byte
+  o 1 out.byte  o 0 out.byte
+  o 0 out.byte  o 63 out.byte  o 0 out.byte ;
+
+: writer.eoi ( out -- )  0xFFD9 out.u16 ;

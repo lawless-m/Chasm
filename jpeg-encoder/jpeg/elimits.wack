@@ -1,0 +1,24 @@
+# The encoder's limits and refusal codes (SECURITY.md).
+#
+# The decoder's own limits and codes stay in ../jpeg-decoder/jpeg/limits.wack,
+# which every encoder program lists first. Sizes are in bytes; MB means 10^6
+# bytes. A refusal code is a word returning its own name, so a misspelt code
+# is a compile error rather than a wrong message.
+
+# Limits
+
+: MAX_ICC ( -- i32 )  1000000 ;  # 1 MB: the joined ICC profile's cap
+
+test MAX_ICC : MAX_ICC -> 1000000
+
+# Refusal codes
+
+: BAD_PPM ( -- str )  "BAD_PPM" ;
+: BAD_EXIF ( -- str )  "BAD_EXIF" ;
+: BAD_ICC ( -- str )  "BAD_ICC" ;
+: LIMIT_ICC ( -- str )  "LIMIT_ICC" ;
+
+test BAD_PPM : BAD_PPM -> "BAD_PPM"
+test BAD_EXIF : BAD_EXIF -> "BAD_EXIF"
+test BAD_ICC : BAD_ICC -> "BAD_ICC"
+test LIMIT_ICC : LIMIT_ICC -> "LIMIT_ICC"

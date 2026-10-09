@@ -1,0 +1,140 @@
+# The encode program's input: a binary PPM (P6, three components) or PGM
+# (P5, one component) with maxval 255, read whole into one buffer.
+#
+# The header is parsed as cjpeg's rdppm.c reads it (start_input_ppm,
+# read_pbm_integer): `P5` or `P6`, then width, height and maxval, each an
+# unsigned decimal preceded by any run of space, tab, LF or CR and ended by
+# exactly one byte, which is consumed. Comments (`#`) are not accepted: the
+# inputs come from djpeg and tools/gen_ppm.py, which write none. Anything
+# else refuses BAD_PPM: another magic number, a missing or non-decimal
+# field, a value over 65535, a zero width or height, a maxval other than
+# 255, a header running past the bytes read, a sample count over
+# MAX_PIXELS x 3, or data shorter than width x height x components. Bytes
+# after the samples are ignored, as cjpeg ignores them.
+#
+# A load allocates twice: a 64-byte header buffer (the longest legal header,
+# `P6\n65535 65535\n255\n`, is 19 bytes) and the data buffer.
+
+struct ppmhdr  n: i32  w: i32  h: i32  maxval: i32  start: i32
+struct pimage  w: i32  h: i32  n: i32  data: bytes
+
+# A string: a fresh buffer holding its bytes.
+declare fx.str-bytes ( str -- bytes )
+test fx.str-bytes : "P5" fx.str-bytes bytes.len -> 2
+test fx.str-bytes : "P5" fx.str-bytes 1 bytes.at -> 53
+
+# A buffer and a position: the decimal there (after any whitespace) and the
+# position after the one byte that ends it.
+declare ppmread.int ( bytes i32 -- i32 i32 )
+test ppmread.int : " 12\n" fx.str-bytes 0 ppmread.int -> 12 4
+test ppmread.int : "\r\n\t 7x" fx.str-bytes 0 ppmread.int -> 7 6
+test ppmread.int : "65535 " fx.str-bytes 0 ppmread.int -> 65535 6
+test ppmread.int : "65536 " fx.str-bytes 0 ppmread.int -> trap
+test ppmread.int : "12" fx.str-bytes 0 ppmread.int -> trap
+test ppmread.int : "  " fx.str-bytes 0 ppmread.int -> trap
+test ppmread.int : "x1 " fx.str-bytes 0 ppmread.int -> trap
+
+declare ppmread.header ( bytes -- ppmhdr )
+test ppmread.header : "P5\n8 8\n255\n" fx.str-bytes ppmread.header ppmhdr.w -> 8
+test ppmread.header : "P5\n8 8\n255\n" fx.str-bytes ppmread.header ppmhdr.h -> 8
+test ppmread.header : "P5\n8 8\n255\n" fx.str-bytes ppmread.header ppmhdr.n -> 1
+test ppmread.header : "P5\n8 8\n255\n" fx.str-bytes ppmread.header ppmhdr.maxval -> 255
+test ppmread.header : "P5\n8 8\n255\n" fx.str-bytes ppmread.header ppmhdr.start -> 11
+test ppmread.header : "P6 2 3 255 " fx.str-bytes ppmread.header ppmhdr.n -> 3
+test ppmread.header : "P6 2 3 255 " fx.str-bytes ppmread.header ppmhdr.w -> 2
+test ppmread.header : "P6 2 3 255 " fx.str-bytes ppmread.header ppmhdr.h -> 3
+test ppmread.header : "P6 2 3 255 " fx.str-bytes ppmread.header ppmhdr.start -> 11
+test ppmread.header : "P5\r\n16 1\t255\n" fx.str-bytes ppmread.header ppmhdr.w -> 16
+test ppmread.header : "P5\r\n16 1\t255\n" fx.str-bytes ppmread.header ppmhdr.start -> 13
+test ppmread.header : "P5\n8 8\n4095\n" fx.str-bytes ppmread.header ppmhdr.w -> trap
+test ppmread.header : "P4\n8 8\n255\n" fx.str-bytes ppmread.header ppmhdr.w -> trap
+test ppmread.header : "P5\n0 8\n255\n" fx.str-bytes ppmread.header ppmhdr.w -> trap
+test ppmread.header : "P5\n8 x\n255\n" fx.str-bytes ppmread.header ppmhdr.w -> trap
+test ppmread.header : "P5\n#c\n8 8\n255\n" fx.str-bytes ppmread.header ppmhdr.w -> trap
+test ppmread.header : "P5\n8 8\n255" fx.str-bytes ppmread.header ppmhdr.w -> trap
+test ppmread.header : "P5\n8 8\n70000\n" fx.str-bytes ppmread.header ppmhdr.w -> trap
+test ppmread.header : "P" fx.str-bytes ppmread.header ppmhdr.w -> trap
+
+# A path: the image.
+declare ppmread.load ( str -- pimage )
+test ppmread.load : "/file/no/such/file.pgm" ppmread.load pimage.w -> trap
+
+: fx.str-bytes ( str -- bytes )
+  :> s
+  s str.len bytes.new :> b
+  b 0 s bytes.put
+  b ;
+
+: ppmread.space? ( i32 -- i32 )
+  :> c
+  c 32 i32.eq  c 9 i32.eq i32.or  c 10 i32.eq i32.or  c 13 i32.eq i32.or ;
+
+: ppmread.digit? ( i32 -- i32 )
+  :> c
+  c 48 i32.ge_s  c 57 i32.le_s  i32.and ;
+
+: ppmread.int ( bytes i32 -- i32 i32 )
+  :> p0 :> b
+  b bytes.len :> len
+  p0 :> p!
+  [ p len i32.lt_s [ b p bytes.at ppmread.space? ] [ 0 ] if ] [ p 1 i32.add p! ] while
+  p len i32.ge_s [ BAD_PPM "header ends early" refusal trap ] when
+  b p bytes.at ppmread.digit? i32.eqz [ BAD_PPM "header field is not a number" refusal trap ] when
+  0 :> v!
+  [ p len i32.lt_s [ b p bytes.at ppmread.digit? ] [ 0 ] if ]
+  [
+    v 10 i32.mul  b p bytes.at 48 i32.sub  i32.add v!
+    v 65535 i32.gt_s [ BAD_PPM "header field over 65535" refusal trap ] when
+    p 1 i32.add p!
+  ]
+  while
+  p len i32.ge_s [ BAD_PPM "header ends early" refusal trap ] when
+  v  p 1 i32.add ;
+
+: ppmread.header ( bytes -- ppmhdr )
+  :> b
+  b bytes.len 2 i32.lt_s [ BAD_PPM "not a P5 or P6 file" refusal trap ] when
+  b 0 bytes.at 80 i32.ne [ BAD_PPM "not a P5 or P6 file" refusal trap ] when
+  b 1 bytes.at :> m
+  m 53 i32.eq [ 1 ] [ m 54 i32.eq [ 3 ] [ BAD_PPM "not a P5 or P6 file" refusal trap ] if ] if :> n
+  b 2 ppmread.int :> p1 :> w
+  b p1 ppmread.int :> p2 :> h
+  b p2 ppmread.int :> start :> maxval
+  w 0 i32.eq  h 0 i32.eq  i32.or [ BAD_PPM "zero width or height" refusal trap ] when
+  maxval 255 i32.ne [ BAD_PPM "maxval" refusal trap ] when
+  n w h maxval start ppmhdr.new ;
+
+: ppmread.load ( str -- pimage )
+  host.OREAD host.open :> fd
+  fd 0 i32.lt_s [ BAD_PPM "cannot open input" refusal trap ] when
+  64 bytes.new :> hb
+  0 :> got!
+  1 :> r!
+  [ r 0 i32.gt_s  got 64 i32.lt_s  i32.and ]
+  [
+    fd  hb got  64 got i32.sub  bytes.slice  host.read r!
+    r 0 i32.lt_s [ BAD_PPM "read error" refusal trap ] when
+    got r i32.add got!
+  ]
+  while
+  hb 0 got bytes.slice ppmread.header :> hdr
+  hdr ppmhdr.w i64.extend_i32_u  hdr ppmhdr.h i64.extend_i32_u i64.mul  hdr ppmhdr.n i64.extend_i32_u i64.mul :> count64
+  count64  MAX_PIXELS i64.extend_i32_u 3 i64.extend_i32_u i64.mul  i64.gt_u
+  [ BAD_PPM "image too large" refusal trap ]
+  when
+  count64 i32.wrap_i64 :> count
+  count bytes.new :> data
+  got hdr ppmhdr.start i32.sub :> have0
+  have0 count i32.gt_s [ count ] [ have0 ] if :> have
+  data 0  hb hdr ppmhdr.start have bytes.slice bytes.as-str  bytes.put
+  have :> filled!
+  [ filled count i32.lt_s ]
+  [
+    fd  data filled  count filled i32.sub  bytes.slice  host.read r!
+    r 0 i32.lt_s [ BAD_PPM "read error" refusal trap ] when
+    r 0 i32.eq [ BAD_PPM "short data" refusal trap ] when
+    filled r i32.add filled!
+  ]
+  while
+  fd host.close drop
+  hdr ppmhdr.w  hdr ppmhdr.h  hdr ppmhdr.n  data pimage.new ;

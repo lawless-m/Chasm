@@ -1,0 +1,66 @@
+# The entropy-coded data's bit writer, as jchuff.c writes it: bits are
+# packed most significant first into bytes; every 0xFF byte is followed by a
+# stuffed 0x00 (EMIT_BYTE); at the end of the scan the partial byte is
+# padded with 1 bits and passes through the same stuffing (flush_bits).
+#
+# The accumulator is an i32 holding at most 7 pending bits between calls,
+# kept masked to their count; a call adds at most 24 bits, so it never
+# exceeds 31 bits.
+
+struct bitwriter  o: out  acc: i32  n: i32
+
+# A fresh writer on an output is `out 0 0 bitwriter.new`: the struct's own
+# constructor, with no bits pending.
+
+# A bit writer, a code, its size in bits (1 to 24).
+declare bitwriter.put ( bitwriter i32 i32 -- )
+
+# Pad the partial byte with 1 bits and write it; nothing when no bits wait.
+declare bitwriter.flush ( bitwriter -- )
+
+: fx.bw ( -- bitwriter )  64 fx.out 0 0 bitwriter.new ;
+
+test bitwriter.put : fx.bw dup 0 2 bitwriter.put dup 10 4 bitwriter.put dup bitwriter.flush bitwriter.o fx.taken "2b" hex eq -> 1
+test bitwriter.put : fx.bw dup 0xFF 8 bitwriter.put bitwriter.o fx.taken "ff00" hex eq -> 1
+test bitwriter.put : fx.bw dup 0x7F 7 bitwriter.put dup bitwriter.flush bitwriter.o fx.taken "ff00" hex eq -> 1
+test bitwriter.put : fx.bw dup 0xC5AF 16 bitwriter.put bitwriter.o fx.taken "c5af" hex eq -> 1
+test bitwriter.put : fx.bw dup 0 3 bitwriter.put dup 1 1 bitwriter.put dup bitwriter.flush bitwriter.o fx.taken "1f" hex eq -> 1
+test bitwriter.flush : fx.bw dup bitwriter.flush bitwriter.o out.fill -> 0
+test bitwriter.put : fx.bw dup 0x1FF 9 bitwriter.put bitwriter.o fx.taken "ff00" hex eq -> 1
+test bitwriter.put : fx.bw dup 0x1FF 9 bitwriter.put bitwriter.n -> 1
+test bitwriter.flush : fx.bw dup 0x1FF 9 bitwriter.put dup bitwriter.flush bitwriter.o fx.taken "ff00ff00" hex eq -> 1
+test bitwriter.put : fx.bw dup 0xF2DA 16 bitwriter.put dup 0xF 4 bitwriter.put bitwriter.o fx.taken "f2da" hex eq -> 1
+test bitwriter.put : fx.bw dup 0xF2DA 16 bitwriter.put dup 0xF 4 bitwriter.put bitwriter.n -> 4
+test bitwriter.put : fx.bw dup 0xABCDEF 24 bitwriter.put bitwriter.o fx.taken "abcdef" hex eq -> 1
+
+# One byte with stuffing.
+: bitwriter.emit ( out i32 -- )
+  :> b :> o
+  o b out.byte
+  b 0xFF i32.eq [ o 0 out.byte ] when ;
+
+: bitwriter.put ( bitwriter i32 i32 -- )
+  :> size :> code :> w
+  w bitwriter.acc size i32.shl code i32.or :> acc!
+  w bitwriter.n size i32.add :> n!
+  [ n 8 i32.ge_s ]
+  [
+    w bitwriter.o  acc n 8 i32.sub i32.shr_u 0xFF i32.and  bitwriter.emit
+    n 8 i32.sub n!
+  ]
+  while
+  w  acc  1 n i32.shl 1 i32.sub  i32.and  bitwriter.acc!
+  w n bitwriter.n! ;
+
+: bitwriter.flush ( bitwriter -- )
+  :> w
+  w bitwriter.n :> n
+  n 0 i32.gt_s
+  [
+    w bitwriter.o
+    w bitwriter.acc 8 n i32.sub i32.shl  0xFF n i32.shr_u  i32.or  0xFF i32.and
+    bitwriter.emit
+    w 0 bitwriter.acc!
+    w 0 bitwriter.n!
+  ]
+  when ;

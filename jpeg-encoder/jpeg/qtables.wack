@@ -1,0 +1,81 @@
+# Quantisation tables: the T.81 Annex K luminance table, libjpeg's quality
+# scaling (jcparam.c jpeg_quality_scaling and jpeg_add_quant_table with
+# force_baseline), and the zigzag order (jutils.c jpeg_natural_order).
+#
+# Tables are held in natural (row-major) order; DQT writes them in zigzag
+# order (jcmarker.c emit_dqt), entry k being table[natural[k]]. Each table
+# word allocates, so callers build a table once, outside any loop. The
+# colour-difference (Cb, Cr) table arrives with colour, in E2.
+
+# The 64 entries of std_luminance_quant_tbl, natural order.
+declare qtables.lum ( -- array i32 )
+test qtables.lum : qtables.lum array.len -> 64
+test qtables.lum : qtables.lum 0 array.at -> 16
+test qtables.lum : qtables.lum 1 array.at -> 11
+test qtables.lum : qtables.lum 8 array.at -> 12
+test qtables.lum : qtables.lum 63 array.at -> 99
+
+# jpeg_quality_scaling: a quality (clamped to 1..100) to a percentage.
+declare qtables.scaling ( i32 -- i32 )
+test qtables.scaling : 50 qtables.scaling -> 100
+test qtables.scaling : 85 qtables.scaling -> 30
+test qtables.scaling : 100 qtables.scaling -> 0
+test qtables.scaling : 1 qtables.scaling -> 5000
+test qtables.scaling : 10 qtables.scaling -> 500
+test qtables.scaling : 0 qtables.scaling -> 5000
+test qtables.scaling : 101 qtables.scaling -> 0
+
+# A base table and a quality: a fresh table, each entry
+# (base * scaling + 50) / 100 clamped to 1..255 (force_baseline).
+declare qtables.scaled ( array i32 i32 -- array i32 )
+test qtables.scaled : qtables.lum 50 qtables.scaled 0 array.at -> 16
+test qtables.scaled : qtables.lum 50 qtables.scaled 1 array.at -> 11
+test qtables.scaled : qtables.lum 50 qtables.scaled 63 array.at -> 99
+test qtables.scaled : qtables.lum 85 qtables.scaled 0 array.at -> 5
+test qtables.scaled : qtables.lum 85 qtables.scaled 1 array.at -> 3
+test qtables.scaled : qtables.lum 85 qtables.scaled 63 array.at -> 30
+test qtables.scaled : qtables.lum 100 qtables.scaled 0 array.at -> 1
+test qtables.scaled : qtables.lum 100 qtables.scaled 63 array.at -> 1
+test qtables.scaled : qtables.lum 1 qtables.scaled 0 array.at -> 255
+test qtables.scaled : qtables.lum 10 qtables.scaled 0 array.at -> 80
+test qtables.scaled : qtables.lum 10 qtables.scaled 63 array.at -> 255
+test qtables.scaled : qtables.lum 85 qtables.scaled array.len -> 64
+
+# jpeg_natural_order: zigzag position k to natural index.
+declare qtables.natural ( -- array i32 )
+test qtables.natural : qtables.natural array.len -> 64
+test qtables.natural : qtables.natural 0 array.at -> 0
+test qtables.natural : qtables.natural 1 array.at -> 1
+test qtables.natural : qtables.natural 2 array.at -> 8
+test qtables.natural : qtables.natural 3 array.at -> 16
+test qtables.natural : qtables.natural 5 array.at -> 2
+test qtables.natural : qtables.natural 63 array.at -> 63
+
+: qtables.hex64 ( str -- array i32 )
+  hex :> src
+  64 array.new ( array i32 ) :> t
+  64 [ :> i  t i  src i bytes.at  array.at! ] times
+  t ;
+
+: qtables.lum ( -- array i32 )
+  "100b0a101828333d0c0c0e131a3a3c370e0d1018283945380e11161d3357503e12162538446d674d182337405168715c31404e5767797865485c5f6270646763" qtables.hex64 ;
+
+: qtables.scaling ( i32 -- i32 )
+  :> q0
+  q0 1 i32.lt_s [ 1 ] [ q0 100 i32.gt_s [ 100 ] [ q0 ] if ] if :> q
+  q 50 i32.lt_s [ 5000 q i32.div_s ] [ 200 q 2 i32.mul i32.sub ] if ;
+
+: qtables.scaled ( array i32 i32 -- array i32 )
+  qtables.scaling :> s :> base
+  64 array.new ( array i32 ) :> t
+  64
+  [
+    :> i
+    base i array.at s i32.mul 50 i32.add 100 i32.div_s :> v
+    t i  v 1 i32.lt_s [ 1 ] [ v 255 i32.gt_s [ 255 ] [ v ] if ] if  array.at!
+  ]
+  times
+  t ;
+
+: qtables.natural ( -- array i32 )
+  "000108100902030a11182019120b04050c131a21283029221b140d06070e151c232a313839322b241d160f171e252c333a3b342d261f272e353c3d362f373e3f" qtables.hex64 ;

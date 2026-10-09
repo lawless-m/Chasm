@@ -1,0 +1,110 @@
+# The encoder's PPM entry point: the cjpeg equivalent the byte-exact tests
+# drive (ARCHITECTURE.md, "The two programs").
+#
+# Protocol: stdin gives the input path and the output path (natively
+# `/file/<absolute path>`), then option lines until the end of input:
+# `quality=Q` (default 85) and `sample=S` (420, 422 or 444; read and ignored
+# here, and ignored for greyscale anyway). stdout gets `ENCODED width height
+# ncomp`, with the JPEG written to the output path; the exit status is 0. A
+# refusal is a trap `REFUSED CODE: message` on stderr with exit status 1;
+# any other trap is an encoder bug, except E0's milestone limit below.
+#
+# E0 scope: the input must be an 8x8 greyscale image, else a plain trap
+# "E0: only an 8x8 greyscale image". Its one block is coded by
+# encode.flat-dc, which is correct only for a flat block and takes pixel
+# (0,0) as the block's value: E1 replaces it with fdct.wack, quantise.wack
+# and the row sink encoder.wack over real blocks. E0 creates qtables.wack,
+# htables.wack and the DC/EOB half of huffenc.wack because the markers and a
+# flat block need them; the rest of those files is owed to E1 and E2.
+
+# A flat block's sample and the scaled table's first entry: the quantised
+# DC. The forward DCT (jfdctint.c) of a level-shifted flat block is
+# 64 x (v - 128) and every other coefficient 0; jcdctmgr.c quantises by
+# 8 x q0, rounding half away from zero.
+declare encode.flat-dc ( i32 i32 -- i32 )
+test encode.flat-dc : 77 16 encode.flat-dc -> -26
+test encode.flat-dc : 77 5 encode.flat-dc -> -82
+test encode.flat-dc : 77 1 encode.flat-dc -> -408
+test encode.flat-dc : 0 1 encode.flat-dc -> -1024
+test encode.flat-dc : 255 1 encode.flat-dc -> 1016
+test encode.flat-dc : 128 16 encode.flat-dc -> 0
+test encode.flat-dc : 255 16 encode.flat-dc -> 64
+test encode.flat-dc : 0 16 encode.flat-dc -> -64
+test encode.flat-dc : 0 5 encode.flat-dc -> -205
+test encode.flat-dc : 255 5 encode.flat-dc -> 203
+
+# The quality so far and an option line: the quality after it.
+declare encode.option ( i32 str -- i32 )
+test encode.option : 85 "quality=50" encode.option -> 50
+test encode.option : 85 "quality=100" encode.option -> 100
+test encode.option : 85 "sample=420" encode.option -> 85
+test encode.option : 85 "sample=444" encode.option -> 85
+test encode.option : 85 "" encode.option -> 85
+test encode.option : 85 "quality=" encode.option -> trap
+test encode.option : 85 "quality=5x" encode.option -> trap
+test encode.option : 85 "colour=red" encode.option -> trap
+test encode.option : 85 "q" encode.option -> trap
+
+: encode.flat-dc ( i32 i32 -- i32 )
+  :> q0 :> v
+  v 128 i32.sub 64 i32.mul :> c
+  q0 8 i32.mul :> d
+  c 0 i32.lt_s [ 0 c i32.sub ] [ c ] if  d 2 i32.div_s i32.add  d i32.div_s :> m
+  c 0 i32.lt_s [ 0 m i32.sub ] [ m ] if ;
+
+: encode.prefix? ( str str -- i32 )
+  :> p :> line
+  line str.len p str.len i32.ge_u [ line 0 p str.len str.slice p str.eq ] [ 0 ] if ;
+
+: encode.option ( i32 str -- i32 )
+  :> line :> q
+  line str.len 0 i32.eq
+  [ q ]
+  [
+    line "quality=" encode.prefix?
+    [
+      line 8 str.i32-at :> next :> v
+      next line str.len i32.ne [ "bad quality" trap ] when
+      v
+    ]
+    [ line "sample=" encode.prefix? [ q ] [ "unknown option" trap ] if ]
+    if
+  ]
+  if ;
+
+: main ( -- )
+  read-line drop :> inp
+  read-line drop :> outp
+  85 :> quality!
+  1 :> more!
+  [ more ]
+  [
+    read-line more!
+    :> line
+    more [ quality line encode.option quality! ] when
+  ]
+  while
+  inp ppmread.load :> im
+  im pimage.n 1 i32.ne  im pimage.w 8 i32.ne i32.or  im pimage.h 8 i32.ne i32.or
+  [ "E0: only an 8x8 greyscale image" trap ]
+  when
+  qtables.lum quality qtables.scaled :> qt
+  htables.dc-lum :> dct
+  htables.ac-lum :> act
+  outp out.open :> o
+  o writer.soi
+  o writer.app0
+  o 0 qt writer.dqt
+  o 8 8 writer.sof0
+  o 0x00 htables.dc-lum-bits htables.dc-lum-vals writer.dht
+  o 0x10 htables.ac-lum-bits htables.ac-lum-vals writer.dht
+  o writer.sos
+  o 0 0 bitwriter.new :> bw
+  bw dct  im pimage.data 0 bytes.at  qt 0 array.at encode.flat-dc  huffenc.dc
+  bw act huffenc.eob
+  bw bitwriter.flush
+  o writer.eoi
+  o out.close
+  "ENCODED " im pimage.w i32.to-str str.concat " " str.concat im pimage.h i32.to-str str.concat
+  " " str.concat im pimage.n i32.to-str str.concat
+  println ;
