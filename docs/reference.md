@@ -366,7 +366,7 @@ and `main` must be concrete; struct and union names are lowercase.
 | `42` `-7` `0xFF` | `i32` (any value from -2^31 to 2^32-1; large values wrap to their bit pattern) |
 | `42 i64` | `i64`: an integer then the word `i64` is one literal, up to 2^64-1 |
 | `1.5` `2e10` | `f64` |
-| `"text"` | `str`; escapes `\" \\ \n \t \u{1F600}` |
+| `"text"` | `str`; escapes `\" \\ \n \r \t \u{1F600}` |
 | `"A" char` | `i32`: the codepoint of a one-character string literal, 65 |
 
 There is no `f32` literal: `1.5 f32.demote_f64`.

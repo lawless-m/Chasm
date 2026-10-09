@@ -94,6 +94,7 @@ pub fn lex(file: &str, src: &str) -> Result<Vec<Token>, Diagnostic> {
                         '\\' => content.push('\\'),
                         'n' => content.push('\n'),
                         't' => content.push('\t'),
+                        'r' => content.push('\r'),
                         'u' => {
                             if chars.get(i) != Some(&'{') {
                                 return Err(Diagnostic::error(
@@ -191,6 +192,12 @@ mod tests {
         );
         assert_eq!(t[6].kind, TokKind::Str("a b\n".into()));
         assert_eq!(t[8].line, 2);
+    }
+
+    #[test]
+    fn carriage_return_escape() {
+        let t = lex("t", "\"a\\r\\n\"").unwrap();
+        assert_eq!(t[0].kind, TokKind::Str("a\r\n".into()));
     }
 
     #[test]

@@ -663,6 +663,12 @@ pub(crate) fn values(tys: &[Ty], vals: &[Val], mem: &[u8]) -> Vec<Value> {
                 i += 1;
             }
             Ty::Quot(_) => out.push(Value::Opaque(t.to_string())),
+            Ty::Struct(..) => out.push(Value::Opaque(format!("<{t}>"))),
+            Ty::Array(_) => {
+                let count = vals[i + t.width() as usize - 1].unwrap_i32() as u32;
+                out.push(Value::Opaque(format!("<{count} elements>")));
+                i += t.width() as usize - 1;
+            }
             _ => out.push(Value::I32(vals[i].unwrap_i32())),
         }
         i += 1;

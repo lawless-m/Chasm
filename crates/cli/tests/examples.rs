@@ -535,6 +535,35 @@ fn test_results(f: &std::path::Path) -> (bool, serde_json::Value) {
 }
 
 #[test]
+fn trap_tests_report_struct_and_array_results() {
+    let f = scratch("trap-results.wack");
+    std::fs::write(
+        &f,
+        "struct box  a: i32\n\
+         : mk ( i32 -- box )  box.new ;\n\
+         : two ( -- array i32 i32 )  2 array.new ( array i32 ) 7 ;\n\
+         : boxes ( -- array box i32 )  3 array.new ( array box ) 9 ;\n\
+         test mk : 1 mk -> trap\ntest two : two -> trap\ntest boxes : boxes -> trap\n",
+    )
+    .unwrap();
+    let (ok, j) = test_results(&f);
+    assert!(!ok, "{j}");
+    let tests = j["results"]["tests"].as_array().unwrap();
+    let actual: Vec<_> = tests.iter().map(|t| t["actual"].clone()).collect();
+    assert!(tests.iter().all(|t| t["status"] == "fail"), "{j}");
+    assert_eq!(
+        actual,
+        [
+            serde_json::json!(["<box>"]),
+            serde_json::json!(["<2 elements>", "7"]),
+            serde_json::json!(["<3 elements>", "9"])
+        ],
+        "{j}"
+    );
+    let _ = std::fs::remove_file(f);
+}
+
+#[test]
 fn union_tag_readers_and_traps() {
     let f = union_program(
         "union-tag.wack",
