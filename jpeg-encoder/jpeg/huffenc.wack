@@ -2,9 +2,13 @@
 # (T.81 F.1.2): the DC difference as its magnitude category's code then the
 # value's low bits, and the AC coefficients as run/size codes ending in EOB.
 #
-# E0 holds the two words a flat block needs: huffenc.dc and huffenc.eob.
-# E1's full block coder (huffenc.block, the AC run/size loop with ZRL)
-# calls both unchanged.
+# huffenc.block is the full block coder: the DC difference through
+# huffenc.dc, then the AC coefficients in zigzag order. A run of zeros is
+# counted; before a non-zero coefficient, each 16 zeros of the run emit ZRL
+# (symbol 0xF0), then the symbol (run << 4) | size and the value's low bits;
+# trailing zeros end in EOB (huffenc.eob), which is not emitted when the
+# last coefficient is non-zero. An AC coefficient needing more than 10 bits
+# is a plain trap (jchuff's JERR_BAD_DCT_COEF for 8-bit data).
 
 # The number of bits in a value's magnitude (JPEG_NBITS of |v|).
 declare huffenc.nbits ( i32 -- i32 )
@@ -64,3 +68,77 @@ test huffenc.eob : fx.bw dup htables.ac-lum huffenc.eob bitwriter.n -> 4
 : huffenc.eob ( bitwriter htab -- )
   :> t :> w
   w  t htab.code 0 array.at  t htab.size 0 array.at  bitwriter.put ;
+
+# The bit writer, the DC table, the AC table, the zigzag-to-natural order,
+# a quantised block in natural order, and the previous block's quantised DC
+# (0 at the start of the scan).
+declare huffenc.block ( bitwriter htab htab array i32 array i32 i32 -- )
+
+: fx.blk ( -- array i32 )  64 array.new ( array i32 ) ;
+
+# A block and a previous DC, coded into a fresh writer and flushed: the
+# bytes.
+: fx.code ( array i32 i32 -- bytes )
+  :> prev :> b
+  fx.bw :> w
+  w htables.dc-lum htables.ac-lum qtables.natural b prev huffenc.block
+  w bitwriter.flush
+  w bitwriter.o fx.taken ;
+
+# One coefficient at a natural index of a fresh zero block: the block.
+: fx.blk1 ( i32 i32 -- array i32 )  :> v :> i  fx.blk :> b  b i v array.at!  b ;
+
+# Codes: DC category 0 00, 1 010, 3 100; AC 0x00 (EOB) 1010, 0x01 00,
+# 0x12 11011, 0xF0 (ZRL) 11111111001, 0xE1 1111111111101011.
+# (A) DC 00, EOB 1010, pad 11.
+test huffenc.block : fx.blk 0 fx.code "2b" hex eq -> 1
+# (B) zigzag 1 = 1: DC 00, 0x01 00, value 1, EOB 1010, pad.
+test huffenc.block : 1 1 fx.blk1 0 fx.code "0d7f" hex eq -> 1
+# (C) zigzag 1 = -1: value bits of -2 masked to 1 bit, 0.
+test huffenc.block : 1 -1 fx.blk1 0 fx.code "057f" hex eq -> 1
+# (D) zigzag 17 (natural 19) = 1: DC 00, ZRL, 0x01 00, 1, EOB.
+test huffenc.block : 19 1 fx.blk1 0 fx.code "3fc9af" hex eq -> 1
+# (E) zigzag 33 (natural 42) = 1: DC 00, ZRL, ZRL, 0x01 00, 1, EOB.
+test huffenc.block : 42 1 fx.blk1 0 fx.code "3fcff935" hex eq -> 1
+# (F) zigzag 2 (natural 8) = -3: DC 00, run 1 size 2 (0x12) 11011, value 00, EOB.
+test huffenc.block : 8 -3 fx.blk1 0 fx.code "3657" hex eq -> 1
+# (G) zigzag 63 = 1: DC 00, three ZRLs, run 14 size 1 (0xE1), value 1, no
+# EOB; the FF byte is stuffed.
+test huffenc.block : 63 1 fx.blk1 0 fx.code "3fcff9ff003ffd7f" hex eq -> 1
+# (H) DC 5 after 10: difference -5, category 3 100, value bits 010, EOB.
+test huffenc.block : 0 5 fx.blk1 10 fx.code "8abf" hex eq -> 1
+# (I) an AC coefficient of 11 bits traps.
+test huffenc.block : 1 1024 fx.blk1 0 fx.code bytes.len -> trap
+# (J) cjpeg's scan bytes for flat 77 at q50: DC -26, then EOB.
+test huffenc.block : 0 -26 fx.blk1 0 fx.code "c5af" hex eq -> 1
+
+: huffenc.block ( bitwriter htab htab array i32 array i32 i32 -- )
+  :> prev :> b :> nat :> act :> dct :> w
+  w dct  b 0 array.at prev i32.sub  huffenc.dc
+  0 :> r!
+  63
+  [
+    1 i32.add :> k
+    b  nat k array.at  array.at :> c
+    c 0 i32.eq
+    [ r 1 i32.add r! ]
+    [
+      [ r 15 i32.gt_s ]
+      [
+        w  act htab.code 0xF0 array.at  act htab.size 0xF0 array.at  bitwriter.put
+        r 16 i32.sub r!
+      ]
+      while
+      c huffenc.nbits :> nbits
+      nbits 10 i32.gt_s [ "AC coefficient over 10 bits" trap ] when
+      r 4 i32.shl nbits i32.or :> sym
+      act htab.size sym array.at :> size
+      size 0 i32.eq [ "no Huffman code for the AC symbol" trap ] when
+      w  act htab.code sym array.at  size  bitwriter.put
+      w  c 0 i32.gt_s [ c ] [ c 1 i32.sub ] if  1 nbits i32.shl 1 i32.sub  i32.and  nbits  bitwriter.put
+      0 r!
+    ]
+    if
+  ]
+  times
+  r 0 i32.gt_s [ w act huffenc.eob ] when ;

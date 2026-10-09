@@ -1,0 +1,69 @@
+# Quantisation as jcdctmgr.c does it for the integer DCT: each coefficient
+# is divided by 8 x its table entry (jfdctint's output is scaled by 8),
+# rounding half away from zero, in place.
+#
+# The C path multiplies by compute_reciprocal's reciprocal and shifts;
+# tmp/e1/recip_check.py, a transcription of compute_reciprocal and
+# quantize, shows that equal to this rounded division for every divisor
+# 8 x q (q in 1..255) and every magnitude up to 16384, so the division is
+# what is mirrored.
+
+# A block of fdct.block's coefficients and a quantisation table, both in
+# natural order (entries 1..255): in place, the quantised coefficients.
+declare quantise.block ( array i32 array i32 -- )
+
+# Index, coefficient, quality: a zero block with that coefficient at that
+# index, quantised with the scaled luminance table; the entry at the index.
+: fx.q ( i32 i32 i32 -- i32 )
+  :> q :> c :> i
+  64 array.new ( array i32 ) :> b
+  b i c array.at!
+  b  qtables.lum q qtables.scaled  quantise.block
+  b i array.at ;
+
+# A block of zeros but for one coefficient, quantised: the sum of the
+# magnitudes of the other entries.
+: fx.q-rest ( i32 i32 i32 -- i32 )
+  :> q :> c :> i
+  64 array.new ( array i32 ) :> b
+  b i c array.at!
+  b  qtables.lum q qtables.scaled  quantise.block
+  0 :> s!
+  64 [ :> k  k i i32.ne [ s  b k array.at  dup 0 i32.lt_s [ 0 swap i32.sub ] when  i32.add s! ] when ] times
+  s ;
+
+# The DC of flat 8x8 images, 64 x (v - 128), at q50, q85 and q100 (scaled
+# first entries 16, 5 and 1): the values cjpeg's scan bytes confirmed in E0.
+test quantise.block : 0 -3264 50 fx.q -> -26
+test quantise.block : 0 -3264 85 fx.q -> -82
+test quantise.block : 0 -3264 100 fx.q -> -408
+test quantise.block : 0 -8192 100 fx.q -> -1024
+test quantise.block : 0 8128 100 fx.q -> 1016
+test quantise.block : 0 8128 50 fx.q -> 64
+test quantise.block : 0 8128 85 fx.q -> 203
+test quantise.block : 0 -8192 85 fx.q -> -205
+# Half rounds away from zero, for both signs (d = 128 at q50 entry 0).
+test quantise.block : 0 64 50 fx.q -> 1
+test quantise.block : 0 -64 50 fx.q -> -1
+test quantise.block : 0 63 50 fx.q -> 0
+test quantise.block : 0 -63 50 fx.q -> 0
+# The last entry uses the last table entry (q50 entry 63 is 99, d = 792).
+test quantise.block : 63 396 50 fx.q -> 1
+test quantise.block : 63 395 50 fx.q -> 0
+test quantise.block : 63 -396 50 fx.q -> -1
+test quantise.block : 63 -395 50 fx.q -> 0
+# Zeros stay zero, and one coefficient leaves the others alone.
+test quantise.block : 5 0 50 fx.q -> 0
+test quantise.block : 9 5000 85 fx.q-rest -> 0
+
+: quantise.block ( array i32 array i32 -- )
+  :> t :> b
+  64
+  [
+    :> i
+    b i array.at :> c
+    t i array.at 8 i32.mul :> d
+    c 0 i32.lt_s [ 0 c i32.sub ] [ c ] if  d 2 i32.div_s i32.add  d i32.div_s :> m
+    b i  c 0 i32.lt_s [ 0 m i32.sub ] [ m ] if  array.at!
+  ]
+  times ;

@@ -17,10 +17,12 @@ Protocol: the encoder runs as `prlimit --cpu=S:S+1 --data=BYTES wack run
 <out>/<input stem>-q<Q>-<S or grey>.jpg (a stale one is deleted first); the
 reference beside it, .ref.jpg, is made by the oracle:
 
-    cjpeg -dct int -quality Q -sample 2x2|2x1|1x1 [-grayscale] -outfile REF IN
+    cjpeg -dct int -baseline -quality Q -sample 2x2|2x1|1x1 [-grayscale] -outfile REF IN
 
 with 420, 422, 444 as 2x2, 2x1, 1x1, and a P5 input as 1x1 with
--grayscale. Outcomes are classified by text, not exit status:
+-grayscale. -baseline clamps the scaled tables to 255, as the encoder
+does: without it cjpeg writes 16-bit tables (not baseline) below about
+quality 25. Outcomes are classified by text, not exit status:
 
 - hang:     the run exceeded the timeout
 - refused:  stderr contains `REFUSED <CODE>:`
@@ -63,6 +65,9 @@ FILES = [
     "jpeg/writer.wack",
     "jpeg/bitwriter.wack",
     "jpeg/huffenc.wack",
+    "jpeg/fdct.wack",
+    "jpeg/quantise.wack",
+    "jpeg/encoder.wack",
     "encode.wack",
 ]
 REFUSED = re.compile(r"REFUSED ([A-Z_]+):")
@@ -166,7 +171,7 @@ def reference(src, dst, quality, sample, timeout):
     grey = sample == "grey"
     try:
         r = subprocess.run(
-            [CJPEG, "-dct", "int", "-quality", str(quality), "-sample", "1x1" if grey else SAMPLES[sample],
+            [CJPEG, "-dct", "int", "-baseline", "-quality", str(quality), "-sample", "1x1" if grey else SAMPLES[sample],
              *(["-grayscale"] if grey else []), "-outfile", dst, src],
             capture_output=True,
             text=True,

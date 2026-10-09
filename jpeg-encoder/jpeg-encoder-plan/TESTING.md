@@ -7,11 +7,13 @@ as the decoder's `djpeg` (built `-DWITH_SIMD=0`; see the decoder corpus's
 `SOURCES.md`). Every encoder comparison runs it as
 
 ```
-cjpeg -dct int -quality Q -sample S [-grayscale for P5] [-icc PROFILE] -outfile ref.jpg in.ppm
+cjpeg -dct int -baseline -quality Q -sample S [-grayscale for P5] [-icc PROFILE] -outfile ref.jpg in.ppm
 ```
 
-with `-sample 2x2`, `2x1` or `1x1` for `420`, `422`, `444`. The gate is
-byte equality of the two files.
+with `-sample 2x2`, `2x1` or `1x1` for `420`, `422`, `444`. `-baseline`
+matches the output profile: the scaled tables are clamped to 255, where
+cjpeg without it writes 16-bit tables and an SOF1 frame below about
+quality 25. The gate is byte equality of the two files.
 
 ## Unit tests
 

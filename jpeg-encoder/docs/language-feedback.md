@@ -17,3 +17,6 @@ each with what the encoder does about it.
   `array i32`, as the decoder's `idct.make` does.
 - `wack test` exits 0 even with pending tests, so gates grep the summary
   line for `0 failed, 0 pending`.
+- A stack assertion asserts the whole stack, so `64 array.new ( array i32 )`
+  fails when other values sit beneath it (encoder.on builds its struct's
+  fields on the stack). The array is bound to a local first, then pushed.

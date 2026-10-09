@@ -1,0 +1,137 @@
+# The forward DCT: libjpeg-turbo's jpeg_fdct_islow (jfdctint.c), the
+# integer DCT cjpeg uses with -dct int, in place on one 8x8 block.
+#
+# The oracle build has DCTELEM int (no SIMD) and a 64-bit JLONG, so the
+# block holds i32 and the arithmetic runs in i64; MULTIPLY is a plain
+# product and DESCALE(x, n) is (x + 2^(n-1)) >> n, arithmetic. CONST_BITS
+# is 13 and PASS1_BITS 2: pass 1 (rows) scales outputs 0 and 4 up by 4 and
+# descales the rest by 11; pass 2 (columns) descales 0 and 4 by 2 and the
+# rest by 15. The result is scaled by 8 (jcdctmgr.c divides by 8 x the
+# quantisation entry). The expected values in the tests come from
+# tools/fdct_oracle.c, which runs jfdctint.c itself.
+
+declare fdct.descale ( i64 i32 -- i32 )
+test fdct.descale : 6 i64 2 fdct.descale -> 2
+test fdct.descale : -6 i64 2 fdct.descale -> -1
+
+# One 1-D pass: eight inputs in order 0..7 to eight outputs in order 0..7,
+# undescaled (outputs 0 and 4 are plain sums, the rest carry CONST_BITS).
+declare fdct.1d ( i64 i64 i64 i64 i64 i64 i64 i64 -- i64 i64 i64 i64 i64 i64 i64 i64 )
+
+# A 64-entry block in natural order holding level-shifted samples
+# (-128..127): in place, the jpeg_fdct_islow coefficients.
+declare fdct.block ( array i32 -- )
+
+# A hex string of 64 samples: a fresh array of the samples minus 128; and
+# the same through fdct.block.
+: fx.samples ( str -- array i32 )
+  hex :> src
+  64 array.new ( array i32 ) :> t
+  64 [ :> i  t i  src i bytes.at 128 i32.sub  array.at! ] times
+  t ;
+: fx.fdct ( str -- array i32 )  fx.samples dup fdct.block ;
+
+: fx.flat77 ( -- str )  "4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d" ;
+: fx.flat0 ( -- str )  "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" ;
+: fx.flat255 ( -- str )  "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" ;
+# tools/gen_ppm.py noise 8 8 1
+: fx.noise8 ( -- str )  "f5b165224a58b791df6af1d8303e61cdc4bb86c3d1c427103c344c4189eb2f1e7bd5d47e446fcec2a3d811736110e5781bcccea696762e6116c6e9c92d99bf35" ;
+: fx.hramp ( -- str )  "0020406080a0c0e00020406080a0c0e00020406080a0c0e00020406080a0c0e00020406080a0c0e00020406080a0c0e00020406080a0c0e00020406080a0c0e0" ;
+: fx.vramp ( -- str )  "00000000000000002020202020202020404040404040404060606060606060608080808080808080a0a0a0a0a0a0a0a0c0c0c0c0c0c0c0c0e0e0e0e0e0e0e0e0" ;
+: fx.checker ( -- str )  "00ff00ff00ff00ffff00ff00ff00ff0000ff00ff00ff00ffff00ff00ff00ff0000ff00ff00ff00ffff00ff00ff00ff0000ff00ff00ff00ffff00ff00ff00ff00" ;
+
+test fdct.block : fx.flat77 fx.fdct 0 array.at -> -3264
+test fdct.block : fx.flat77 fx.fdct 1 array.at -> 0
+test fdct.block : fx.flat77 fx.fdct 8 array.at -> 0
+test fdct.block : fx.flat77 fx.fdct 63 array.at -> 0
+test fdct.block : fx.flat0 fx.fdct 0 array.at -> -8192
+test fdct.block : fx.flat255 fx.fdct 0 array.at -> 8128
+test fdct.block : fx.noise8 fx.fdct 0 array.at -> 263
+test fdct.block : fx.noise8 fx.fdct 1 array.at -> 916
+test fdct.block : fx.noise8 fx.fdct 8 array.at -> 153
+test fdct.block : fx.noise8 fx.fdct 9 array.at -> 378
+test fdct.block : fx.noise8 fx.fdct 26 array.at -> 1915
+test fdct.block : fx.noise8 fx.fdct 63 array.at -> 31
+test fdct.block : fx.hramp fx.fdct 0 array.at -> -1024
+test fdct.block : fx.hramp fx.fdct 1 array.at -> -4664
+test fdct.block : fx.hramp fx.fdct 2 array.at -> 0
+test fdct.block : fx.hramp fx.fdct 8 array.at -> 0
+test fdct.block : fx.vramp fx.fdct 0 array.at -> -1024
+test fdct.block : fx.vramp fx.fdct 8 array.at -> -4665
+test fdct.block : fx.vramp fx.fdct 16 array.at -> 0
+test fdct.block : fx.vramp fx.fdct 1 array.at -> 0
+test fdct.block : fx.checker fx.fdct 0 array.at -> -32
+test fdct.block : fx.checker fx.fdct 63 array.at -> -6700
+test fdct.block : fx.checker fx.fdct 7 array.at -> 0
+test fdct.block : fx.checker fx.fdct 56 array.at -> 0
+
+: fdct.descale ( i64 i32 -- i32 )
+  :> n :> x
+  x  1 i64 n 1 i32.sub i64 i64.shl  i64.add  n i64 i64.shr_s  i32.wrap_i64 ;
+
+: fdct.1d ( i64 i64 i64 i64 i64 i64 i64 i64 -- i64 i64 i64 i64 i64 i64 i64 i64 )
+  :> d7 :> d6 :> d5 :> d4 :> d3 :> d2 :> d1 :> d0
+  d0 d7 i64.add :> t0
+  d0 d7 i64.sub :> t7
+  d1 d6 i64.add :> t1
+  d1 d6 i64.sub :> t6
+  d2 d5 i64.add :> t2
+  d2 d5 i64.sub :> t5
+  d3 d4 i64.add :> t3
+  d3 d4 i64.sub :> t4
+  t0 t3 i64.add :> t10
+  t0 t3 i64.sub :> t13
+  t1 t2 i64.add :> t11
+  t1 t2 i64.sub :> t12
+  t12 t13 i64.add 4433 i64 i64.mul :> e1
+  t4 t7 i64.add :> z1
+  t5 t6 i64.add :> z2
+  t4 t6 i64.add :> z3
+  t5 t7 i64.add :> z4
+  z3 z4 i64.add 9633 i64 i64.mul :> z5
+  t4 2446 i64 i64.mul :> o4
+  t5 16819 i64 i64.mul :> o5
+  t6 25172 i64 i64.mul :> o6
+  t7 12299 i64 i64.mul :> o7
+  z1 -7373 i64 i64.mul :> m1
+  z2 -20995 i64 i64.mul :> m2
+  z3 -16069 i64 i64.mul z5 i64.add :> m3
+  z4 -3196 i64 i64.mul z5 i64.add :> m4
+  t10 t11 i64.add
+  o7 m1 i64.add m4 i64.add
+  e1  t13 6270 i64 i64.mul  i64.add
+  o6 m2 i64.add m3 i64.add
+  t10 t11 i64.sub
+  o5 m2 i64.add m4 i64.add
+  e1  t12 -15137 i64 i64.mul  i64.add
+  o4 m1 i64.add m3 i64.add ;
+
+# One element of a line: the block, the line's first index, its stride and
+# the position k along it, as an i64.
+: fdct.get ( array i32 i32 i32 i32 -- i64 )
+  :> k :> step :> base :> b
+  b  base step k i32.mul i32.add  array.at i64.extend_i32_s ;
+
+# One line of the block (a row: stride 1; a column: stride 8) through
+# fdct.1d, stored back: pass 1 shifts outputs 0 and 4 up by 2 and descales
+# the rest by 11; pass 2 descales 0 and 4 by 2 and the rest by 15.
+: fdct.line ( array i32 i32 i32 i32 -- )
+  :> pass :> step :> base :> b
+  b base step 0 fdct.get  b base step 1 fdct.get  b base step 2 fdct.get  b base step 3 fdct.get
+  b base step 4 fdct.get  b base step 5 fdct.get  b base step 6 fdct.get  b base step 7 fdct.get
+  fdct.1d
+  :> y7 :> y6 :> y5 :> y4 :> y3 :> y2 :> y1 :> y0
+  pass 1 i32.eq [ 11 ] [ 15 ] if :> odd
+  b base  pass 1 i32.eq [ y0 2 i64 i64.shl i32.wrap_i64 ] [ y0 2 fdct.descale ] if  array.at!
+  b  base step 4 i32.mul i32.add  pass 1 i32.eq [ y4 2 i64 i64.shl i32.wrap_i64 ] [ y4 2 fdct.descale ] if  array.at!
+  b  base step i32.add  y1 odd fdct.descale  array.at!
+  b  base step 2 i32.mul i32.add  y2 odd fdct.descale  array.at!
+  b  base step 3 i32.mul i32.add  y3 odd fdct.descale  array.at!
+  b  base step 5 i32.mul i32.add  y5 odd fdct.descale  array.at!
+  b  base step 6 i32.mul i32.add  y6 odd fdct.descale  array.at!
+  b  base step 7 i32.mul i32.add  y7 odd fdct.descale  array.at! ;
+
+: fdct.block ( array i32 -- )
+  :> b
+  8 [ :> r  b  r 8 i32.mul  1 1 fdct.line ] times
+  8 [ :> c  b c 8 2 fdct.line ] times ;

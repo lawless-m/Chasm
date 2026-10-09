@@ -1,0 +1,199 @@
+# The row sink (ARCHITECTURE.md "Data flow"): the encoder of one image,
+# fed sample rows top to bottom, writing the JPEG as it goes.
+#
+# encoder.on writes the headers and allocates everything once: one MCU row
+# of samples (8 rows of the padded width, whole blocks across), the 64-entry
+# DCT workspace, the scaled quantisation table, the zigzag order and the two
+# Huffman tables. A buffered MCU row is coded block by block: the 8x8
+# samples level-shifted by 128 into the workspace (jcdctmgr.c convsamp),
+# the forward DCT, quantisation, and Huffman coding against the previous
+# block's DC. A greyscale scan has one block per MCU, so every block,
+# including those at the right and bottom edges, is a real DCT of padded
+# samples (jccoefct.c compress_data never takes its dummy-block branches).
+#
+# Edges are padded as libjpeg pads them. Each row is copied into the MCU row
+# buffer and its last sample replicated out to the padded width
+# (jcsample.c expand_right_edge), in encoder.row. At the bottom, encoder.finish
+# replicates the last real row, already padded, down to a whole MCU row of 8
+# sample rows (jcprepct.c expand_bottom_edge) before coding it.
+
+struct encoder  o: out  bw: bitwriter  w: i32  h: i32  wb: i32  pw: i32  buf: bytes  blk: array i32  qt: array i32  nat: array i32  dct: htab  act: htab  pred: i32  rows: i32  y: i32
+
+# The open output, width, height, quality: the encoder, headers written.
+declare encoder.on ( out i32 i32 i32 -- encoder )
+
+# Path, width, height, ncomp, quality, sample, icc: the encoder on a new
+# file. Only greyscale and no ICC profile, until E2 and E4.
+declare encoder.open ( str i32 i32 i32 i32 i32 str -- encoder )
+
+# Code block column bx of the buffered MCU row.
+declare encoder.block ( encoder i32 -- )
+
+# Code every block of the buffered MCU row; the buffer is then empty.
+declare encoder.mcu-row ( encoder -- )
+
+# One image row of exactly width samples, top to bottom; a full MCU row is
+# coded at once.
+declare encoder.row ( encoder bytes -- )
+
+# End the scan: code the last, partial MCU row with its bottom rows
+# replicated, flush the bits and write EOI; the output stays open. Fewer
+# rows than the height is a plain trap (libjpeg's JERR_TOO_LITTLE_DATA).
+declare encoder.finish ( encoder -- )
+
+# Finish, then close the output.
+declare encoder.close ( encoder -- )
+
+# An 8x8 encoder at a quality on a 4 KiB buffer with no file.
+: fx.enc ( i32 -- encoder )  :> q  4096 fx.out 8 8 q encoder.on ;
+
+# A quality and the hex of an 8x8 image: the whole file the encoder writes.
+# The image is loaded straight into the MCU row buffer and its one block
+# coded, so the eight rows count as received.
+: fx.one ( i32 str -- bytes )
+  :> img :> q
+  q fx.enc :> e
+  e encoder.buf 0  img hex bytes.as-str  bytes.put
+  e 0 encoder.block
+  e 8 encoder.y!
+  e encoder.finish
+  e encoder.o fx.taken ;
+
+# tools/gen_ppm.py noise 8 8 1, and cjpeg -dct int -quality Q -sample 1x1
+# -grayscale of it at q50 and q100; cjpeg of flat 77 at q50.
+: fx.img8 ( -- str )  "f5b165224a58b791df6af1d8303e61cdc4bb86c3d1c427103c344c4189eb2f1e7bd5d47e446fcec2a3d811736110e5781bcccea696762e6116c6e9c92d99bf35" ;
+: fx.ref8-q50 ( -- str )  "ffd8ffe000104a46494600010100000100010000ffdb004300100b0c0e0c0a100e0d0e1211101318281a181616183123251d283a333d3c3933383740485c4e404457453738506d51575f626768673e4d71797064785c656763ffc0000b080008000801011100ffc4001f0000010501010101010100000000000000000102030405060708090a0bffc400b5100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffda0008010100003f0075d33c852e24daad2c7e6c7771c5c8180c4edc92cbcedf9ba67b0affd9" ;
+: fx.ref8-q100 ( -- str )  "ffd8ffe000104a46494600010100000100010000ffdb00430001010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101ffc0000b080008000801011100ffc4001f0000010501010101010100000000000000000102030405060708090a0bffc400b5100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffda0008010100003f00e87e39ea7e23f17dcf82fe35f8ba6f0ff863c4df18be126a1f1f7e11feddff000a3e0835b789fc3ba26b7e1ef0c7c64f19ebdadfc19d6be34f8f7c55fb4bfc04b883c4171f013526fda3341f0a41f0135ff8817bab5ee81e0bfd9e825cc9ffd9" ;
+: fx.ref-flat77-q50 ( -- str )  "ffd8ffe000104a46494600010100000100010000ffdb004300100b0c0e0c0a100e0d0e1211101318281a181616183123251d283a333d3c3933383740485c4e404457453738506d51575f626768673e4d71797064785c656763ffc0000b080008000801011100ffc4001f0000010501010101010100000000000000000102030405060708090a0bffc400b5100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffda0008010100003f00c5afffd9" ;
+
+test encoder.on : 85 fx.enc encoder.pw -> 8
+test encoder.on : 85 fx.enc encoder.wb -> 1
+test encoder.on : 85 fx.enc encoder.buf bytes.len -> 64
+test encoder.on : 85 fx.enc encoder.o out.fill -> 328
+test encoder.on : 4096 fx.out 17 3 85 encoder.on encoder.pw -> 24
+test encoder.open : "/file/dev/null" 1 1 3 85 420 "" encoder.open encoder.w -> trap
+test encoder.open : "/file/dev/null" 1 1 1 85 420 "/file/x.icc" encoder.open encoder.w -> trap
+test encoder.block : 50 fx.img8 fx.one fx.ref8-q50 hex eq -> 1
+test encoder.block : 100 fx.img8 fx.one fx.ref8-q100 hex eq -> 1
+test encoder.block : 50 "4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d" fx.one fx.ref-flat77-q50 hex eq -> 1
+
+# Width, height, quality and the hex of an image: every row fed through
+# encoder.row, then encoder.finish; the whole file.
+: fx.feed ( i32 i32 i32 str -- bytes )
+  :> img :> q :> h :> w
+  img hex :> data
+  8192 fx.out w h q encoder.on :> e
+  h [ :> y  e  data y w i32.mul w bytes.slice  encoder.row ] times
+  e encoder.finish
+  e encoder.o fx.taken ;
+
+# tools/gen_ppm.py noise W H SEED, and cjpeg -dct int -quality Q -sample 1x1
+# -grayscale of it.
+: fx.img9x3 ( -- str )  "38b4e652e44da7f2370d9e260e27136550a4a3a6d07f5c0c2f8b12" ;
+: fx.ref9x3-q85 ( -- str )  "ffd8ffe000104a46494600010100000100010000ffdb0043000503040404030504040405050506070c08070707070f0b0b090c110f1212110f111113161c1713141a1511111821181a1d1d1f1f1f13172224221e241c1e1f1effc0000b080003000901011100ffc4001f0000010501010101010100000000000000000102030405060708090a0bffc400b5100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffda0008010100003f00ccf89b149e1cf10f81d745d4354b35966b7b7654d4672a113ce8d0282e4290a5b0460e598e72493e0fff0009c7883d749ffc135a7ff1aaffd9" ;
+: fx.img1x1 ( -- str )  "3c" ;
+: fx.ref1x1-q50 ( -- str )  "ffd8ffe000104a46494600010100000100010000ffdb004300100b0c0e0c0a100e0d0e1211101318281a181616183123251d283a333d3c3933383740485c4e404457453738506d51575f626768673e4d71797064785c656763ffc0000b080001000101011100ffc4001f0000010501010101010100000000000000000102030405060708090a0bffc400b5100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffda0008010100003f00e76bffd9" ;
+: fx.img3x17 ( -- str )  "d7a56d3cfcf9a44dc716691acdaba1b8a912646543c6977a5a43ac2753cf10173122071113bd120536abce666699a58c1affea" ;
+: fx.ref3x17-q75 ( -- str )  "ffd8ffe000104a46494600010100000100010000ffdb004300080606070605080707070909080a0c140d0c0b0b0c1912130f141d1a1f1e1d1a1c1c20242e2720222c231c1c2837292c30313434341f27393d38323c2e333432ffc0000b080011000301011100ffc4001f0000010501010101010100000000000000000102030405060708090a0bffc400b5100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffda0008010100003f006de789b50d3ee9ed0e9f6f7c62c2fda25d0d5ddf81d4b4c1891d3e6e78e493c9c7b15f1a69d6515a41aa59c2918ff57716a19d58f2c0b2a38619270431c8c1e3381edbe13ff912f40ffb065aff00e8a5afffd9" ;
+: fx.img17x9 ( -- str )  "fe5518cbe8dfe59296946bd26935a014be3a2b7c73a420c339a0f94237376d09889a1d00c7994425347aaea9cfd7239622956278262c2cf7ecb47dc2c13a1ebc3170875f5042c35179e227c5e1919a05a48acf4596b3247d57554acd8f22b732c2ccd5ba2ea35cdf6053fc69d14a1be9f75ece8900510c8a69f19aae0a291e18fe746731c92a3c902cb9b98d7efc13b3179c1cce6a6698ba43" ;
+: fx.ref17x9-q50 ( -- str )  "ffd8ffe000104a46494600010100000100010000ffdb004300100b0c0e0c0a100e0d0e1211101318281a181616183123251d283a333d3c3933383740485c4e404457453738506d51575f626768673e4d71797064785c656763ffc0000b080009001101011100ffc4001f0000010501010101010100000000000000000102030405060708090a0bffc400b5100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffda0008010100003f0064065b5b6717573346aec58cbe6051213bb3bb3cb9da0e31839001c1e42df88a556b991963884692c71e49670c075504819f9413c704e73904afdba5ff009fbb8ffc0593fc2ac47ff20db7ff00ae36ff00fa3a3aa9a47fabb4ff007c7fe898eb12bfffd9" ;
+
+# A 9x3 encoder fed the first n rows of fx.img9x3, then finished.
+: fx.feed9x3 ( i32 -- i32 )
+  :> n
+  fx.img9x3 hex :> data
+  8192 fx.out 9 3 85 encoder.on :> e
+  n [ :> y  e  data y 9 i32.mul 9 bytes.slice  encoder.row ] times
+  e encoder.finish
+  e encoder.o out.fill ;
+test encoder.row : 9 3 85 fx.img9x3 fx.feed fx.ref9x3-q85 hex eq -> 1
+test encoder.row : 1 1 50 fx.img1x1 fx.feed fx.ref1x1-q50 hex eq -> 1
+test encoder.row : 3 17 75 fx.img3x17 fx.feed fx.ref3x17-q75 hex eq -> 1
+test encoder.row : 17 9 50 fx.img17x9 fx.feed fx.ref17x9-q50 hex eq -> 1
+test encoder.row : 2 fx.feed9x3 -> trap
+test encoder.row : 4 fx.feed9x3 -> trap
+test encoder.row : 3 fx.feed9x3 0 i32.gt_s -> 1
+test encoder.row : 8192 fx.out 9 3 85 encoder.on 8 bytes.new encoder.row -> trap
+
+: encoder.on ( out i32 i32 i32 -- encoder )
+  :> q :> h :> w :> o
+  w 7 i32.add 8 i32.div_s :> wb
+  wb 8 i32.mul :> pw
+  qtables.lum q qtables.scaled :> qt
+  64 array.new ( array i32 ) :> blk
+  o writer.soi
+  o writer.app0
+  o 0 qt writer.dqt
+  o w h writer.sof0
+  o 0x00 htables.dc-lum-bits htables.dc-lum-vals writer.dht
+  o 0x10 htables.ac-lum-bits htables.ac-lum-vals writer.dht
+  o writer.sos
+  o  o 0 0 bitwriter.new  w h wb pw
+  pw 8 i32.mul bytes.new
+  blk
+  qt qtables.natural htables.dc-lum htables.ac-lum
+  0 0 0
+  encoder.new ;
+
+: encoder.open ( str i32 i32 i32 i32 i32 str -- encoder )
+  :> icc :> sample :> q :> n :> h :> w :> path
+  n 1 i32.ne [ "E1: greyscale only" trap ] when
+  icc str.len 0 i32.ne [ "E1: no ICC" trap ] when
+  path out.open w h q encoder.on ;
+
+: encoder.block ( encoder i32 -- )
+  :> bx :> e
+  e encoder.blk :> blk
+  e encoder.buf :> buf
+  e encoder.pw :> pw
+  64
+  [
+    :> i
+    blk i  buf  i 3 i32.shr_u pw i32.mul  bx 8 i32.mul i32.add  i 7 i32.and i32.add  bytes.at 128 i32.sub  array.at!
+  ]
+  times
+  blk fdct.block
+  blk e encoder.qt quantise.block
+  e encoder.bw  e encoder.dct  e encoder.act  e encoder.nat  blk  e encoder.pred  huffenc.block
+  e  blk 0 array.at  encoder.pred! ;
+
+: encoder.mcu-row ( encoder -- )
+  :> e
+  e encoder.wb [ :> bx  e bx encoder.block ] times
+  e 0 encoder.rows! ;
+
+: encoder.row ( encoder bytes -- )
+  :> row :> e
+  e encoder.w :> w
+  e encoder.pw :> pw
+  e encoder.buf :> buf
+  row bytes.len w i32.ne [ "row length" trap ] when
+  e encoder.y e encoder.h i32.ge_s [ "too many rows" trap ] when
+  e encoder.rows pw i32.mul :> base
+  buf base row bytes.as-str bytes.put
+  row w 1 i32.sub bytes.at :> last
+  pw w i32.sub [ :> j  buf  base w i32.add j i32.add  last bytes.at! ] times
+  e  e encoder.rows 1 i32.add  encoder.rows!
+  e  e encoder.y 1 i32.add  encoder.y!
+  e encoder.rows 8 i32.eq [ e encoder.mcu-row ] when ;
+
+: encoder.finish ( encoder -- )
+  :> e
+  e encoder.y e encoder.h i32.ne [ "short image" trap ] when
+  e encoder.rows :> held
+  held 0 i32.gt_s
+  [
+    e encoder.pw :> pw
+    e encoder.buf :> buf
+    buf  held 1 i32.sub pw i32.mul  pw bytes.slice bytes.as-str :> lastrow
+    8 held i32.sub [ :> k  buf  held k i32.add pw i32.mul  lastrow bytes.put ] times
+    e encoder.mcu-row
+  ]
+  when
+  e encoder.bw bitwriter.flush
+  e encoder.o writer.eoi ;
+
+: encoder.close ( encoder -- )
+  :> e
+  e encoder.finish
+  e encoder.o out.close ;
