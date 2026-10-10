@@ -13,7 +13,7 @@ Each entry says how things stand now and what the decoder does about it.
   each coefficient with one `bytes.u16-at` or `bytes.u16-at!`
   (`coeffs.get`, `coeffs.set`), with `i32.extend16_s` for the sign.
 - There is no `bytes` literal, so tests build buffers from hex strings with a
-  helper (`hex` in `jpeg/fixtures.wack`).
+  helper (`hex` in `jpeg-shared/fixtures.wack`).
 
 ## Files
 
@@ -152,7 +152,7 @@ fancy 0.38 s against 0.24 s) but only about 0.03 s of CPU.
   removed at a time in scratch copies, `tmp/p3/stages.py`) the stages take:
   row writes 34%, IDCT 26%, entropy decoding and the scan loop 17%, colour
   conversion 11%, upsampling 9%, startup 3%. The row writes go out in 1 MiB
-  batches (`ppm.row` collects rows, `ppm.close` flushes), 35 `host.write`
+  batches (`ppm.row` collects rows in the shared `out` sink, `out.close` flushes), 35 `host.write`
   calls for the 36 MB image, so their cost is the kernel taking 36 MB into
   the file, not the calls.
 - In plain mode, a YCbCr frame whose chroma is halved across (h2v1 or h2v2)
@@ -230,7 +230,7 @@ compiled module (`tmp/p4/`). big12b12 is a 12-bit file whose IDCT is
 |---|---|---|---|---|---|---|---|
 | S0 | the word as on main | 0.268 s | 0.319 s | 0.399 s | 1989 | 1039 | P3 gate: 1689/1689 both modes |
 | S1 | nothing: transliteration, same checks, helpers called | 0.261 s | 0.311 s | 0.398 s | 2007 | 1033 | 228/228 both modes |
-| S2 | the calls to i64, idct.descale and idct.1d (helpers inline) | 0.232 s | 0.288 s | 0.403 s | 2328 | 1015 | 228/228 both modes |
+| S2 | the calls to i64, dct.descale and idct.1d (helpers inline) | 0.232 s | 0.288 s | 0.403 s | 2328 | 1015 | 228/228 both modes |
 | S3 | the per-access bounds checks (hoisted to entry) | 0.223 s | 0.283 s | 0.402 s | 1611 | 560 | 228/228 both modes |
 | S4 | address arithmetic and local traffic (direct addressing) | 0.215 s | 0.278 s | 0.399 s | 1009 | 467 | 228/228 both modes |
 | S5 | i64 where i32 is exact on in-range data (upper bound) | 0.215 s | 0.274 s | 0.399 s | 975 | 463 | 228/228 both modes; fuzz: clean (646/646 both modes) |

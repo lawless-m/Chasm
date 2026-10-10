@@ -12,7 +12,7 @@ each. Classes:
            which moves it to DIR, named as a kept decode is
 - other:   any other maxval but 255
 - large:   width x height over 80000000 (MAX_PIXELS in
-           ../jpeg-decoder/jpeg/limits.wack: ppmread refuses such an image
+           ../jpeg-shared/limits.wack: ppmread refuses such an image
            and the decoder never produces one)
 - kept:    everything else; moved to OUTDIR/<path under corpus, '/' as '_'>
            with the extension .pgm (P5) or .ppm (P6)

@@ -1,83 +1,3 @@
-# The output sink: the role of libjpeg's destination manager (jdatadst.c),
-# a byte buffer written to the file when full and at close.
-#
-# One 1 MiB buffer is allocated per encode, by out.open. Failures here are
-# plain traps, deliberately not refusals: the output path is the host's
-# business, not the input's.
-
-# The open output: its handle, the buffer and how much of it is filled.
-struct out  h: i32  buf: bytes  fill: i32
-
-declare out.bufsize ( -- i32 )
-test out.bufsize : out.bufsize -> 1048576
-
-# A path: the open output.
-declare out.open ( str -- out )
-test out.open : "/nonexistent-dir-for-out-test/x.jpg" out.open out.fill -> trap
-
-# One byte (the low 8 bits), flushing first when the buffer is full.
-declare out.byte ( out i32 -- )
-
-# A 16-bit value, big-endian: the high byte, then the low byte.
-declare out.u16 ( out i32 -- )
-
-# Write out whatever is buffered.
-declare out.flush ( out -- )
-
-# Flush, then close the file.
-declare out.close ( out -- )
-
-# An output with a buffer of the given size and no file (handle -1: any
-# write traps); one on /dev/null with a 4-byte buffer; the filled part of an
-# output's buffer.
-: fx.out ( i32 -- out )  -1 swap bytes.new 0 out.new ;
-: fx.out-null ( -- out )  "/file/dev/null" host.OWRITE host.open 4 bytes.new 0 out.new ;
-: fx.taken ( out -- bytes )  :> o  o out.buf 0 o out.fill bytes.slice ;
-
-test out.byte : 64 fx.out dup 0xFF out.byte dup 0xD8 out.byte fx.taken "ffd8" hex eq -> 1
-test out.byte : 64 fx.out dup 0x1FF out.byte fx.taken "ff" hex eq -> 1
-test out.byte : fx.out-null dup 1 out.byte dup 2 out.byte dup 3 out.byte dup 4 out.byte dup 5 out.byte out.fill -> 1
-test out.byte : 2 fx.out dup 1 out.byte dup 2 out.byte dup 3 out.byte out.fill -> trap
-test out.u16 : 64 fx.out dup 0x0010 out.u16 fx.taken "0010" hex eq -> 1
-test out.u16 : 64 fx.out dup 0xFFD8 out.u16 out.fill -> 2
-test out.u16 : 64 fx.out dup 0xFFD8 out.u16 fx.taken "ffd8" hex eq -> 1
-test out.flush : fx.out-null dup 1 out.byte dup out.flush out.fill -> 0
-test out.flush : 64 fx.out dup out.flush out.fill -> 0
-test out.flush : 64 fx.out dup 1 out.byte dup out.flush out.fill -> trap
-
-: out.bufsize ( -- i32 )  1048576 ;
-
-: out.open ( str -- out )
-  host.OWRITE host.open :> h
-  h 0 i32.lt_s [ "cannot open output" trap ] when
-  h out.bufsize bytes.new 0 out.new ;
-
-: out.flush ( out -- )
-  :> o
-  o out.fill :> n
-  n 0 i32.gt_s
-  [
-    o out.h  o out.buf 0 n bytes.slice bytes.as-str  host.write n i32.ne [ "short write" trap ] when
-    o 0 out.fill!
-  ]
-  when ;
-
-: out.byte ( out i32 -- )
-  :> v :> o
-  o out.fill  o out.buf bytes.len  i32.ge_s [ o out.flush ] when
-  o out.buf  o out.fill  v 255 i32.and  bytes.at!
-  o  o out.fill 1 i32.add  out.fill! ;
-
-: out.u16 ( out i32 -- )
-  :> v :> o
-  o  v 8 i32.shr_u  out.byte
-  o  v out.byte ;
-
-: out.close ( out -- )
-  :> o
-  o out.flush
-  o out.h host.close drop ;
-
 # The markers, in the order cjpeg writes them: SOI, APP0 (JFIF), APP2 ICC
 # chunks when a profile is carried (writer.icc, jcicc.c), DQT, SOF0, DHT
 # for each table used, SOS, the scan, EOI (jcmarker.c). DQT writes its table in zigzag order. Greyscale writes one
@@ -180,7 +100,7 @@ test writer.eoi : 64 fx.out dup writer.eoi fx.taken "ffd9" hex eq -> 1
 
 : writer.dqt ( out i32 array i32 -- )
   :> t :> id :> o
-  qtables.natural :> nat
+  dct.natural :> nat
   o 0xFFDB out.u16
   o 67 out.u16
   o id out.byte

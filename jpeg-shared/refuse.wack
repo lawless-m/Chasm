@@ -8,7 +8,7 @@
 #
 # with the primitive `trap` ending the `if` branch or `when` body. Under
 # `wack run` the trap prints `trap in `word`: REFUSED CODE: message` on
-# stderr. Any trap whose message lacks `REFUSED ` is a decoder bug.
+# stderr. Any trap whose message lacks `REFUSED ` is a bug, in either program.
 
 declare refusal ( str str -- str )
 test refusal : TRUNCATED "x" refusal -> "REFUSED TRUNCATED: x"

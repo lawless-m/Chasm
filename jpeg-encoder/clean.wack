@@ -31,10 +31,11 @@
 # colour space is RGB for a colour output or GRAY for a greyscale one; any
 # other valid profile is dropped, with no refusal.
 #
-# The program is the decoder's jpeg files unchanged, in its own order
-# (limits, refuse, fixtures, source, frame, coeffs, markers, bits, huffman,
-# idct, scan, arith, progressive, upsample, colour, ppm, rows), then the
-# encoder's (elimits to options), orient.wack, meta.wack, then this file.
+# The program is the shared files (../jpeg-shared/: limits, refuse,
+# fixtures, dct, out), the decoder's jpeg files unchanged, in its own order
+# (source, frame, coeffs, markers, bits, huffman, idct, scan, arith,
+# progressive, upsample, colour, ppm, rows), then the encoder's (elimits to
+# options), orient.wack, meta.wack, then this file.
 
 # A decoded row as rows.decode hands it out, the encoder, the rescale table
 # and the 8-bit row buffer. An 8-bit frame passes an empty table and buffer

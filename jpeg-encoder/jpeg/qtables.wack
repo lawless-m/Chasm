@@ -1,9 +1,10 @@
-# Quantisation tables: the T.81 Annex K luminance and chrominance tables, libjpeg's quality
+# Quantisation tables: the T.81 Annex K luminance and chrominance tables and libjpeg's quality
 # scaling (jcparam.c jpeg_quality_scaling and jpeg_add_quant_table with
-# force_baseline), and the zigzag order (jutils.c jpeg_natural_order).
+# force_baseline).
 #
 # Tables are held in natural (row-major) order; DQT writes them in zigzag
-# order (jcmarker.c emit_dqt), entry k being table[natural[k]]. Each table
+# order (jcmarker.c emit_dqt), entry k being table[natural[k]], natural
+# being dct.natural (jpeg-shared/dct.wack). Each table
 # word allocates, so callers build a table once, outside any loop.
 
 # The 64 entries of std_luminance_quant_tbl, natural order.
@@ -56,27 +57,11 @@ test qtables.chrom : qtables.chrom 85 qtables.scaled 63 array.at -> 30
 test qtables.chrom : qtables.chrom 100 qtables.scaled 0 array.at -> 1
 test qtables.chrom : qtables.chrom 1 qtables.scaled 63 array.at -> 255
 
-# jpeg_natural_order: zigzag position k to natural index.
-declare qtables.natural ( -- array i32 )
-test qtables.natural : qtables.natural array.len -> 64
-test qtables.natural : qtables.natural 0 array.at -> 0
-test qtables.natural : qtables.natural 1 array.at -> 1
-test qtables.natural : qtables.natural 2 array.at -> 8
-test qtables.natural : qtables.natural 3 array.at -> 16
-test qtables.natural : qtables.natural 5 array.at -> 2
-test qtables.natural : qtables.natural 63 array.at -> 63
-
-: qtables.hex64 ( str -- array i32 )
-  hex :> src
-  64 array.new ( array i32 ) :> t
-  64 [ :> i  t i  src i bytes.at  array.at! ] times
-  t ;
-
 : qtables.lum ( -- array i32 )
-  "100b0a101828333d0c0c0e131a3a3c370e0d1018283945380e11161d3357503e12162538446d674d182337405168715c31404e5767797865485c5f6270646763" qtables.hex64 ;
+  "100b0a101828333d0c0c0e131a3a3c370e0d1018283945380e11161d3357503e12162538446d674d182337405168715c31404e5767797865485c5f6270646763" hex-array ;
 
 : qtables.chrom ( -- array i32 )
-  "1112182f6363636312151a4263636363181a3863636363632f426363636363636363636363636363636363636363636363636363636363636363636363636363" qtables.hex64 ;
+  "1112182f6363636312151a4263636363181a3863636363632f426363636363636363636363636363636363636363636363636363636363636363636363636363" hex-array ;
 
 : qtables.scaling ( i32 -- i32 )
   :> q0
@@ -94,6 +79,3 @@ test qtables.natural : qtables.natural 63 array.at -> 63
   ]
   times
   t ;
-
-: qtables.natural ( -- array i32 )
-  "000108100902030a11182019120b04050c131a21283029221b140d06070e151c232a313839322b241d160f171e252c333a3b342d261f272e353c3d362f373e3f" qtables.hex64 ;

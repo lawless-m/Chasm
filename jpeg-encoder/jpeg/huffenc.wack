@@ -81,7 +81,7 @@ declare huffenc.block ( bitwriter htab htab array i32 array i32 i32 -- )
 : fx.code ( array i32 i32 -- bytes )
   :> prev :> b
   fx.bw :> w
-  w htables.dc-lum htables.ac-lum qtables.natural b prev huffenc.block
+  w htables.dc-lum htables.ac-lum dct.natural b prev huffenc.block
   w bitwriter.flush
   w bitwriter.o fx.taken ;
 

@@ -73,9 +73,11 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FILES = [
-    "jpeg/limits.wack",
-    "jpeg/refuse.wack",
-    "jpeg/fixtures.wack",
+    "../jpeg-shared/limits.wack",
+    "../jpeg-shared/refuse.wack",
+    "../jpeg-shared/fixtures.wack",
+    "../jpeg-shared/dct.wack",
+    "../jpeg-shared/out.wack",
     "jpeg/source.wack",
     "jpeg/frame.wack",
     "jpeg/coeffs.wack",

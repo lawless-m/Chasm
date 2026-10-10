@@ -1,0 +1,37 @@
+# What the forward and inverse DCTs share.
+#
+# - dct.natural: libjpeg's jpeg_natural_order (jutils.c), the position in the
+#   8x8 block (row major) of the k-th coefficient in zigzag order. DQT
+#   tables and coefficients are stored in zigzag order and the DCTs work in
+#   natural order. The word allocates, so callers build the table once,
+#   outside any loop.
+# - dct.descale: libjpeg's DESCALE (jdct.h), shared by the IDCT's and the
+#   FDCT's passes.
+
+# jpeg_natural_order: zigzag position k to natural index, 64 entries.
+declare dct.natural ( -- array i32 )
+test dct.natural : dct.natural array.len -> 64
+test dct.natural : dct.natural 0 array.at -> 0
+test dct.natural : dct.natural 1 array.at -> 1
+test dct.natural : dct.natural 2 array.at -> 8
+test dct.natural : dct.natural 3 array.at -> 16
+test dct.natural : dct.natural 5 array.at -> 2
+test dct.natural : dct.natural 16 array.at -> 12
+test dct.natural : dct.natural 17 array.at -> 19
+test dct.natural : dct.natural 32 array.at -> 35
+test dct.natural : dct.natural 48 array.at -> 58
+test dct.natural : dct.natural 63 array.at -> 63
+
+: dct.natural ( -- array i32 )
+  "000108100902030a11182019120b04050c131a21283029221b140d06070e151c232a313839322b241d160f171e252c333a3b342d261f272e353c3d362f373e3f" hex-array ;
+
+# DESCALE(x, n): x plus 2^(n-1), shifted right n bits (arithmetic), then (int).
+declare dct.descale ( i64 i32 -- i32 )
+test dct.descale : 6 i64 2 dct.descale -> 2
+test dct.descale : -6 i64 2 dct.descale -> -1
+test dct.descale : 1024 i64 11 dct.descale -> 1
+test dct.descale : 1023 i64 11 dct.descale -> 0
+
+: dct.descale ( i64 i32 -- i32 )
+  :> n :> x
+  x  1 i64 n 1 i32.sub i64 i64.shl  i64.add  n i64 i64.shr_s  i32.wrap_i64 ;

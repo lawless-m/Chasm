@@ -297,7 +297,7 @@ test encoder.row : 33 17 2 2 85 fx.imgp6-33x17 fx.feed3 fx.refp6-33x17-q85-420 h
   o  o 0 0 bitwriter.new  w h n hs vs mw mh pw  hb vb
   n vs i32.mul pw i32.mul bytes.new
   cplen bytes.new
-  cpo cpw blk qt qtc qtables.natural
+  cpo cpw blk qt qtc dct.natural
   htables.dc-lum htables.ac-lum htables.dc-chrom htables.ac-chrom
   ccolour.make pred
   0 0 0 0

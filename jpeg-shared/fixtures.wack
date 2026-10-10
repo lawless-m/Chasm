@@ -1,4 +1,5 @@
-# Test fixtures: a hex reader and a real, minimal JPEG cut into segments.
+# Test fixtures: hex readers and a real, minimal JPEG cut into segments,
+# used by both programs' tests; the hex readers also build the table words.
 #
 # Whackford has no `bytes` literal, so tests build buffers from hex strings.
 # The JPEG is a 1x1 greyscale image from libjpeg-turbo's cjpeg
@@ -51,6 +52,17 @@ test hex-digit : "F" char hex-digit -> 15
 test hex : "FF D8 ffd9" hex bytes.len -> 4
 test hex : "FF D8 ffd9" hex 3 bytes.at -> 0xD9
 test hex : "" hex bytes.len -> 0
+
+# Hex digit pairs, spaces ignored, as an array with one entry a byte.
+: hex-array ( str -- array i32 )
+  hex :> src
+  src bytes.len :> n
+  n array.new ( array i32 ) :> t
+  n [ :> i  t i  src i bytes.at  array.at! ] times
+  t ;
+test hex-array : "00ff10" hex-array array.len -> 3
+test hex-array : "00ff10" hex-array 1 array.at -> 255
+test hex-array : "" hex-array array.len -> 0
 
 # The fixture JPEG, one word per segment.
 

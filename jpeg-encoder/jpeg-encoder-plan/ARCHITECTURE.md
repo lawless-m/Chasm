@@ -157,3 +157,4 @@ of its own after E7, followed by a fresh decoder fuzz run.
   setting.
 - 2026-10-09: `clean` is one process (decoder rows into the encoder), not
   two processes joined by a PPM pipe.
+- 2026-10-10: the pieces both directions use live in jpeg-shared/ (limits, refuse, fixtures with hex and hex-array, dct: the natural order and DESCALE, out: the buffered output sink), listed first by every program. Direction-specific code (bit reader and writer, Huffman decoding and encoding, colour conversion and its inverse, the PPM writer and reader, up- and downsampling) stays in each program because the two directions differ. A directory of its own, so neither program owns the other's dependencies.

@@ -12,7 +12,8 @@ quality and one sampling; a P5 input is greyscale, which ignores sampling,
 so it gives one case per quality, labelled `grey`.
 
 Protocol: the encoder runs as `prlimit --cpu=S:S+1 --data=BYTES wack run
-<FILES>` from the jpeg-encoder directory, with stdin lines `/file<input>`,
+<FILES>` (the shared files in ../jpeg-shared/, then the encoder's, then
+encode.wack) from the jpeg-encoder directory, with stdin lines `/file<input>`,
 `/file<output>`, `quality=Q`, `sample=S` for a P6 input, and with --icc
 `icc=/file<profile>`. The output is
 <out>/<input stem>-q<Q>-<S or grey>.jpg (a stale one is deleted first); the
@@ -53,8 +54,9 @@ Usage: python3 -I tools/harness.py clean [--quality 1,10,...] [--sample 420,422,
                                          [--manifest FILE] [--expect any|match|refused:CODE] PATH...
 
 Each PATH is a JPEG file or a directory walked as above. The program is
-CLEAN_FILES: the decoder's jpeg files in its own harness's order, the
-encoder's, then clean.wack, run from the jpeg-encoder directory with stdin
+CLEAN_FILES: the shared files (../jpeg-shared/, the decoder's
+harness's order begins with them), the decoder's jpeg files in its own
+harness's order, the encoder's, orient.wack, meta.wack, then clean.wack, run from the jpeg-encoder directory with stdin
 `/file<input>`, `/file<output>`, `quality=Q` and, unless grey,
 `sample=S`.
 
@@ -133,10 +135,14 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FILES = [
-    "../jpeg-decoder/jpeg/limits.wack",
-    "../jpeg-decoder/jpeg/refuse.wack",
-    "../jpeg-decoder/jpeg/fixtures.wack",
+SHARED = [
+    "../jpeg-shared/limits.wack",
+    "../jpeg-shared/refuse.wack",
+    "../jpeg-shared/fixtures.wack",
+    "../jpeg-shared/dct.wack",
+    "../jpeg-shared/out.wack",
+]
+FILES = SHARED + [
     "jpeg/elimits.wack",
     "jpeg/qtables.wack",
     "jpeg/htables.wack",
@@ -153,10 +159,15 @@ FILES = [
     "encode.wack",
 ]
 DECODER_HARNESS = os.path.join(ROOT, "..", "jpeg-decoder", "tools", "harness.py")
-CLEAN_FILES = [
-    "../jpeg-decoder/jpeg/" + n + ".wack"
-    for n in "limits refuse fixtures source frame coeffs markers bits huffman idct scan arith progressive upsample colour ppm rows".split()
-] + FILES[3:16] + ["jpeg/orient.wack", "jpeg/meta.wack", "clean.wack"]
+CLEAN_FILES = (
+    SHARED
+    + [
+        "../jpeg-decoder/jpeg/" + n + ".wack"
+        for n in "source frame coeffs markers bits huffman idct scan arith progressive upsample colour ppm rows".split()
+    ]
+    + FILES[len(SHARED) : -1]
+    + ["jpeg/orient.wack", "jpeg/meta.wack", "clean.wack"]
+)
 META_REF = os.path.join(ROOT, "tools", "meta_ref.py")
 ORIENT = os.path.join(ROOT, "tools", "orient.py")
 CLEANED = re.compile(r"^CLEANED ([0-9]+) ([0-9]+) ([1-8]) ([0-9]+)$")
@@ -447,8 +458,8 @@ def clean(a):
     check_args(a)
     dec = load_decoder_harness()
     meta = load_meta_ref()
-    want = ["../jpeg-decoder/" + f for f in dec.FILES if f != "main.wack"]
-    if CLEAN_FILES[:17] != want:
+    want = [os.path.normpath(os.path.join("..", "jpeg-decoder", f)) for f in dec.FILES if f != "main.wack"]
+    if CLEAN_FILES[: len(want)] != want:
         sys.exit("harness: CLEAN_FILES must begin with the decoder's program order")
     qualities = [int(q) for q in a.quality.split(",")]
     samples = a.sample.split(",")

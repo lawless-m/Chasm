@@ -25,5 +25,5 @@
   j tabs  mode "nosmooth" str.eq i32.eqz  rows.setup :> d
   outp d decoder.width d decoder.height d decoder.ncomp d decoder.f frame.precision ppm.open :> p
   d [ ( bytes -- ) p swap ppm.row ] rows.decode
-  p ppm.close
+  p out.close
   "DECODED" println ;

@@ -1,7 +1,7 @@
 # The encoder's limits and refusal codes (SECURITY.md).
 #
-# The decoder's own limits and codes stay in ../jpeg-decoder/jpeg/limits.wack,
-# which every encoder program lists first. Sizes are in bytes; MB means 10^6
+# The shared limits and codes are in ../jpeg-shared/limits.wack, which
+# every program lists first. Sizes are in bytes; MB means 10^6
 # bytes. A refusal code is a word returning its own name, so a misspelt code
 # is a compile error rather than a wrong message.
 

@@ -1,4 +1,6 @@
-# The decoder's limits and refusal codes (SECURITY.md).
+# The limits and refusal codes the decoder and the encoder share (the
+# decoder plan's SECURITY.md). The encoder's own are
+# jpeg-encoder/jpeg/elimits.wack.
 #
 # Every limit is a word, so a deployment changes it in one place. Sizes are
 # in bytes; MB means 10^6 bytes. A refusal code is a word returning its own

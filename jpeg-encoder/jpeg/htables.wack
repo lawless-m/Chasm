@@ -12,11 +12,6 @@
 
 struct htab  code: array i32  size: array i32
 
-# A hex string: an array of its bytes.
-declare htables.hexn ( str -- array i32 )
-test htables.hexn : "00ff10" htables.hexn array.len -> 3
-test htables.hexn : "00ff10" htables.hexn 1 array.at -> 255
-
 declare htables.dc-lum-bits ( -- array i32 )
 test htables.dc-lum-bits : htables.dc-lum-bits array.len -> 17
 test htables.dc-lum-bits : htables.dc-lum-bits 3 array.at -> 5
@@ -41,8 +36,8 @@ test htables.ac-lum-vals : htables.ac-lum-vals 161 array.at -> 250
 declare htables.derive ( array i32 array i32 -- htab )
 test htables.derive : htables.dc-lum-bits htables.dc-lum-vals htables.derive htab.code 11 array.at -> 510
 test htables.derive : htables.dc-lum-bits htables.dc-lum-vals htables.derive htab.size 11 array.at -> 9
-test htables.derive : "0000020000000000000000000000000000" htables.hexn "0505" htables.hexn htables.derive -> trap
-test htables.derive : "0003000000000000000000000000000000" htables.hexn "000102" htables.hexn htables.derive -> trap
+test htables.derive : "0000020000000000000000000000000000" hex-array "0505" hex-array htables.derive -> trap
+test htables.derive : "0003000000000000000000000000000000" hex-array "000102" hex-array htables.derive -> trap
 
 declare htables.dc-lum ( -- htab )
 test htables.dc-lum : htables.dc-lum htab.code 0 array.at -> 0
@@ -125,20 +120,13 @@ test htables.ac-chrom : htables.ac-chrom htab.size 240 array.at -> 10
 test htables.ac-chrom : htables.ac-chrom htab.code 250 array.at -> 65534
 test htables.ac-chrom : htables.ac-chrom htab.size 250 array.at -> 16
 
-: htables.hexn ( str -- array i32 )
-  hex :> src
-  src bytes.len :> n
-  n array.new ( array i32 ) :> t
-  n [ :> i  t i  src i bytes.at  array.at! ] times
-  t ;
-
-: htables.dc-lum-bits ( -- array i32 )  "0000010501010101010100000000000000" htables.hexn ;
-: htables.dc-lum-vals ( -- array i32 )  "000102030405060708090a0b" htables.hexn ;
-: htables.ac-lum-bits ( -- array i32 )  "000002010303020403050504040000017d" htables.hexn ;
+: htables.dc-lum-bits ( -- array i32 )  "0000010501010101010100000000000000" hex-array ;
+: htables.dc-lum-vals ( -- array i32 )  "000102030405060708090a0b" hex-array ;
+: htables.ac-lum-bits ( -- array i32 )  "000002010303020403050504040000017d" hex-array ;
 
 : htables.ac-lum-vals ( -- array i32 )
   "01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9fa"
-  htables.hexn ;
+  hex-array ;
 
 : htables.derive ( array i32 array i32 -- htab )
   :> vals :> bits
@@ -171,13 +159,13 @@ test htables.ac-chrom : htables.ac-chrom htab.size 250 array.at -> 16
 : htables.dc-lum ( -- htab )  htables.dc-lum-bits htables.dc-lum-vals htables.derive ;
 : htables.ac-lum ( -- htab )  htables.ac-lum-bits htables.ac-lum-vals htables.derive ;
 
-: htables.dc-chrom-bits ( -- array i32 )  "0000030101010101010101010000000000" htables.hexn ;
-: htables.dc-chrom-vals ( -- array i32 )  "000102030405060708090a0b" htables.hexn ;
-: htables.ac-chrom-bits ( -- array i32 )  "0000020102040403040705040400010277" htables.hexn ;
+: htables.dc-chrom-bits ( -- array i32 )  "0000030101010101010101010000000000" hex-array ;
+: htables.dc-chrom-vals ( -- array i32 )  "000102030405060708090a0b" hex-array ;
+: htables.ac-chrom-bits ( -- array i32 )  "0000020102040403040705040400010277" hex-array ;
 
 : htables.ac-chrom-vals ( -- array i32 )
   "000102031104052131061241510761711322328108144291a1b1c109233352f0156272d10a162434e125f11718191a262728292a35363738393a434445464748494a535455565758595a636465666768696a737475767778797a82838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae2e3e4e5e6e7e8e9eaf2f3f4f5f6f7f8f9fa"
-  htables.hexn ;
+  hex-array ;
 
 : htables.dc-chrom ( -- htab )  htables.dc-chrom-bits htables.dc-chrom-vals htables.derive ;
 : htables.ac-chrom ( -- htab )  htables.ac-chrom-bits htables.ac-chrom-vals htables.derive ;

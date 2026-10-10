@@ -3,16 +3,12 @@
 #
 # The oracle build has DCTELEM int (no SIMD) and a 64-bit JLONG, so the
 # block holds i32 and the arithmetic runs in i64; MULTIPLY is a plain
-# product and DESCALE(x, n) is (x + 2^(n-1)) >> n, arithmetic. CONST_BITS
+# product and DESCALE is dct.descale (jpeg-shared/dct.wack). CONST_BITS
 # is 13 and PASS1_BITS 2: pass 1 (rows) scales outputs 0 and 4 up by 4 and
 # descales the rest by 11; pass 2 (columns) descales 0 and 4 by 2 and the
 # rest by 15. The result is scaled by 8 (jcdctmgr.c divides by 8 x the
 # quantisation entry). The expected values in the tests come from
 # tools/fdct_oracle.c, which runs jfdctint.c itself.
-
-declare fdct.descale ( i64 i32 -- i32 )
-test fdct.descale : 6 i64 2 fdct.descale -> 2
-test fdct.descale : -6 i64 2 fdct.descale -> -1
 
 # One 1-D pass: eight inputs in order 0..7 to eight outputs in order 0..7,
 # undescaled (outputs 0 and 4 are plain sums, the rest carry CONST_BITS).
@@ -64,10 +60,6 @@ test fdct.block : fx.checker fx.fdct 0 array.at -> -32
 test fdct.block : fx.checker fx.fdct 63 array.at -> -6700
 test fdct.block : fx.checker fx.fdct 7 array.at -> 0
 test fdct.block : fx.checker fx.fdct 56 array.at -> 0
-
-: fdct.descale ( i64 i32 -- i32 )
-  :> n :> x
-  x  1 i64 n 1 i32.sub i64 i64.shl  i64.add  n i64 i64.shr_s  i32.wrap_i64 ;
 
 : fdct.1d ( i64 i64 i64 i64 i64 i64 i64 i64 -- i64 i64 i64 i64 i64 i64 i64 i64 )
   :> d7 :> d6 :> d5 :> d4 :> d3 :> d2 :> d1 :> d0
@@ -122,14 +114,14 @@ test fdct.block : fx.checker fx.fdct 56 array.at -> 0
   fdct.1d
   :> y7 :> y6 :> y5 :> y4 :> y3 :> y2 :> y1 :> y0
   pass 1 i32.eq [ 11 ] [ 15 ] if :> odd
-  b base  pass 1 i32.eq [ y0 2 i64 i64.shl i32.wrap_i64 ] [ y0 2 fdct.descale ] if  array.at!
-  b  base step 4 i32.mul i32.add  pass 1 i32.eq [ y4 2 i64 i64.shl i32.wrap_i64 ] [ y4 2 fdct.descale ] if  array.at!
-  b  base step i32.add  y1 odd fdct.descale  array.at!
-  b  base step 2 i32.mul i32.add  y2 odd fdct.descale  array.at!
-  b  base step 3 i32.mul i32.add  y3 odd fdct.descale  array.at!
-  b  base step 5 i32.mul i32.add  y5 odd fdct.descale  array.at!
-  b  base step 6 i32.mul i32.add  y6 odd fdct.descale  array.at!
-  b  base step 7 i32.mul i32.add  y7 odd fdct.descale  array.at! ;
+  b base  pass 1 i32.eq [ y0 2 i64 i64.shl i32.wrap_i64 ] [ y0 2 dct.descale ] if  array.at!
+  b  base step 4 i32.mul i32.add  pass 1 i32.eq [ y4 2 i64 i64.shl i32.wrap_i64 ] [ y4 2 dct.descale ] if  array.at!
+  b  base step i32.add  y1 odd dct.descale  array.at!
+  b  base step 2 i32.mul i32.add  y2 odd dct.descale  array.at!
+  b  base step 3 i32.mul i32.add  y3 odd dct.descale  array.at!
+  b  base step 5 i32.mul i32.add  y5 odd dct.descale  array.at!
+  b  base step 6 i32.mul i32.add  y6 odd dct.descale  array.at!
+  b  base step 7 i32.mul i32.add  y7 odd dct.descale  array.at! ;
 
 : fdct.block ( array i32 -- )
   :> b

@@ -1,13 +1,16 @@
 # The PGM/PPM writer, as djpeg's wrppm.c writes it: a P5 (one component) or
 # P6 (three) header with maxval (1 << precision) - 1, 255 or 4095, then raw
 # samples row by row (two big-endian bytes a sample at 12 bits, written so
-# by the row producer). ppm.row is the only consumer of decoded rows today:
-# the row sink. A future encoder is the second.
+# by the row producer). ppm.row is the decoder program's row sink; the
+# encoder's clean.wack has its own.
 #
-# Rows are collected in a 1 MiB buffer and written when the next row does
-# not fit, at ppm.close, or directly when a row is longer than the whole
-# buffer (a row is at most 16384 x 3 x 2 = 98304 bytes, so only with a
-# smaller buffer). A refusal mid-decode loses the rows still buffered.
+# The header is written straight to the file. Rows are collected in the
+# shared out sink's 1 MiB buffer (jpeg-shared/out.wack, one fixed
+# allocation a decode, not counted by frame.need, which counts the decode's
+# own buffers) and written when the next row does not fit, at out.close, or
+# directly when a row is longer than the whole buffer (a row is at most
+# 16384 x 3 x 2 = 98304 bytes, so only with a smaller buffer). A refusal
+# mid-decode loses the rows still buffered.
 #
 # Failures here are plain traps, deliberately not refusals: the output path
 # is the host's business, not the input's.
@@ -20,44 +23,21 @@ test ppm.header : 16384 16384 3 8 ppm.header -> "P6\n16384 16384\n255\n"
 test ppm.header : 1 1 1 12 ppm.header -> "P5\n1 1\n4095\n"
 test ppm.header : 227 149 3 12 ppm.header -> "P6\n227 149\n4095\n"
 
-# The open output: its handle, the row buffer and how much of it is filled.
-struct ppm  h: i32  buf: bytes  fill: i32
-
-# The row buffer's size: one fixed allocation a decode, made by ppm.open and
-# not counted by frame.need, which counts the decode's own buffers.
-declare ppm.bufsize ( -- i32 )
-test ppm.bufsize : ppm.bufsize -> 1048576
-
 # Path, width, height, ncomp, precision: the output, with the header written.
-declare ppm.open ( str i32 i32 i32 i32 -- ppm )
+declare ppm.open ( str i32 i32 i32 i32 -- out )
 test ppm.open : "/nonexistent-dir-for-ppm-test/x.pgm" 1 1 1 8 ppm.open -> trap
-
-# An output with a 16-byte buffer and no file (handle -1: any write traps),
-# and one on /dev/null with a 4-byte buffer.
-: fx.ppm16 ( -- ppm )  -1 16 bytes.new 0 ppm.new ;
-: fx.ppm4 ( -- ppm )  -1 4 bytes.new 0 ppm.new ;
-: fx.ppm-null ( -- ppm )  "/file/dev/null" host.OWRITE host.open 4 bytes.new 0 ppm.new ;
 
 # One output row of width x ncomp samples, copied into the buffer (the
 # caller reuses the row after each call).
-declare ppm.row ( ppm bytes -- )
-test ppm.row : fx.ppm16 dup "414243" hex ppm.row ppm.fill -> 3
-test ppm.row : fx.ppm16 dup "414243" hex ppm.row dup "444546" hex ppm.row ppm.fill -> 6
-test ppm.row : fx.ppm16 dup "414243" hex ppm.row dup "444546" hex ppm.row ppm.buf 0 6 bytes.slice bytes.to-str -> "ABCDEF"
-test ppm.row : fx.ppm-null dup "414243" hex ppm.row dup "444546" hex ppm.row ppm.fill -> 3
-test ppm.row : fx.ppm-null dup "414243" hex ppm.row dup "444546" hex ppm.row ppm.buf 0 3 bytes.slice bytes.to-str -> "DEF"
-test ppm.row : fx.ppm-null dup "4142434445" hex ppm.row ppm.fill -> 0
-test ppm.row : fx.ppm4 dup "414243" hex ppm.row dup "444546" hex ppm.row ppm.fill -> trap
-test ppm.row : fx.ppm4 dup "4142434445" hex ppm.row ppm.fill -> trap
-
-# Write out whatever is buffered.
-declare ppm.flush ( ppm -- )
-test ppm.flush : fx.ppm-null dup "4142" hex ppm.row dup ppm.flush ppm.fill -> 0
-test ppm.flush : fx.ppm16 dup ppm.flush ppm.fill -> 0
-test ppm.flush : fx.ppm16 dup "4142" hex ppm.row dup ppm.flush ppm.fill -> trap
-
-# Flush, then close the file.
-declare ppm.close ( ppm -- )
+declare ppm.row ( out bytes -- )
+test ppm.row : 16 fx.out dup "414243" hex ppm.row out.fill -> 3
+test ppm.row : 16 fx.out dup "414243" hex ppm.row dup "444546" hex ppm.row out.fill -> 6
+test ppm.row : 16 fx.out dup "414243" hex ppm.row dup "444546" hex ppm.row out.buf 0 6 bytes.slice bytes.to-str -> "ABCDEF"
+test ppm.row : fx.out-null dup "414243" hex ppm.row dup "444546" hex ppm.row out.fill -> 3
+test ppm.row : fx.out-null dup "414243" hex ppm.row dup "444546" hex ppm.row out.buf 0 3 bytes.slice bytes.to-str -> "DEF"
+test ppm.row : fx.out-null dup "4142434445" hex ppm.row out.fill -> 0
+test ppm.row : 4 fx.out dup "414243" hex ppm.row dup "444546" hex ppm.row out.fill -> trap
+test ppm.row : 4 fx.out dup "4142434445" hex ppm.row out.fill -> trap
 
 : ppm.header ( i32 i32 i32 i32 -- str )
   :> prec :> n :> ht :> wd
@@ -65,40 +45,22 @@ declare ppm.close ( ppm -- )
   wd i32.to-str str.concat " " str.concat ht i32.to-str str.concat "\n" str.concat
   1 prec i32.shl 1 i32.sub i32.to-str str.concat "\n" str.concat ;
 
-: ppm.bufsize ( -- i32 )  1048576 ;
-
-: ppm.open ( str i32 i32 i32 i32 -- ppm )
+: ppm.open ( str i32 i32 i32 i32 -- out )
   :> prec :> n :> ht :> wd :> path
-  path host.OWRITE host.open :> h
-  h 0 i32.lt_s [ "cannot open output" trap ] when
+  path out.open :> o
   wd ht n prec ppm.header :> head
-  h head host.write head str.len i32.ne [ "short write" trap ] when
-  h ppm.bufsize bytes.new 0 ppm.new ;
+  o out.h head host.write head str.len i32.ne [ "short write" trap ] when
+  o ;
 
-: ppm.flush ( ppm -- )
-  :> p
-  p ppm.fill :> n
-  n 0 i32.gt_s
-  [
-    p ppm.h  p ppm.buf 0 n bytes.slice bytes.as-str  host.write n i32.ne [ "short write" trap ] when
-    p 0 ppm.fill!
-  ]
-  when ;
-
-: ppm.row ( ppm bytes -- )
+: ppm.row ( out bytes -- )
   :> row :> p
   row bytes.len :> n
-  p ppm.buf bytes.len :> cap
-  p ppm.fill n i32.add cap i32.gt_s [ p ppm.flush ] when
+  p out.buf bytes.len :> cap
+  p out.fill n i32.add cap i32.gt_s [ p out.flush ] when
   n cap i32.gt_s
-  [ p ppm.h row bytes.as-str host.write n i32.ne [ "short write" trap ] when ]
+  [ p out.h row bytes.as-str host.write n i32.ne [ "short write" trap ] when ]
   [
-    p ppm.buf  p ppm.fill  row bytes.as-str bytes.put
-    p  p ppm.fill n i32.add  ppm.fill!
+    p out.buf  p out.fill  row bytes.as-str bytes.put
+    p  p out.fill n i32.add  out.fill!
   ]
   if ;
-
-: ppm.close ( ppm -- )
-  :> p
-  p ppm.flush
-  p ppm.h host.close drop ;
