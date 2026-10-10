@@ -98,32 +98,55 @@ test fdct.block : fx.checker fx.fdct 56 array.at -> 0
   e1  t12 -15137 i64 i64.mul  i64.add
   o4 m1 i64.add m3 i64.add ;
 
-# One element of a line: the block, the line's first index, its stride and
-# the position k along it, as an i64.
-: fdct.get ( array i32 i32 i32 i32 -- i64 )
-  :> k :> step :> base :> b
-  b  base step k i32.mul i32.add  array.at i64.extend_i32_s ;
+# Pass 1, the rows: each row's eight values through fdct.1d, outputs 0 and
+# 4 shifted up by 2 and the rest descaled by 11, stored back in the row.
+: fdct.rows ( array i32 -- )
+  :> b
+  8
+  [
+    8 i32.mul :> r
+    b r array.at i64.extend_i32_s  b r 1 i32.add array.at i64.extend_i32_s
+    b r 2 i32.add array.at i64.extend_i32_s  b r 3 i32.add array.at i64.extend_i32_s
+    b r 4 i32.add array.at i64.extend_i32_s  b r 5 i32.add array.at i64.extend_i32_s
+    b r 6 i32.add array.at i64.extend_i32_s  b r 7 i32.add array.at i64.extend_i32_s
+    fdct.1d
+    :> y7 :> y6 :> y5 :> y4 :> y3 :> y2 :> y1 :> y0
+    b r  y0 2 i64 i64.shl i32.wrap_i64  array.at!
+    b  r 1 i32.add  y1 11 dct.descale  array.at!
+    b  r 2 i32.add  y2 11 dct.descale  array.at!
+    b  r 3 i32.add  y3 11 dct.descale  array.at!
+    b  r 4 i32.add  y4 2 i64 i64.shl i32.wrap_i64  array.at!
+    b  r 5 i32.add  y5 11 dct.descale  array.at!
+    b  r 6 i32.add  y6 11 dct.descale  array.at!
+    b  r 7 i32.add  y7 11 dct.descale  array.at!
+  ]
+  times ;
 
-# One line of the block (a row: stride 1; a column: stride 8) through
-# fdct.1d, stored back: pass 1 shifts outputs 0 and 4 up by 2 and descales
-# the rest by 11; pass 2 descales 0 and 4 by 2 and the rest by 15.
-: fdct.line ( array i32 i32 i32 i32 -- )
-  :> pass :> step :> base :> b
-  b base step 0 fdct.get  b base step 1 fdct.get  b base step 2 fdct.get  b base step 3 fdct.get
-  b base step 4 fdct.get  b base step 5 fdct.get  b base step 6 fdct.get  b base step 7 fdct.get
-  fdct.1d
-  :> y7 :> y6 :> y5 :> y4 :> y3 :> y2 :> y1 :> y0
-  pass 1 i32.eq [ 11 ] [ 15 ] if :> odd
-  b base  pass 1 i32.eq [ y0 2 i64 i64.shl i32.wrap_i64 ] [ y0 2 dct.descale ] if  array.at!
-  b  base step 4 i32.mul i32.add  pass 1 i32.eq [ y4 2 i64 i64.shl i32.wrap_i64 ] [ y4 2 dct.descale ] if  array.at!
-  b  base step i32.add  y1 odd dct.descale  array.at!
-  b  base step 2 i32.mul i32.add  y2 odd dct.descale  array.at!
-  b  base step 3 i32.mul i32.add  y3 odd dct.descale  array.at!
-  b  base step 5 i32.mul i32.add  y5 odd dct.descale  array.at!
-  b  base step 6 i32.mul i32.add  y6 odd dct.descale  array.at!
-  b  base step 7 i32.mul i32.add  y7 odd dct.descale  array.at! ;
+# Pass 2, the columns: each column's eight values through fdct.1d, outputs
+# 0 and 4 descaled by 2 and the rest by 15, stored back in the column.
+: fdct.cols ( array i32 -- )
+  :> b
+  8
+  [
+    :> c
+    b c array.at i64.extend_i32_s  b c 8 i32.add array.at i64.extend_i32_s
+    b c 16 i32.add array.at i64.extend_i32_s  b c 24 i32.add array.at i64.extend_i32_s
+    b c 32 i32.add array.at i64.extend_i32_s  b c 40 i32.add array.at i64.extend_i32_s
+    b c 48 i32.add array.at i64.extend_i32_s  b c 56 i32.add array.at i64.extend_i32_s
+    fdct.1d
+    :> z7 :> z6 :> z5 :> z4 :> z3 :> z2 :> z1 :> z0
+    b c  z0 2 dct.descale  array.at!
+    b  c 8 i32.add  z1 15 dct.descale  array.at!
+    b  c 16 i32.add  z2 15 dct.descale  array.at!
+    b  c 24 i32.add  z3 15 dct.descale  array.at!
+    b  c 32 i32.add  z4 2 dct.descale  array.at!
+    b  c 40 i32.add  z5 15 dct.descale  array.at!
+    b  c 48 i32.add  z6 15 dct.descale  array.at!
+    b  c 56 i32.add  z7 15 dct.descale  array.at!
+  ]
+  times ;
 
 : fdct.block ( array i32 -- )
   :> b
-  8 [ :> r  b  r 8 i32.mul  1 1 fdct.line ] times
-  8 [ :> c  b c 8 2 fdct.line ] times ;
+  b fdct.rows
+  b fdct.cols ;

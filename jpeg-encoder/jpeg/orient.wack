@@ -6,8 +6,11 @@
 # width and height: 1 (x, y); 2 (W-1-x, y); 3 (W-1-x, H-1-y); 4 (x, H-1-y);
 # 5 (y, x); 6 (y, H-1-x); 7 (W-1-y, H-1-x); 8 (W-1-y, x). Orientations 5 to
 # 8 swap the width and height. tools/orient.py is the same table in Python
-# and the reference the tests are pinned from. Orientations 5 to 8 read the
-# input column-wise, a pixel at a time: correct first; speed comes later.
+# and the reference the tests are pinned from. Each output row is read with
+# one stride: orient.start gives the source pixel of its first pixel and the
+# source step between neighbours, so orientations 1 and 4 copy a whole
+# source row at once and the others step through the image a pixel at a
+# time (down or up a column for 5 to 8).
 
 # Orientation, width, height: the turned image's width and height. An
 # orientation outside 1 to 8 is a plain trap (meta guarantees the range).
@@ -19,6 +22,18 @@ test orient.dims : 6 5 7 orient.dims -> 7 5
 test orient.dims : 8 5 7 orient.dims -> 7 5
 test orient.dims : 0 5 7 orient.dims -> trap
 test orient.dims : 9 5 7 orient.dims -> trap
+
+# Orientation, w, h and an output row y: the source pixel (sx, sy) of output
+# pixel (0, y) and the source step (dx, dy) from output pixel x to x + 1.
+declare orient.start ( i32 i32 i32 i32 -- i32 i32 i32 i32 )
+test orient.start : 1 3 4 1 orient.start -> 0 1 1 0
+test orient.start : 2 3 4 1 orient.start -> 2 1 -1 0
+test orient.start : 3 3 4 1 orient.start -> 2 2 -1 0
+test orient.start : 4 3 4 1 orient.start -> 0 2 1 0
+test orient.start : 5 3 4 0 orient.start -> 0 0 0 1
+test orient.start : 6 3 4 0 orient.start -> 0 3 0 -1
+test orient.start : 7 3 4 0 orient.start -> 2 3 0 -1
+test orient.start : 8 3 4 0 orient.start -> 2 0 0 1
 
 # The image (w x h pixels of n bytes, row-major), w, h, n, the orientation,
 # an output row buffer of exactly w' x n bytes and the output row index y:
@@ -64,39 +79,61 @@ test orient.row-into : "000102030405060708090a0b0c0d0e0f10" hex 2 3 3 6 9 bytes.
   o 1 i32.lt_s  o 8 i32.gt_s  i32.or [ "orientation out of range" trap ] when
   o 5 i32.ge_s [ h w ] [ w h ] if ;
 
+: orient.start ( i32 i32 i32 i32 -- i32 i32 i32 i32 )
+  :> y :> h :> w :> o
+  o 4 i32.le_s
+  [
+    o 1 i32.eq  o 4 i32.eq  i32.or [ 0 ] [ w 1 i32.sub ] if
+    o 3 i32.ge_s [ h 1 i32.sub y i32.sub ] [ y ] if
+    o 1 i32.eq  o 4 i32.eq  i32.or [ 1 ] [ -1 ] if
+    0
+  ]
+  [
+    o 7 i32.ge_s [ w 1 i32.sub y i32.sub ] [ y ] if
+    o 5 i32.eq  o 8 i32.eq  i32.or [ 0 ] [ h 1 i32.sub ] if
+    0
+    o 5 i32.eq  o 8 i32.eq  i32.or [ 1 ] [ -1 ] if
+  ]
+  if ;
+
 : orient.row-into ( bytes i32 i32 i32 i32 bytes i32 -- )
   :> y :> row :> o :> n :> h :> w :> img
   img bytes.len  w h i32.mul n i32.mul  i32.ne [ "image length" trap ] when
   o w h orient.dims :> h2 :> w2
   row bytes.len  w2 n i32.mul  i32.ne [ "row length" trap ] when
   y 0 i32.lt_s  y h2 i32.ge_s  i32.or [ "row index" trap ] when
-  w2
+  o w h y orient.start :> dy :> dx :> sy0 :> sx0
+  dy w i32.mul dx i32.add n i32.mul :> step
+  sy0 w i32.mul sx0 i32.add n i32.mul :> s!
+  o 1 i32.eq  o 4 i32.eq  i32.or
+  [ row 0  img s w2 n i32.mul bytes.slice bytes.as-str  bytes.put ]
   [
-    :> x
-    o 1 i32.eq [ x ]
+    n 1 i32.eq
+    [ w2 [ :> x  row x  img s bytes.at  bytes.at!  s step i32.add s! ] times ]
     [
-      o 2 i32.eq  o 3 i32.eq  i32.or [ w 1 i32.sub x i32.sub ]
+      n 3 i32.eq
       [
-        o 4 i32.eq [ x ]
+        w2
         [
-          o 5 i32.eq  o 6 i32.eq  i32.or [ y ] [ w 1 i32.sub y i32.sub ] if
+          3 i32.mul :> d
+          row d  img s bytes.at  bytes.at!
+          row  d 1 i32.add  img  s 1 i32.add  bytes.at  bytes.at!
+          row  d 2 i32.add  img  s 2 i32.add  bytes.at  bytes.at!
+          s step i32.add s!
         ]
-        if
+        times
       ]
-      if
-    ]
-    if :> sx
-    o 1 i32.eq  o 2 i32.eq  i32.or [ y ]
-    [
-      o 3 i32.eq  o 4 i32.eq  i32.or [ h 1 i32.sub y i32.sub ]
       [
-        o 5 i32.eq  o 8 i32.eq  i32.or [ x ] [ h 1 i32.sub x i32.sub ] if
+        w2
+        [
+          n i32.mul :> dn
+          n [ :> k  row  dn k i32.add  img  s k i32.add  bytes.at  bytes.at! ] times
+          s step i32.add s!
+        ]
+        times
       ]
       if
     ]
-    if :> sy
-    sy w i32.mul sx i32.add n i32.mul :> src
-    x n i32.mul :> dst
-    n [ :> k  row  dst k i32.add  img src k i32.add bytes.at  bytes.at! ] times
+    if
   ]
-  times ;
+  if ;
