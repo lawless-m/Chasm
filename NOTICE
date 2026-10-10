@@ -1,0 +1,73 @@
+Whackford is licensed under the MIT License (LICENSE). This file records the
+third-party work the JPEG decoder and encoder are based on.
+
+
+The JPEG decoder and encoder
+============================
+
+This software is based in part on the work of the Independent JPEG Group.
+
+The JPEG code in jpeg-shared/, jpeg-decoder/ and jpeg-encoder/ is a
+translation into Whackford of parts of libjpeg-turbo 3.2.0
+(https://libjpeg-turbo.org), which is based on the Independent JPEG Group's
+software. The decoder reproduces djpeg's output byte for byte and the
+encoder reproduces cjpeg's, so their algorithms, constants and rounding
+follow that source closely, and the .wack files name the libjpeg-turbo
+source files they follow. Among them:
+
+  decoding        jdhuff.c, jdphuff.c, jdarith.c, jaricom.c, jdcoefct.c,
+                  jidctint.c, jdsample.c, jdmainct.c, jdcolor.c, jdapistd.c,
+                  jdmaster.c, wrppm.c
+  encoding        jchuff.c, jstdhuff.c, jcparam.c, jcmarker.c, jcicc.c, jdicc.c,
+                  jfdctint.c, jcdctmgr.c, jccoefct.c, jcprepct.c, jcsample.c,
+                  jccolor.c, jcmaster.c, rdppm.c
+  shared          jutils.c, jdct.h, jdatadst.c
+
+Changes from the original files: the code is rewritten in Whackford rather
+than copied; it is restructured into words with declared stack effects and
+tests; input that libjpeg accepts or repairs is often refused instead (the
+refusal codes and limits in jpeg-shared/limits.wack and
+jpeg-encoder/jpeg/elimits.wack); only the integer DCTs are implemented, and
+the encoder writes one baseline profile; the EXIF orientation reader, the
+ICC profile checks and the whole sanitiser program (jpeg-encoder/clean.wack)
+are new. The test tools jpeg-encoder/tools/fdct_oracle.c, prep_oracle.c and
+rescale_oracle.c compile against the libjpeg-turbo source to produce
+expected values; they contain none of it.
+
+libjpeg-turbo's licence terms are in licenses/libjpeg-turbo/LICENSE.md, and
+the Independent JPEG Group's README, whose legal terms apply to this code,
+is in licenses/libjpeg-turbo/README.ijg, both unaltered. Its notice:
+
+  The authors make NO WARRANTY or representation, either express or implied,
+  with respect to this software, its quality, accuracy, merchantability, or
+  fitness for a particular purpose.  This software is provided "AS IS", and
+  you, its user, assume the entire risk as to its quality and accuracy.
+
+  This software is copyright (C) 1991-2020, Thomas G. Lane, Guido Vollbeding.
+  All Rights Reserved except as specified below.
+
+  Permission is hereby granted to use, copy, modify, and distribute this
+  software (or portions thereof) for any purpose, without fee, subject to
+  these conditions:
+  (1) If any part of the source code for this software is distributed, then
+  this README file must be included, with this copyright and no-warranty
+  notice unaltered; and any additions, deletions, or changes to the original
+  files must be clearly indicated in accompanying documentation.
+  (2) If only executable code is distributed, then the accompanying
+  documentation must state that "this software is based in part on the work
+  of the Independent JPEG Group".
+  (3) Permission for use of this software is granted only if the user accepts
+  full responsibility for any undesirable consequences; the authors accept
+  NO LIABILITY for damages of any kind.
+
+libjpeg-turbo's own modifications are copyright (C) 2009-2026 D. R. Commander
+and the libjpeg-turbo contributors, under the same terms (LICENSE.md: the IJG
+License covers the libjpeg API library, including libjpeg-turbo's
+modifications to it).
+
+The quantisation and Huffman tables are the example tables of ITU-T T.81
+(ISO/IEC 10918-1) Annex K.
+
+A program built from this code and distributed as an executable must carry
+the sentence "this software is based in part on the work of the Independent
+JPEG Group" in its documentation.

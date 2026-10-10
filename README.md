@@ -56,4 +56,12 @@ REPL runs processes by the same unwind/rewind transform, so they run in any
 WasmGC browser and under node 22) and M14 (timers: `time.sleep` and
 `time.after`, so `alt` can time out) are implemented: M0 to M14 implemented.
 
-Licence: MIT.
+The JPEG decoder and encoder (`jpeg-shared/`, `jpeg-decoder/`,
+`jpeg-encoder/`) are checked byte for byte against libjpeg-turbo 3.2.0 as an
+oracle: every decode must equal djpeg's output and every encode cjpeg's, over
+the test corpora and millions of fuzzed inputs. Input outside their strict
+limits is refused with a code, never guessed at.
+
+Licence: MIT. The JPEG decoder and encoder are based in part on the work of
+the Independent JPEG Group, through libjpeg-turbo; see `NOTICE` and
+`licenses/libjpeg-turbo/`.
