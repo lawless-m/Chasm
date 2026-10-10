@@ -111,3 +111,42 @@ Open questions:
 - **`send:` arms in `alt`**, to wait on being able to send as well as receive.
 
 Sharing was decided in M11: a struct, `vec` or `map` sent on a channel or captured by two processes is shared, as in Limbo and Go. Switching happens only at channel operations and the end of a process, so sharing is interleaving at known points rather than a data race.
+
+## 10. Visibility: values that cannot be invalid
+
+A struct groups values but guarantees nothing about them: its generated `s.new` and `s.f!` are callable from anywhere, so `-5 0 dims.new` builds a `dims` that no image has. Programs check at their boundary and trust the values afterwards (the JPEG decoder refuses in its marker parser), which is a convention the checker does not know.
+
+Part of the fix exists. A generated word is an ordinary dictionary word, so a same-effect redefinition replaces it for every caller, and inside the new body the name still reaches the generated word:
+
+```wack fragment
+struct dims  w: i32  h: i32
+: dims.new ( i32 i32 -- dims )
+  :> h :> w
+  w 1 i32.lt_s [ "bad width" trap ] when
+  w h dims.new ;
+```
+
+Every `dims` then passed the check, as Haskell's smart constructors give: export the type and a checking constructor, hide the raw one. Two gaps remain:
+
+- The `!` writers make a valid value invalid afterwards (`d -5 dims.w!`), and cannot be withheld.
+- That the redefined body reaches the generated word is what the compiler does, not a documented rule. A pattern relied on for safety needs the rule written and a test.
+
+The general form is one rule, not a list of special constructors (`range`, `nonempty`, ...): a struct's `.new` and `!` writers callable only from a named scope (a module, section 6), as a Haskell export list hides a data constructor. With it, holding a `dims` proves it was checked. Unsigned or range-restricted integer types are the narrower alternative; they would cover sign and range but nothing else (a length matching another field, a non-empty array), so the scoped constructor comes first. This is a checker rule and needs nothing else on this page.
+
+## 11. Compile-time words
+
+Words that run in the compiler, as Forth's immediate and defining words and Lisp's macros do. `struct` is already a defining word built into the compiler; compile-time words would let a library define its own.
+
+Two uses the JPEG codec shows:
+
+1. **Constant tables.** There is no array literal, so tables are hex strings parsed at run time, and each table word carries the rule "allocates, so callers build it once, outside any loop". A pure word with no inputs, evaluated once by the compiler, would become constant data in the module.
+2. **Checked constructors** (section 10) as library words: `range dim 1 65535` defining a type and its refusing constructor, written in Whackford, not added to the checker.
+
+Quotations are already code as data; Factor, the nearest relative, builds its macros on words that take and return quotations at compile time.
+
+The cost is that the compiler must run Whackford. With the compiler in Rust that means either an interpreter in `crates/core`, a second semantics to keep identical to the compiled one (wrapping, traps, the GC types), or the host compiling and running words during compilation, which breaks core's rule of no I/O and makes every host part of compiling. A self-hosted compiler (section 8) removes the problem: it is itself a Whackford program, so a compile-time word is a word it calls, with one semantics. Hence the order:
+
+1. Pure, input-less words evaluated at compile time (the constant tables), possibly on the REPL's compile-then-call machinery before self-hosting. The checker already knows which words qualify.
+2. Defining words, once self-hosting is past section 8's "decide" stage.
+
+Generated words must stay visible to the tools: `deps`, `dead`, `)forget` and the language server already handle the words `struct` and `union` generate, and user-written generators make that open-ended. Factor's parsing words show the cost of leaving it to each generator, which is why the first stage is the constant case.
